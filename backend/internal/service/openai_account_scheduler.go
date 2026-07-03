@@ -18,10 +18,15 @@ import (
 )
 
 const (
-	openAIAccountScheduleLayerPreviousResponse = "previous_response_id"
-	openAIAccountScheduleLayerSessionSticky    = "session_hash"
-	openAIAccountScheduleLayerLoadBalance      = "load_balance"
-	openAIAdvancedSchedulerSettingKey          = "openai_advanced_scheduler_enabled"
+	openAIAccountScheduleLayerPreviousResponse                     = "previous_response_id"
+	openAIAccountScheduleLayerSessionSticky                        = "session_hash"
+	openAIAccountScheduleLayerLoadBalance                          = "load_balance"
+	openAIAdvancedSchedulerSettingKey                              = "openai_advanced_scheduler_enabled"
+	openAIStickyPreferHigherPrioritySettingKey                     = "openai_sticky_prefer_higher_priority_enabled"
+	openAIStickyPreferHigherPriorityMinIntervalSettingKey          = "openai_sticky_prefer_higher_priority_min_interval_seconds"
+	openAIStickyFailbackFailureCooldownSettingKey                  = "openai_sticky_failback_failure_cooldown_seconds"
+	openAIPreviousResponseRebindSettingKey                         = "openai_previous_response_rebind_enabled"
+	openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey = "openai_previous_response_rebind_only_when_current_unhealthy"
 )
 
 const (
@@ -40,34 +45,53 @@ type cachedOpenAIAdvancedSchedulerSetting struct {
 	expiresAt int64
 }
 
+type cachedOpenAIStickyPreferHigherPrioritySetting struct {
+	cfg       openAIStickyPreferHigherPriorityConfig
+	expiresAt int64
+}
+
 var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSchedulerSetting
 var openAIAdvancedSchedulerSettingSF singleflight.Group
+var openAIStickyPreferHigherPrioritySettingCache atomic.Value // *cachedOpenAIStickyPreferHigherPrioritySetting
+var openAIStickyPreferHigherPrioritySettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
-	GroupID                 *int64
-	Platform                string
-	SessionHash             string
-	StickyAccountID         int64
-	PreserveStickyBinding   bool
-	PreviousResponseID      string
-	RequestedModel          string
-	RequiredTransport       OpenAIUpstreamTransport
-	RequiredCapability      OpenAIEndpointCapability
-	RequiredImageCapability OpenAIImagesCapability
-	RequireCompact          bool
-	ExcludedIDs             map[int64]struct{}
+	GroupID                    *int64
+	Platform                   string
+	SessionHash                string
+	StickyAccountID            int64
+	PreserveStickyBinding      bool
+	HasFunctionCallOutput      bool
+	PreviousResponseReplayable bool
+	PreviousResponseID         string
+	RequestedModel             string
+	RequiredTransport          OpenAIUpstreamTransport
+	RequiredCapability         OpenAIEndpointCapability
+	RequiredImageCapability    OpenAIImagesCapability
+	RequireCompact             bool
+	ExcludedIDs                map[int64]struct{}
 }
 
 type OpenAIAccountScheduleDecision struct {
 	Layer               string
 	StickyPreviousHit   bool
 	StickySessionHit    bool
+	StickySessionRebind bool
+	PreviousRebind      bool
+	DropPreviousID      bool
+	PreviousAccountID   int64
+	RebindReason        string
 	CandidateCount      int
 	TopK                int
 	LatencyMs           int64
 	LoadSkew            float64
 	SelectedAccountID   int64
 	SelectedAccountType string
+}
+
+type OpenAIAccountScheduleOptions struct {
+	HasFunctionCallOutput      bool
+	PreviousResponseReplayable bool
 }
 
 type OpenAIAccountSchedulerMetricsSnapshot struct {
@@ -255,6 +279,18 @@ type openAIStickyEscapeConfig struct {
 	errorRate float64
 }
 
+type openAIStickyPreferHigherPriorityConfig struct {
+	stickyEnabled                     bool
+	previousResponseEnabled           bool
+	previousResponseOnlyWhenUnhealthy bool
+	minInterval                       time.Duration
+	failureCooldown                   time.Duration
+	probeEnabled                      bool
+	probeTimeout                      time.Duration
+	probeSuccessTTL                   time.Duration
+	probeFailureTTL                   time.Duration
+}
+
 func newDefaultOpenAIAccountScheduler(service *OpenAIGatewayService, stats *openAIAccountRuntimeStats) OpenAIAccountScheduler {
 	if stats == nil {
 		stats = newOpenAIAccountRuntimeStats()
@@ -299,6 +335,39 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			}
 		}
 		if selection != nil && selection.Account != nil {
+			failbackCfg := s.service.openAIStickyPreferHigherPriorityConfig(ctx)
+			if failbackCfg.previousResponseEnabled &&
+				!failbackCfg.previousResponseOnlyWhenUnhealthy &&
+				!req.HasFunctionCallOutput &&
+				req.PreviousResponseReplayable &&
+				s.service.allowOpenAIStickyFailbackAttempt("previous_response_id", req.GroupID, previousResponseID, failbackCfg.minInterval) {
+				failbackSelection, reason, failbackErr := s.service.tryAcquireHigherPriorityOpenAIAccount(ctx, req, selection.Account)
+				if failbackErr != nil {
+					if selection.ReleaseFunc != nil {
+						selection.ReleaseFunc()
+					}
+					return nil, decision, failbackErr
+				}
+				if failbackSelection != nil && failbackSelection.Account != nil {
+					if selection.ReleaseFunc != nil {
+						selection.ReleaseFunc()
+					}
+					decision.Layer = openAIAccountScheduleLayerLoadBalance
+					decision.PreviousRebind = true
+					decision.DropPreviousID = true
+					decision.PreviousAccountID = selection.Account.ID
+					decision.RebindReason = reason
+					decision.SelectedAccountID = failbackSelection.Account.ID
+					decision.SelectedAccountType = failbackSelection.Account.Type
+					return failbackSelection, decision, nil
+				}
+			} else if failbackCfg.previousResponseEnabled && !failbackCfg.previousResponseOnlyWhenUnhealthy {
+				reason := openAIStickyRebindSkipReason(req)
+				if reason == "current_account_healthy" {
+					reason = "attempt_interval"
+				}
+				s.service.logOpenAIStickyFailbackSkipped(req, "previous_response_id", selection.Account.ID, 0, reason)
+			}
 			decision.Layer = openAIAccountScheduleLayerPreviousResponse
 			decision.StickyPreviousHit = true
 			decision.SelectedAccountID = selection.Account.ID
@@ -310,13 +379,16 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 	}
 
-	selection, escapedSticky, err := s.selectBySessionHash(ctx, req)
+	selection, escapedSticky, stickyRebind, previousAccountID, rebindReason, err := s.selectBySessionHash(ctx, req)
 	if err != nil {
 		return nil, decision, err
 	}
 	if selection != nil && selection.Account != nil {
 		decision.Layer = openAIAccountScheduleLayerSessionSticky
 		decision.StickySessionHit = true
+		decision.StickySessionRebind = stickyRebind
+		decision.PreviousAccountID = previousAccountID
+		decision.RebindReason = rebindReason
 		decision.SelectedAccountID = selection.Account.ID
 		decision.SelectedAccountType = selection.Account.Type
 		return selection, decision, nil
@@ -334,6 +406,18 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		return nil, decision, err
 	}
 	if selection != nil && selection.Account != nil {
+		failbackCfg := s.service.openAIStickyPreferHigherPriorityConfig(ctx)
+		if previousResponseID != "" &&
+			failbackCfg.previousResponseEnabled &&
+			failbackCfg.previousResponseOnlyWhenUnhealthy &&
+			req.PreviousResponseReplayable {
+			decision.PreviousRebind = true
+			decision.DropPreviousID = true
+			decision.PreviousAccountID = 0
+			decision.RebindReason = "previous_response_account_unavailable"
+		} else if previousResponseID != "" && failbackCfg.previousResponseEnabled && failbackCfg.previousResponseOnlyWhenUnhealthy {
+			s.service.logOpenAIStickyFailbackSkipped(req, "previous_response_id", 0, 0, openAIStickyRebindSkipReason(req))
+		}
 		decision.SelectedAccountID = selection.Account.ID
 		decision.SelectedAccountType = selection.Account.Type
 	}
@@ -343,10 +427,10 @@ func (s *defaultOpenAIAccountScheduler) Select(
 func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
-) (*AccountSelectionResult, bool, error) {
+) (*AccountSelectionResult, bool, bool, int64, string, error) {
 	sessionHash := strings.TrimSpace(req.SessionHash)
 	if sessionHash == "" || s == nil || s.service == nil || s.service.cache == nil {
-		return nil, false, nil
+		return nil, false, false, 0, "", nil
 	}
 
 	accountID := req.StickyAccountID
@@ -354,38 +438,56 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		var err error
 		accountID, err = s.service.getStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		if err != nil || accountID <= 0 {
-			return nil, false, nil
+			return nil, false, false, 0, "", nil
 		}
 	}
 	if accountID <= 0 {
-		return nil, false, nil
+		return nil, false, false, 0, "", nil
 	}
 	if req.ExcludedIDs != nil {
 		if _, excluded := req.ExcludedIDs[accountID]; excluded {
-			return nil, false, nil
+			return nil, false, false, 0, "", nil
 		}
 	}
 
 	account, err := s.service.getSchedulableAccount(ctx, accountID)
 	if err != nil || account == nil {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
-		return nil, false, nil
+		return nil, false, false, 0, "", nil
 	}
 	if shouldClearStickySession(account, req.RequestedModel) || account.Platform != normalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() || !account.IsSchedulable() {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
-		return nil, false, nil
+		return nil, false, false, 0, "", nil
 	}
 	if !s.isAccountRequestCompatible(ctx, account, req) {
-		return nil, false, nil
+		return nil, false, false, 0, "", nil
 	}
 	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
-		return nil, false, nil
+		return nil, false, false, 0, "", nil
 	}
 	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.Platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
 	if account == nil || !openAIStickyAccountMatchesGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
-		return nil, false, nil
+		return nil, false, false, 0, "", nil
+	}
+	failbackCfg := s.service.openAIStickyPreferHigherPriorityConfig(ctx)
+	if failbackCfg.stickyEnabled &&
+		s.service.allowOpenAIStickyFailbackAttempt("session_hash", req.GroupID, sessionHash, failbackCfg.minInterval) {
+		failbackSelection, reason, failbackErr := s.service.tryAcquireHigherPriorityOpenAIAccount(ctx, req, account)
+		if failbackErr != nil {
+			return nil, false, false, 0, "", failbackErr
+		}
+		if failbackSelection != nil && failbackSelection.Account != nil {
+			slog.Info("openai.sticky_session_failback",
+				"previous_account_id", account.ID,
+				"account_id", failbackSelection.Account.ID,
+				"reason", reason,
+			)
+			return failbackSelection, false, true, account.ID, reason, nil
+		}
+	} else if failbackCfg.stickyEnabled {
+		s.service.logOpenAIStickyFailbackSkipped(req, "session_hash", account.ID, 0, "attempt_interval")
 	}
 	escapeCfg := s.service.openAIStickyEscapeConfig()
 	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyAccount(accountID, escapeCfg); shouldEscape {
@@ -395,7 +497,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 			"error_rate", errorRate,
 			"ttft", ttft,
 		)
-		return nil, true, nil
+		return nil, true, false, 0, "", nil
 	}
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result != nil && result.Acquired {
@@ -404,7 +506,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 			Account:     account,
 			Acquired:    true,
 			ReleaseFunc: result.ReleaseFunc,
-		}, false, nil
+		}, false, false, 0, "", nil
 	}
 
 	cfg := s.service.schedulingConfig()
@@ -418,7 +520,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 				"error_rate", errorRate,
 				"ttft", ttft,
 			)
-			return nil, true, nil
+			return nil, true, false, 0, "", nil
 		}
 		return &AccountSelectionResult{
 			Account: account,
@@ -428,9 +530,9 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 				Timeout:        cfg.StickySessionWaitTimeout,
 				MaxWaiting:     cfg.StickySessionMaxWaiting,
 			},
-		}, false, nil
+		}, false, false, 0, "", nil
 	}
-	return nil, false, nil
+	return nil, false, false, 0, "", nil
 }
 
 func openAIStickyAccountMatchesGroup(account *Account, groupID *int64) bool {
@@ -1074,6 +1176,181 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, compactBlocked)
 }
 
+func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	current *Account,
+) (*AccountSelectionResult, string, error) {
+	if s == nil || current == nil {
+		return nil, "", nil
+	}
+	accounts, err := s.listSchedulableAccounts(ctx, req.GroupID, req.Platform)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(accounts) == 0 {
+		return nil, "", nil
+	}
+
+	failbackCfg := s.openAIStickyPreferHigherPriorityConfig(ctx)
+	platform := normalizeOpenAICompatiblePlatform(req.Platform)
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID)
+	candidates := make([]accountWithLoad, 0, len(accounts))
+	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	parentCache := make(map[int64]*Account)
+	parentLookup := func(id int64) *Account {
+		if account, ok := parentCache[id]; ok {
+			return account
+		}
+		if s.accountRepo == nil {
+			return nil
+		}
+		account, _ := s.accountRepo.GetByID(ctx, id)
+		parentCache[id] = account
+		return account
+	}
+
+	for i := range accounts {
+		account := &accounts[i]
+		if account.ID == current.ID || account.Priority >= current.Priority {
+			continue
+		}
+		if req.ExcludedIDs != nil {
+			if _, excluded := req.ExcludedIDs[account.ID]; excluded {
+				continue
+			}
+		}
+		if !isOpenAICompatibleAccountEligibleForRequest(ctx, account, platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability) {
+			continue
+		}
+		if !accountSupportsOpenAICapabilities(account, req.RequiredCapability, req.RequiredImageCapability) {
+			continue
+		}
+		if !s.isOpenAIAccountTransportCompatible(account, req.RequiredTransport) {
+			continue
+		}
+		if !parentHealthyForShadow(account, parentLookup) {
+			continue
+		}
+		if s.isOpenAIAccountRuntimeBlocked(account) {
+			continue
+		}
+		if needsUpstreamCheck && req.GroupID != nil &&
+			s.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
+			continue
+		}
+		candidates = append(candidates, accountWithLoad{
+			account:  account,
+			loadInfo: &AccountLoadInfo{AccountID: account.ID},
+		})
+		loadReq = append(loadReq, AccountWithConcurrency{
+			ID:             account.ID,
+			MaxConcurrency: account.EffectiveLoadFactor(),
+		})
+	}
+	if len(candidates) == 0 {
+		return nil, "", nil
+	}
+
+	if s.concurrencyService != nil {
+		if loadMap, loadErr := s.concurrencyService.GetAccountsLoadBatch(ctx, loadReq); loadErr == nil {
+			for i := range candidates {
+				if loadInfo := loadMap[candidates[i].account.ID]; loadInfo != nil {
+					candidates[i].loadInfo = loadInfo
+				}
+			}
+		}
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if a.account.Priority != b.account.Priority {
+			return a.account.Priority < b.account.Priority
+		}
+		if a.loadInfo.LoadRate != b.loadInfo.LoadRate {
+			return a.loadInfo.LoadRate < b.loadInfo.LoadRate
+		}
+		if a.loadInfo.WaitingCount != b.loadInfo.WaitingCount {
+			return a.loadInfo.WaitingCount < b.loadInfo.WaitingCount
+		}
+		switch {
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt != nil:
+			return true
+		case a.account.LastUsedAt != nil && b.account.LastUsedAt == nil:
+			return false
+		case a.account.LastUsedAt == nil && b.account.LastUsedAt == nil:
+			return a.account.ID < b.account.ID
+		default:
+			if a.account.LastUsedAt.Equal(*b.account.LastUsedAt) {
+				return a.account.ID < b.account.ID
+			}
+			return a.account.LastUsedAt.Before(*b.account.LastUsedAt)
+		}
+	})
+
+	for _, candidate := range candidates {
+		if until, cooling := s.openAIStickyFailbackAccountCooldown(candidate.account.ID); cooling {
+			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, candidate.account.ID, "failback_cooldown",
+				slog.Time("cooldown_until", until),
+			)
+			continue
+		}
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
+		if fresh == nil {
+			continue
+		}
+		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, platform, req.RequestedModel, req.RequireCompact, req.RequiredCapability)
+		if fresh == nil {
+			continue
+		}
+		if !accountSupportsOpenAICapabilities(fresh, req.RequiredCapability, req.RequiredImageCapability) {
+			continue
+		}
+		if !s.isOpenAIAccountTransportCompatible(fresh, req.RequiredTransport) {
+			continue
+		}
+		if needsUpstreamCheck && req.GroupID != nil &&
+			s.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, fresh, req.RequestedModel, req.RequireCompact) {
+			continue
+		}
+		if probe := s.probeOpenAIStickyFailbackCandidate(ctx, req, fresh, failbackCfg); !probe.Healthy {
+			args := []slog.Attr{
+				slog.String("probe_reason", probe.Reason),
+			}
+			if probe.StatusCode > 0 {
+				args = append(args, slog.Int("probe_status", probe.StatusCode))
+			}
+			if probe.Err != nil {
+				args = append(args, slog.String("probe_error", probe.Err.Error()))
+			}
+			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, fresh.ID, "failback_probe_unhealthy", args...)
+			continue
+		}
+		result, acquireErr := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
+		if acquireErr != nil {
+			return nil, "", acquireErr
+		}
+		if result == nil || !result.Acquired {
+			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, fresh.ID, "higher_priority_busy")
+			continue
+		}
+		selection, selectErr := s.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
+		if selectErr != nil {
+			if result.ReleaseFunc != nil {
+				result.ReleaseFunc()
+			}
+			return nil, "", selectErr
+		}
+		if req.SessionHash != "" && !req.PreserveStickyBinding {
+			_ = s.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
+		}
+		return selection, "higher_priority_available", nil
+	}
+
+	s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, 0, "no_eligible_higher_priority_account")
+	return nil, "", nil
+}
+
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
 	if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 		return true
@@ -1241,6 +1518,8 @@ func (s *OpenAIGatewayService) getOpenAIAccountScheduler(ctx context.Context) Op
 func resetOpenAIAdvancedSchedulerSettingCacheForTest() {
 	openAIAdvancedSchedulerSettingCache = atomic.Value{}
 	openAIAdvancedSchedulerSettingSF = singleflight.Group{}
+	openAIStickyPreferHigherPrioritySettingCache = atomic.Value{}
+	openAIStickyPreferHigherPrioritySettingSF = singleflight.Group{}
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithScheduler(
@@ -1253,7 +1532,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	requiredTransport OpenAIUpstreamTransport,
 	requireCompact bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact, PlatformOpenAI)
+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "", requireCompact, PlatformOpenAI, OpenAIAccountScheduleOptions{})
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
@@ -1268,11 +1547,39 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 	requireCompact bool,
 	platformOverride ...string,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.SelectAccountWithSchedulerForCapabilityWithOptions(
+		ctx,
+		groupID,
+		previousResponseID,
+		sessionHash,
+		requestedModel,
+		excludedIDs,
+		requiredTransport,
+		requiredCapability,
+		requireCompact,
+		OpenAIAccountScheduleOptions{},
+		platformOverride...,
+	)
+}
+
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityWithOptions(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+	options OpenAIAccountScheduleOptions,
+	platformOverride ...string,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	platform := PlatformOpenAI
 	if len(platformOverride) > 0 {
 		platform = platformOverride[0]
 	}
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform)
+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact, platform, options)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
@@ -1283,13 +1590,13 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI)
+	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", requiredCapability, false, PlatformOpenAI, OpenAIAccountScheduleOptions{})
 	if err == nil && selection != nil && selection.Account != nil {
 		return selection, decision, nil
 	}
 	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
 	if requiredCapability == OpenAIImagesCapabilityNative {
-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI)
+		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, "", OpenAIImagesCapabilityBasic, false, PlatformOpenAI, OpenAIAccountScheduleOptions{})
 	}
 	return selection, decision, err
 }
@@ -1306,6 +1613,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	requiredImageCapability OpenAIImagesCapability,
 	requireCompact bool,
 	platform string,
+	options OpenAIAccountScheduleOptions,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	platform = normalizeOpenAICompatiblePlatform(platform)
@@ -1316,7 +1624,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		if requiredTransport == OpenAIUpstreamTransportAny || requiredTransport == OpenAIUpstreamTransportHTTPSSE {
 			effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 			for {
-				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability)
+				selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport)
 				if err != nil {
 					return nil, decision, err
 				}
@@ -1341,7 +1649,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 
 		effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 		for {
-			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability)
+			selection, err := s.selectAccountWithLoadAwareness(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcludedIDs, requireCompact, requiredCapability, requiredImageCapability, requiredTransport)
 			if err != nil {
 				return nil, decision, err
 			}
@@ -1380,17 +1688,19 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	}
 
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
-		GroupID:                 groupID,
-		Platform:                platform,
-		SessionHash:             sessionHash,
-		StickyAccountID:         stickyAccountID,
-		PreviousResponseID:      previousResponseID,
-		RequestedModel:          requestedModel,
-		RequiredTransport:       requiredTransport,
-		RequiredCapability:      requiredCapability,
-		RequiredImageCapability: requiredImageCapability,
-		RequireCompact:          requireCompact,
-		ExcludedIDs:             excludedIDs,
+		GroupID:                    groupID,
+		Platform:                   platform,
+		SessionHash:                sessionHash,
+		StickyAccountID:            stickyAccountID,
+		PreviousResponseID:         previousResponseID,
+		HasFunctionCallOutput:      options.HasFunctionCallOutput,
+		PreviousResponseReplayable: options.PreviousResponseReplayable,
+		RequestedModel:             requestedModel,
+		RequiredTransport:          requiredTransport,
+		RequiredCapability:         requiredCapability,
+		RequiredImageCapability:    requiredImageCapability,
+		RequireCompact:             requireCompact,
+		ExcludedIDs:                excludedIDs,
 	})
 }
 
@@ -1502,6 +1812,204 @@ func (s *OpenAIGatewayService) openAIStickyEscapeConfig() openAIStickyEscapeConf
 		ttftMs:    15000,
 		errorRate: 0.5,
 	}
+}
+
+func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx context.Context) openAIStickyPreferHigherPriorityConfig {
+	cfg := openAIStickyPreferHigherPriorityConfig{
+		previousResponseOnlyWhenUnhealthy: true,
+		minInterval:                       time.Minute,
+		failureCooldown:                   5 * time.Minute,
+		probeEnabled:                      true,
+		probeTimeout:                      5 * time.Second,
+		probeSuccessTTL:                   30 * time.Second,
+		probeFailureTTL:                   time.Minute,
+	}
+	if s == nil {
+		return cfg
+	}
+	if s.cfg != nil {
+		raw := s.cfg.Gateway.OpenAIScheduler
+		cfg.stickyEnabled = raw.StickyPreferHigherPriorityEnabled
+		cfg.previousResponseEnabled = raw.PreviousResponseRebindEnabled
+		cfg.previousResponseOnlyWhenUnhealthy = raw.PreviousResponseRebindOnlyWhenCurrentUnhealthy
+		cfg.probeEnabled = raw.StickyFailbackProbeEnabled
+		if raw.StickyPreferHigherPriorityMinIntervalSeconds >= 0 {
+			cfg.minInterval = time.Duration(raw.StickyPreferHigherPriorityMinIntervalSeconds) * time.Second
+		}
+		if raw.StickyFailbackFailureCooldownSeconds >= 0 {
+			cfg.failureCooldown = time.Duration(raw.StickyFailbackFailureCooldownSeconds) * time.Second
+		}
+		if raw.StickyFailbackProbeTimeoutSeconds > 0 {
+			cfg.probeTimeout = time.Duration(raw.StickyFailbackProbeTimeoutSeconds) * time.Second
+		}
+		if raw.StickyFailbackProbeSuccessTTLSeconds >= 0 {
+			cfg.probeSuccessTTL = time.Duration(raw.StickyFailbackProbeSuccessTTLSeconds) * time.Second
+		}
+		if raw.StickyFailbackProbeFailureTTLSeconds >= 0 {
+			cfg.probeFailureTTL = time.Duration(raw.StickyFailbackProbeFailureTTLSeconds) * time.Second
+		}
+	}
+
+	if cached, ok := openAIStickyPreferHigherPrioritySettingCache.Load().(*cachedOpenAIStickyPreferHigherPrioritySetting); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.cfg
+		}
+	}
+
+	result, _, _ := openAIStickyPreferHigherPrioritySettingSF.Do("openai_sticky_prefer_higher_priority", func() (any, error) {
+		if cached, ok := openAIStickyPreferHigherPrioritySettingCache.Load().(*cachedOpenAIStickyPreferHigherPrioritySetting); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached.cfg, nil
+			}
+		}
+
+		loaded := cfg
+		if repo := s.openAIAdvancedSchedulerSettingRepo(); repo != nil {
+			dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAIAdvancedSchedulerSettingDBTimeout)
+			defer cancel()
+
+			values, err := repo.GetMultiple(dbCtx, []string{
+				openAIStickyPreferHigherPrioritySettingKey,
+				openAIStickyPreferHigherPriorityMinIntervalSettingKey,
+				openAIStickyFailbackFailureCooldownSettingKey,
+				openAIPreviousResponseRebindSettingKey,
+				openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey,
+			})
+			if err == nil {
+				if value, ok := values[openAIStickyPreferHigherPrioritySettingKey]; ok {
+					loaded.stickyEnabled = parseOpenAIBoolSetting(value, loaded.stickyEnabled)
+				}
+				if value, ok := values[openAIStickyPreferHigherPriorityMinIntervalSettingKey]; ok {
+					loaded.minInterval = time.Duration(parseOpenAINonNegativeIntSetting(value, int(loaded.minInterval/time.Second))) * time.Second
+				}
+				if value, ok := values[openAIStickyFailbackFailureCooldownSettingKey]; ok {
+					loaded.failureCooldown = time.Duration(parseOpenAINonNegativeIntSetting(value, int(loaded.failureCooldown/time.Second))) * time.Second
+				}
+				if value, ok := values[openAIPreviousResponseRebindSettingKey]; ok {
+					loaded.previousResponseEnabled = parseOpenAIBoolSetting(value, loaded.previousResponseEnabled)
+				}
+				if value, ok := values[openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey]; ok {
+					loaded.previousResponseOnlyWhenUnhealthy = parseOpenAIBoolSetting(value, loaded.previousResponseOnlyWhenUnhealthy)
+				}
+			}
+		}
+
+		openAIStickyPreferHigherPrioritySettingCache.Store(&cachedOpenAIStickyPreferHigherPrioritySetting{
+			cfg:       loaded,
+			expiresAt: time.Now().Add(openAIAdvancedSchedulerSettingCacheTTL).UnixNano(),
+		})
+		return loaded, nil
+	})
+
+	if loaded, ok := result.(openAIStickyPreferHigherPriorityConfig); ok {
+		return loaded
+	}
+	return cfg
+}
+
+func parseOpenAIBoolSetting(value string, fallback bool) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	return strings.EqualFold(trimmed, "true")
+}
+
+func parseOpenAINonNegativeIntSetting(value string, fallback int) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func (s *OpenAIGatewayService) allowOpenAIStickyFailbackAttempt(kind string, groupID *int64, key string, minInterval time.Duration) bool {
+	if s == nil {
+		return false
+	}
+	key = strings.TrimSpace(key)
+	if key == "" || minInterval <= 0 {
+		return true
+	}
+	cacheKey := fmt.Sprintf("%s:%d:%s", kind, derefGroupID(groupID), key)
+	now := time.Now().UnixNano()
+	if previous, ok := s.openaiStickyFailbackLastAttempt.Load(cacheKey); ok {
+		if previousNano, ok := previous.(int64); ok && time.Duration(now-previousNano) < minInterval {
+			return false
+		}
+	}
+	s.openaiStickyFailbackLastAttempt.Store(cacheKey, now)
+	return true
+}
+
+func (s *OpenAIGatewayService) RecordOpenAIStickyFailbackFailure(ctx context.Context, accountID int64, statusCode int) {
+	if s == nil || accountID <= 0 || statusCode < 500 {
+		return
+	}
+	cfg := s.openAIStickyPreferHigherPriorityConfig(ctx)
+	if cfg.failureCooldown <= 0 {
+		return
+	}
+	until := time.Now().Add(cfg.failureCooldown)
+	s.openaiStickyFailbackCooldownUntil.Store(accountID, until)
+	slog.Warn("openai.sticky_failback_account_cooldown",
+		"account_id", accountID,
+		"upstream_status", statusCode,
+		"cooldown_seconds", int(cfg.failureCooldown/time.Second),
+		"cooldown_until", until,
+	)
+}
+
+func (s *OpenAIGatewayService) openAIStickyFailbackAccountCooldown(accountID int64) (time.Time, bool) {
+	if s == nil || accountID <= 0 {
+		return time.Time{}, false
+	}
+	value, ok := s.openaiStickyFailbackCooldownUntil.Load(accountID)
+	if !ok {
+		return time.Time{}, false
+	}
+	until, ok := value.(time.Time)
+	if !ok || until.IsZero() {
+		s.openaiStickyFailbackCooldownUntil.Delete(accountID)
+		return time.Time{}, false
+	}
+	if time.Now().After(until) {
+		s.openaiStickyFailbackCooldownUntil.Delete(accountID)
+		return time.Time{}, false
+	}
+	return until, true
+}
+
+func (s *OpenAIGatewayService) logOpenAIStickyFailbackSkipped(req OpenAIAccountScheduleRequest, kind string, currentAccountID, candidateAccountID int64, reason string, extra ...slog.Attr) {
+	if s == nil {
+		return
+	}
+	attrs := []slog.Attr{
+		slog.String("kind", kind),
+		slog.String("reason", reason),
+		slog.Int64("current_account_id", currentAccountID),
+		slog.Int64("candidate_account_id", candidateAccountID),
+		slog.Int64("group_id", derefGroupID(req.GroupID)),
+		slog.String("model", req.RequestedModel),
+		slog.Bool("session_hash_present", strings.TrimSpace(req.SessionHash) != ""),
+		slog.Bool("previous_response_id_present", strings.TrimSpace(req.PreviousResponseID) != ""),
+	}
+	attrs = append(attrs, extra...)
+	args := make([]any, 0, len(attrs))
+	for _, attr := range attrs {
+		args = append(args, attr)
+	}
+	slog.Info("openai.sticky_failback_skipped", args...)
+}
+
+func openAIStickyRebindSkipReason(req OpenAIAccountScheduleRequest) string {
+	if req.HasFunctionCallOutput {
+		return "function_call_output"
+	}
+	if !req.PreviousResponseReplayable {
+		return "not_replayable"
+	}
+	return "current_account_healthy"
 }
 
 func (s *OpenAIGatewayService) openAIWSSchedulerWeights() GatewayOpenAIWSSchedulerScoreWeightsView {

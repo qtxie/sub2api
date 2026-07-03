@@ -273,34 +273,41 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		PaymentVisibleMethodWxpaySource:        settings.PaymentVisibleMethodWxpaySource,
 		PaymentVisibleMethodAlipayEnabled:      settings.PaymentVisibleMethodAlipayEnabled,
 		PaymentVisibleMethodWxpayEnabled:       settings.PaymentVisibleMethodWxpayEnabled,
-		OpenAIAdvancedSchedulerEnabled:         settings.OpenAIAdvancedSchedulerEnabled,
-		BalanceLowNotifyEnabled:                settings.BalanceLowNotifyEnabled,
-		BalanceLowNotifyThreshold:              settings.BalanceLowNotifyThreshold,
-		BalanceLowNotifyRechargeURL:            settings.BalanceLowNotifyRechargeURL,
-		SubscriptionExpiryNotifyEnabled:        settings.SubscriptionExpiryNotifyEnabled,
-		AccountQuotaNotifyEnabled:              settings.AccountQuotaNotifyEnabled,
-		AccountQuotaNotifyEmails:               dto.NotifyEmailEntriesFromService(settings.AccountQuotaNotifyEmails),
-		PaymentEnabled:                         paymentCfg.Enabled,
-		PaymentMinAmount:                       paymentCfg.MinAmount,
-		PaymentMaxAmount:                       paymentCfg.MaxAmount,
-		PaymentDailyLimit:                      paymentCfg.DailyLimit,
-		PaymentOrderTimeoutMin:                 paymentCfg.OrderTimeoutMin,
-		PaymentMaxPendingOrders:                paymentCfg.MaxPendingOrders,
-		PaymentEnabledTypes:                    paymentCfg.EnabledTypes,
-		PaymentBalanceDisabled:                 paymentCfg.BalanceDisabled,
-		PaymentBalanceRechargeMultiplier:       paymentCfg.BalanceRechargeMultiplier,
-		PaymentRechargeFeeRate:                 paymentCfg.RechargeFeeRate,
-		PaymentLoadBalanceStrat:                paymentCfg.LoadBalanceStrategy,
-		PaymentProductNamePrefix:               paymentCfg.ProductNamePrefix,
-		PaymentProductNameSuffix:               paymentCfg.ProductNameSuffix,
-		PaymentHelpImageURL:                    paymentCfg.HelpImageURL,
-		PaymentHelpText:                        paymentCfg.HelpText,
-		PaymentCancelRateLimitEnabled:          paymentCfg.CancelRateLimitEnabled,
-		PaymentCancelRateLimitMax:              paymentCfg.CancelRateLimitMax,
-		PaymentCancelRateLimitWindow:           paymentCfg.CancelRateLimitWindow,
-		PaymentCancelRateLimitUnit:             paymentCfg.CancelRateLimitUnit,
-		PaymentCancelRateLimitMode:             paymentCfg.CancelRateLimitMode,
-		PaymentAlipayForceQRCode:               paymentCfg.AlipayForceQRCode,
+
+		OpenAIAdvancedSchedulerEnabled:                       settings.OpenAIAdvancedSchedulerEnabled,
+		OpenAIStickyPreferHigherPriorityEnabled:              settings.OpenAIStickyPreferHigherPriorityEnabled,
+		OpenAIStickyPreferHigherPriorityMinIntervalSeconds:   settings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds,
+		OpenAIStickyFailbackFailureCooldownSeconds:           settings.OpenAIStickyFailbackFailureCooldownSeconds,
+		OpenAIPreviousResponseRebindEnabled:                  settings.OpenAIPreviousResponseRebindEnabled,
+		OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy: settings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy,
+
+		BalanceLowNotifyEnabled:          settings.BalanceLowNotifyEnabled,
+		BalanceLowNotifyThreshold:        settings.BalanceLowNotifyThreshold,
+		BalanceLowNotifyRechargeURL:      settings.BalanceLowNotifyRechargeURL,
+		SubscriptionExpiryNotifyEnabled:  settings.SubscriptionExpiryNotifyEnabled,
+		AccountQuotaNotifyEnabled:        settings.AccountQuotaNotifyEnabled,
+		AccountQuotaNotifyEmails:         dto.NotifyEmailEntriesFromService(settings.AccountQuotaNotifyEmails),
+		PaymentEnabled:                   paymentCfg.Enabled,
+		PaymentMinAmount:                 paymentCfg.MinAmount,
+		PaymentMaxAmount:                 paymentCfg.MaxAmount,
+		PaymentDailyLimit:                paymentCfg.DailyLimit,
+		PaymentOrderTimeoutMin:           paymentCfg.OrderTimeoutMin,
+		PaymentMaxPendingOrders:          paymentCfg.MaxPendingOrders,
+		PaymentEnabledTypes:              paymentCfg.EnabledTypes,
+		PaymentBalanceDisabled:           paymentCfg.BalanceDisabled,
+		PaymentBalanceRechargeMultiplier: paymentCfg.BalanceRechargeMultiplier,
+		PaymentRechargeFeeRate:           paymentCfg.RechargeFeeRate,
+		PaymentLoadBalanceStrat:          paymentCfg.LoadBalanceStrategy,
+		PaymentProductNamePrefix:         paymentCfg.ProductNamePrefix,
+		PaymentProductNameSuffix:         paymentCfg.ProductNameSuffix,
+		PaymentHelpImageURL:              paymentCfg.HelpImageURL,
+		PaymentHelpText:                  paymentCfg.HelpText,
+		PaymentCancelRateLimitEnabled:    paymentCfg.CancelRateLimitEnabled,
+		PaymentCancelRateLimitMax:        paymentCfg.CancelRateLimitMax,
+		PaymentCancelRateLimitWindow:     paymentCfg.CancelRateLimitWindow,
+		PaymentCancelRateLimitUnit:       paymentCfg.CancelRateLimitUnit,
+		PaymentCancelRateLimitMode:       paymentCfg.CancelRateLimitMode,
+		PaymentAlipayForceQRCode:         paymentCfg.AlipayForceQRCode,
 
 		ChannelMonitorEnabled:                settings.ChannelMonitorEnabled,
 		ChannelMonitorDefaultIntervalSeconds: settings.ChannelMonitorDefaultIntervalSeconds,
@@ -619,6 +626,12 @@ type UpdateSettingsRequest struct {
 
 	// OpenAI account scheduling
 	OpenAIAdvancedSchedulerEnabled *bool `json:"openai_advanced_scheduler_enabled"`
+
+	OpenAIStickyPreferHigherPriorityEnabled              *bool `json:"openai_sticky_prefer_higher_priority_enabled"`
+	OpenAIStickyPreferHigherPriorityMinIntervalSeconds   *int  `json:"openai_sticky_prefer_higher_priority_min_interval_seconds"`
+	OpenAIStickyFailbackFailureCooldownSeconds           *int  `json:"openai_sticky_failback_failure_cooldown_seconds"`
+	OpenAIPreviousResponseRebindEnabled                  *bool `json:"openai_previous_response_rebind_enabled"`
+	OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy *bool `json:"openai_previous_response_rebind_only_when_current_unhealthy"`
 
 	// 余额不足提醒
 	BalanceLowNotifyEnabled         *bool                   `json:"balance_low_notify_enabled"`
@@ -1792,6 +1805,36 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAIAdvancedSchedulerEnabled
 		}(),
+		OpenAIStickyPreferHigherPriorityEnabled: func() bool {
+			if req.OpenAIStickyPreferHigherPriorityEnabled != nil {
+				return *req.OpenAIStickyPreferHigherPriorityEnabled
+			}
+			return previousSettings.OpenAIStickyPreferHigherPriorityEnabled
+		}(),
+		OpenAIStickyPreferHigherPriorityMinIntervalSeconds: func() int {
+			if req.OpenAIStickyPreferHigherPriorityMinIntervalSeconds != nil {
+				return *req.OpenAIStickyPreferHigherPriorityMinIntervalSeconds
+			}
+			return previousSettings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds
+		}(),
+		OpenAIStickyFailbackFailureCooldownSeconds: func() int {
+			if req.OpenAIStickyFailbackFailureCooldownSeconds != nil {
+				return *req.OpenAIStickyFailbackFailureCooldownSeconds
+			}
+			return previousSettings.OpenAIStickyFailbackFailureCooldownSeconds
+		}(),
+		OpenAIPreviousResponseRebindEnabled: func() bool {
+			if req.OpenAIPreviousResponseRebindEnabled != nil {
+				return *req.OpenAIPreviousResponseRebindEnabled
+			}
+			return previousSettings.OpenAIPreviousResponseRebindEnabled
+		}(),
+		OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy: func() bool {
+			if req.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy != nil {
+				return *req.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy
+			}
+			return previousSettings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy
+		}(),
 		BalanceLowNotifyEnabled: func() bool {
 			if req.BalanceLowNotifyEnabled != nil {
 				return *req.BalanceLowNotifyEnabled
@@ -2164,34 +2207,41 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		PaymentVisibleMethodWxpaySource:        updatedSettings.PaymentVisibleMethodWxpaySource,
 		PaymentVisibleMethodAlipayEnabled:      updatedSettings.PaymentVisibleMethodAlipayEnabled,
 		PaymentVisibleMethodWxpayEnabled:       updatedSettings.PaymentVisibleMethodWxpayEnabled,
-		OpenAIAdvancedSchedulerEnabled:         updatedSettings.OpenAIAdvancedSchedulerEnabled,
-		BalanceLowNotifyEnabled:                updatedSettings.BalanceLowNotifyEnabled,
-		BalanceLowNotifyThreshold:              updatedSettings.BalanceLowNotifyThreshold,
-		BalanceLowNotifyRechargeURL:            updatedSettings.BalanceLowNotifyRechargeURL,
-		SubscriptionExpiryNotifyEnabled:        updatedSettings.SubscriptionExpiryNotifyEnabled,
-		AccountQuotaNotifyEnabled:              updatedSettings.AccountQuotaNotifyEnabled,
-		AccountQuotaNotifyEmails:               dto.NotifyEmailEntriesFromService(updatedSettings.AccountQuotaNotifyEmails),
-		PaymentEnabled:                         updatedPaymentCfg.Enabled,
-		PaymentMinAmount:                       updatedPaymentCfg.MinAmount,
-		PaymentMaxAmount:                       updatedPaymentCfg.MaxAmount,
-		PaymentDailyLimit:                      updatedPaymentCfg.DailyLimit,
-		PaymentOrderTimeoutMin:                 updatedPaymentCfg.OrderTimeoutMin,
-		PaymentMaxPendingOrders:                updatedPaymentCfg.MaxPendingOrders,
-		PaymentEnabledTypes:                    updatedPaymentCfg.EnabledTypes,
-		PaymentBalanceDisabled:                 updatedPaymentCfg.BalanceDisabled,
-		PaymentBalanceRechargeMultiplier:       updatedPaymentCfg.BalanceRechargeMultiplier,
-		PaymentRechargeFeeRate:                 updatedPaymentCfg.RechargeFeeRate,
-		PaymentLoadBalanceStrat:                updatedPaymentCfg.LoadBalanceStrategy,
-		PaymentProductNamePrefix:               updatedPaymentCfg.ProductNamePrefix,
-		PaymentProductNameSuffix:               updatedPaymentCfg.ProductNameSuffix,
-		PaymentHelpImageURL:                    updatedPaymentCfg.HelpImageURL,
-		PaymentHelpText:                        updatedPaymentCfg.HelpText,
-		PaymentCancelRateLimitEnabled:          updatedPaymentCfg.CancelRateLimitEnabled,
-		PaymentCancelRateLimitMax:              updatedPaymentCfg.CancelRateLimitMax,
-		PaymentCancelRateLimitWindow:           updatedPaymentCfg.CancelRateLimitWindow,
-		PaymentCancelRateLimitUnit:             updatedPaymentCfg.CancelRateLimitUnit,
-		PaymentCancelRateLimitMode:             updatedPaymentCfg.CancelRateLimitMode,
-		PaymentAlipayForceQRCode:               updatedPaymentCfg.AlipayForceQRCode,
+
+		OpenAIAdvancedSchedulerEnabled:                       updatedSettings.OpenAIAdvancedSchedulerEnabled,
+		OpenAIStickyPreferHigherPriorityEnabled:              updatedSettings.OpenAIStickyPreferHigherPriorityEnabled,
+		OpenAIStickyPreferHigherPriorityMinIntervalSeconds:   updatedSettings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds,
+		OpenAIStickyFailbackFailureCooldownSeconds:           updatedSettings.OpenAIStickyFailbackFailureCooldownSeconds,
+		OpenAIPreviousResponseRebindEnabled:                  updatedSettings.OpenAIPreviousResponseRebindEnabled,
+		OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy: updatedSettings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy,
+
+		BalanceLowNotifyEnabled:          updatedSettings.BalanceLowNotifyEnabled,
+		BalanceLowNotifyThreshold:        updatedSettings.BalanceLowNotifyThreshold,
+		BalanceLowNotifyRechargeURL:      updatedSettings.BalanceLowNotifyRechargeURL,
+		SubscriptionExpiryNotifyEnabled:  updatedSettings.SubscriptionExpiryNotifyEnabled,
+		AccountQuotaNotifyEnabled:        updatedSettings.AccountQuotaNotifyEnabled,
+		AccountQuotaNotifyEmails:         dto.NotifyEmailEntriesFromService(updatedSettings.AccountQuotaNotifyEmails),
+		PaymentEnabled:                   updatedPaymentCfg.Enabled,
+		PaymentMinAmount:                 updatedPaymentCfg.MinAmount,
+		PaymentMaxAmount:                 updatedPaymentCfg.MaxAmount,
+		PaymentDailyLimit:                updatedPaymentCfg.DailyLimit,
+		PaymentOrderTimeoutMin:           updatedPaymentCfg.OrderTimeoutMin,
+		PaymentMaxPendingOrders:          updatedPaymentCfg.MaxPendingOrders,
+		PaymentEnabledTypes:              updatedPaymentCfg.EnabledTypes,
+		PaymentBalanceDisabled:           updatedPaymentCfg.BalanceDisabled,
+		PaymentBalanceRechargeMultiplier: updatedPaymentCfg.BalanceRechargeMultiplier,
+		PaymentRechargeFeeRate:           updatedPaymentCfg.RechargeFeeRate,
+		PaymentLoadBalanceStrat:          updatedPaymentCfg.LoadBalanceStrategy,
+		PaymentProductNamePrefix:         updatedPaymentCfg.ProductNamePrefix,
+		PaymentProductNameSuffix:         updatedPaymentCfg.ProductNameSuffix,
+		PaymentHelpImageURL:              updatedPaymentCfg.HelpImageURL,
+		PaymentHelpText:                  updatedPaymentCfg.HelpText,
+		PaymentCancelRateLimitEnabled:    updatedPaymentCfg.CancelRateLimitEnabled,
+		PaymentCancelRateLimitMax:        updatedPaymentCfg.CancelRateLimitMax,
+		PaymentCancelRateLimitWindow:     updatedPaymentCfg.CancelRateLimitWindow,
+		PaymentCancelRateLimitUnit:       updatedPaymentCfg.CancelRateLimitUnit,
+		PaymentCancelRateLimitMode:       updatedPaymentCfg.CancelRateLimitMode,
+		PaymentAlipayForceQRCode:         updatedPaymentCfg.AlipayForceQRCode,
 
 		ChannelMonitorEnabled:                updatedSettings.ChannelMonitorEnabled,
 		ChannelMonitorDefaultIntervalSeconds: updatedSettings.ChannelMonitorDefaultIntervalSeconds,
@@ -2676,6 +2726,21 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.OpenAIAdvancedSchedulerEnabled != after.OpenAIAdvancedSchedulerEnabled {
 		changed = append(changed, "openai_advanced_scheduler_enabled")
+	}
+	if before.OpenAIStickyPreferHigherPriorityEnabled != after.OpenAIStickyPreferHigherPriorityEnabled {
+		changed = append(changed, "openai_sticky_prefer_higher_priority_enabled")
+	}
+	if before.OpenAIStickyPreferHigherPriorityMinIntervalSeconds != after.OpenAIStickyPreferHigherPriorityMinIntervalSeconds {
+		changed = append(changed, "openai_sticky_prefer_higher_priority_min_interval_seconds")
+	}
+	if before.OpenAIStickyFailbackFailureCooldownSeconds != after.OpenAIStickyFailbackFailureCooldownSeconds {
+		changed = append(changed, "openai_sticky_failback_failure_cooldown_seconds")
+	}
+	if before.OpenAIPreviousResponseRebindEnabled != after.OpenAIPreviousResponseRebindEnabled {
+		changed = append(changed, "openai_previous_response_rebind_enabled")
+	}
+	if before.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy != after.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy {
+		changed = append(changed, "openai_previous_response_rebind_only_when_current_unhealthy")
 	}
 	// 余额、订阅到期与账号限额通知
 	if before.BalanceLowNotifyEnabled != after.BalanceLowNotifyEnabled {

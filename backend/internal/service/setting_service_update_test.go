@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -15,6 +16,7 @@ import (
 
 type settingUpdateRepoStub struct {
 	updates map[string]string
+	values  map[string]string
 }
 
 func (s *settingUpdateRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
@@ -30,7 +32,15 @@ func (s *settingUpdateRepoStub) Set(ctx context.Context, key, value string) erro
 }
 
 func (s *settingUpdateRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
-	panic("unexpected GetMultiple call")
+	result := make(map[string]string)
+	for _, key := range keys {
+		if s.values != nil {
+			if value, ok := s.values[key]; ok {
+				result[key] = value
+			}
+		}
+	}
+	return result, nil
 }
 
 func (s *settingUpdateRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {
@@ -127,6 +137,81 @@ func TestSettingService_UpdateSettings_DefaultSubscriptions_ValidGroup(t *testin
 	require.Equal(t, []DefaultSubscriptionSetting{
 		{GroupID: 11, ValidityDays: 30},
 	}, got)
+}
+
+func TestSettingService_UpdateSettings_OpenAIStickyFailbackAbsentKeysKeepEnvFallback(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 17
+	cfg.Gateway.OpenAIScheduler.StickyFailbackFailureCooldownSeconds = 123
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindOnlyWhenCurrentUnhealthy = false
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, cfg)
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		OpenAIStickyPreferHigherPriorityEnabled:              true,
+		OpenAIStickyPreferHigherPriorityMinIntervalSeconds:   17,
+		OpenAIStickyFailbackFailureCooldownSeconds:           123,
+		OpenAIPreviousResponseRebindEnabled:                  true,
+		OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy: false,
+	})
+	require.NoError(t, err)
+	require.NotContains(t, repo.updates, openAIStickyPreferHigherPrioritySettingKey)
+	require.NotContains(t, repo.updates, openAIStickyPreferHigherPriorityMinIntervalSettingKey)
+	require.NotContains(t, repo.updates, openAIStickyFailbackFailureCooldownSettingKey)
+	require.NotContains(t, repo.updates, openAIPreviousResponseRebindSettingKey)
+	require.NotContains(t, repo.updates, openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey)
+}
+
+func TestSettingService_ParseSettings_OpenAIStickyFailbackMissingKeysUseEnvFallback(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 17
+	cfg.Gateway.OpenAIScheduler.StickyFailbackFailureCooldownSeconds = 123
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindOnlyWhenCurrentUnhealthy = false
+	svc := NewSettingService(&settingUpdateRepoStub{}, cfg)
+
+	got := svc.parseSettings(map[string]string{})
+	require.True(t, got.OpenAIStickyPreferHigherPriorityEnabled)
+	require.Equal(t, 17, got.OpenAIStickyPreferHigherPriorityMinIntervalSeconds)
+	require.Equal(t, 123, got.OpenAIStickyFailbackFailureCooldownSeconds)
+	require.True(t, got.OpenAIPreviousResponseRebindEnabled)
+	require.False(t, got.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy)
+}
+
+func TestSettingService_UpdateSettings_OpenAIStickyFailbackRefreshPreservesProbeConfig(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 17
+	cfg.Gateway.OpenAIScheduler.StickyFailbackFailureCooldownSeconds = 123
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeTimeoutSeconds = 9
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeSuccessTTLSeconds = 11
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeFailureTTLSeconds = 13
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindOnlyWhenCurrentUnhealthy = false
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, cfg)
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		OpenAIStickyPreferHigherPriorityEnabled:              true,
+		OpenAIStickyPreferHigherPriorityMinIntervalSeconds:   17,
+		OpenAIStickyFailbackFailureCooldownSeconds:           123,
+		OpenAIPreviousResponseRebindEnabled:                  true,
+		OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy: false,
+	})
+	require.NoError(t, err)
+
+	got := (&OpenAIGatewayService{cfg: cfg}).openAIStickyPreferHigherPriorityConfig(context.Background())
+	require.True(t, got.probeEnabled)
+	require.Equal(t, 9*time.Second, got.probeTimeout)
+	require.Equal(t, 11*time.Second, got.probeSuccessTTL)
+	require.Equal(t, 13*time.Second, got.probeFailureTTL)
 }
 
 func TestSettingService_UpdateSettings_DefaultSubscriptions_RejectsNonSubscriptionGroup(t *testing.T) {

@@ -373,6 +373,10 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
+	openaiStickyFailbackLastAttempt     sync.Map // key: string(kind:group:key), value: int64(unix nano)
+	openaiStickyFailbackCooldownUntil   sync.Map // key: int64(accountID), value: time.Time
+	openaiStickyFailbackProbeCache      sync.Map // key: string(account/model/transport/capability), value: openAIStickyFailbackProbeCacheEntry
+	openaiStickyFailbackProbeRunner     func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
 	openaiOAuth429WindowCount           atomic.Int64
 	openaiWSRetryMetrics                openAIWSRetryMetrics
@@ -1993,10 +1997,10 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
 func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
-	return s.selectAccountWithLoadAwareness(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, "")
+	return s.selectAccountWithLoadAwareness(s.withOpenAIQuotaAutoPauseContext(ctx), groupID, PlatformOpenAI, sessionHash, requestedModel, excludedIDs, false, "", "", OpenAIUpstreamTransportAny)
 }
 
-func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability) (*AccountSelectionResult, error) {
+func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requiredTransport OpenAIUpstreamTransport) (*AccountSelectionResult, error) {
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
@@ -2079,14 +2083,56 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+					} else if !accountSupportsOpenAICapabilities(account, requiredCapability, requiredImageCapability) || !s.isOpenAIAccountTransportCompatible(account, requiredTransport) {
+						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 					} else {
+						failbackCfg := s.openAIStickyPreferHigherPriorityConfig(ctx)
+						if failbackCfg.stickyEnabled &&
+							s.allowOpenAIStickyFailbackAttempt("session_hash", groupID, sessionHash, failbackCfg.minInterval) {
+							failbackSelection, reason, failbackErr := s.tryAcquireHigherPriorityOpenAIAccount(ctx, OpenAIAccountScheduleRequest{
+								GroupID:                 groupID,
+								Platform:                platform,
+								SessionHash:             sessionHash,
+								StickyAccountID:         stickyAccountID,
+								RequestedModel:          requestedModel,
+								RequiredTransport:       requiredTransport,
+								RequiredCapability:      requiredCapability,
+								RequiredImageCapability: requiredImageCapability,
+								RequireCompact:          requireCompact,
+								ExcludedIDs:             excludedIDs,
+							}, account)
+							if failbackErr != nil {
+								return nil, failbackErr
+							}
+							if failbackSelection != nil && failbackSelection.Account != nil {
+								slog.Info("openai.sticky_session_failback",
+									"previous_account_id", account.ID,
+									"account_id", failbackSelection.Account.ID,
+									"reason", reason,
+								)
+								return failbackSelection, nil
+							}
+						} else if failbackCfg.stickyEnabled {
+							s.logOpenAIStickyFailbackSkipped(OpenAIAccountScheduleRequest{
+								GroupID:                 groupID,
+								Platform:                platform,
+								SessionHash:             sessionHash,
+								StickyAccountID:         stickyAccountID,
+								RequestedModel:          requestedModel,
+								RequiredTransport:       requiredTransport,
+								RequiredCapability:      requiredCapability,
+								RequiredImageCapability: requiredImageCapability,
+								RequireCompact:          requireCompact,
+								ExcludedIDs:             excludedIDs,
+							}, "session_hash", account.ID, 0, "attempt_interval")
+						}
 						result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 						if err == nil && result != nil && result.Acquired {
 							selection, selectErr := s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
 							if selectErr != nil {
 								return nil, selectErr
 							}
-							_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, openaiStickySessionTTL)
+							_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIWSSessionStickyTTL())
 							return selection, nil
 						}
 

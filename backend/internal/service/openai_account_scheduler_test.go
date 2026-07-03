@@ -210,8 +210,17 @@ func (s *openAIAdvancedSchedulerSettingRepoStub) Set(context.Context, string, st
 	panic("unexpected call to Set")
 }
 
-func (s *openAIAdvancedSchedulerSettingRepoStub) GetMultiple(context.Context, []string) (map[string]string, error) {
-	panic("unexpected call to GetMultiple")
+func (s *openAIAdvancedSchedulerSettingRepoStub) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
+	result := make(map[string]string, len(keys))
+	if s == nil || s.values == nil {
+		return result, nil
+	}
+	for _, key := range keys {
+		if value, ok := s.values[key]; ok {
+			result[key] = value
+		}
+	}
+	return result, nil
 }
 
 func (s *openAIAdvancedSchedulerSettingRepoStub) SetMultiple(context.Context, map[string]string) error {
@@ -757,6 +766,434 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyRateLimite
 	require.NotNil(t, selection.Account)
 	require.Equal(t, int64(31002), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyPreferHigherPriority(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10114)
+	accounts := []Account{
+		{ID: 37101, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 37102, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	cache := &schedulerTestGatewayCache{
+		sessionBindings: map[string]int64{"openai:session_hash_failback": 37102},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_failback", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37101), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerSessionSticky, decision.Layer)
+	require.True(t, decision.StickySessionHit)
+	require.True(t, decision.StickySessionRebind)
+	require.Equal(t, int64(37102), decision.PreviousAccountID)
+	require.Equal(t, "higher_priority_available", decision.RebindReason)
+	require.Equal(t, int64(37101), cache.sessionBindings["openai:session_hash_failback"])
+}
+
+func TestOpenAIGatewayService_OpenAIStickyPreferHigherPriorityConfigFallsBackToEnvConfigWhenSettingsMissing(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 17
+	cfg.Gateway.OpenAIScheduler.StickyFailbackFailureCooldownSeconds = 123
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeTimeoutSeconds = 7
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeSuccessTTLSeconds = 11
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeFailureTTLSeconds = 13
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindOnlyWhenCurrentUnhealthy = false
+	svc := &OpenAIGatewayService{
+		cfg:              cfg,
+		rateLimitService: newOpenAIAdvancedSchedulerRateLimitService("true"),
+	}
+
+	got := svc.openAIStickyPreferHigherPriorityConfig(context.Background())
+	require.True(t, got.stickyEnabled)
+	require.Equal(t, 17*time.Second, got.minInterval)
+	require.Equal(t, 123*time.Second, got.failureCooldown)
+	require.True(t, got.probeEnabled)
+	require.Equal(t, 7*time.Second, got.probeTimeout)
+	require.Equal(t, 11*time.Second, got.probeSuccessTTL)
+	require.Equal(t, 13*time.Second, got.probeFailureTTL)
+	require.True(t, got.previousResponseEnabled)
+	require.False(t, got.previousResponseOnlyWhenUnhealthy)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseRebindDisabledPreservesChain(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10115)
+	accounts := []Account{
+		{ID: 37201, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{
+			ID:          37202,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+	}
+	cache := &schedulerTestGatewayCache{}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, groupID, "resp_rebind_disabled", 37202, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "resp_rebind_disabled", "session_hash_prev_disabled", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37202), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
+	require.True(t, decision.StickyPreviousHit)
+	require.False(t, decision.PreviousRebind)
+	require.False(t, decision.DropPreviousID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseRebindPreferHigherPriority(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10116)
+	accounts := []Account{
+		{ID: 37301, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{
+			ID:          37302,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+	}
+	cache := &schedulerTestGatewayCache{}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindOnlyWhenCurrentUnhealthy = false
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, groupID, "resp_rebind_enabled", 37302, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityWithOptions(
+		ctx,
+		&groupID,
+		"resp_rebind_enabled",
+		"session_hash_prev_rebind",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+		OpenAIAccountScheduleOptions{PreviousResponseReplayable: true},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37301), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.True(t, decision.PreviousRebind)
+	require.True(t, decision.DropPreviousID)
+	require.Equal(t, int64(37302), decision.PreviousAccountID)
+	require.Equal(t, "higher_priority_available", decision.RebindReason)
+	require.Equal(t, int64(37301), cache.sessionBindings["openai:session_hash_prev_rebind"])
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseRebindSkipsFunctionCallOutput(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10117)
+	accounts := []Account{
+		{ID: 37401, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{
+			ID:          37402,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+	}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindOnlyWhenCurrentUnhealthy = false
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, groupID, "resp_rebind_tool", 37402, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityWithOptions(
+		ctx,
+		&groupID,
+		"resp_rebind_tool",
+		"session_hash_prev_tool",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+		OpenAIAccountScheduleOptions{HasFunctionCallOutput: true},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37402), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
+	require.True(t, decision.StickyPreviousHit)
+	require.False(t, decision.PreviousRebind)
+	require.False(t, decision.DropPreviousID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseRebindSkipsNonReplayableInput(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10119)
+	accounts := []Account{
+		{ID: 37601, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{
+			ID:          37602,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+	}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindOnlyWhenCurrentUnhealthy = false
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, groupID, "resp_rebind_non_replayable", 37602, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityWithOptions(
+		ctx,
+		&groupID,
+		"resp_rebind_non_replayable",
+		"session_hash_prev_non_replayable",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+		OpenAIAccountScheduleOptions{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37602), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
+	require.True(t, decision.StickyPreviousHit)
+	require.False(t, decision.PreviousRebind)
+	require.False(t, decision.DropPreviousID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyFailbackCooldownSkipsHigherPriority(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10120)
+	accounts := []Account{
+		{ID: 37701, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 37702, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	cache := &schedulerTestGatewayCache{
+		sessionBindings: map[string]int64{"openai:session_hash_failback_cooldown": 37702},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	cfg.Gateway.OpenAIScheduler.StickyFailbackFailureCooldownSeconds = 300
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	svc.RecordOpenAIStickyFailbackFailure(ctx, 37701, 502)
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_failback_cooldown", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37702), selection.Account.ID)
+	require.True(t, decision.StickySessionHit)
+	require.False(t, decision.StickySessionRebind)
+	require.Equal(t, int64(37702), cache.sessionBindings["openai:session_hash_failback_cooldown"])
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyFailbackProbeFailureSkipsHigherPriority(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10121)
+	accounts := []Account{
+		{ID: 37801, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 37802, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	cache := &schedulerTestGatewayCache{
+		sessionBindings: map[string]int64{"openai:session_hash_failback_probe_failed": 37802},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	probeCalls := 0
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		probeCalls++
+		return openAIStickyFailbackProbeResult{Healthy: false, StatusCode: 502, Reason: "bad_gateway"}
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_failback_probe_failed", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37802), selection.Account.ID)
+	require.True(t, decision.StickySessionHit)
+	require.False(t, decision.StickySessionRebind)
+	require.Equal(t, 1, probeCalls)
+	require.Equal(t, int64(37802), cache.sessionBindings["openai:session_hash_failback_probe_failed"])
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyFailbackProbeSuccessAllowsHigherPriority(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10122)
+	accounts := []Account{
+		{ID: 37901, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 37902, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	cache := &schedulerTestGatewayCache{
+		sessionBindings: map[string]int64{"openai:session_hash_failback_probe_ok": 37902},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	probeCalls := 0
+	svc.openaiStickyFailbackProbeRunner = func(_ context.Context, account *Account, req OpenAIAccountScheduleRequest, cfg openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		probeCalls++
+		require.Equal(t, int64(37901), account.ID)
+		require.Equal(t, "gpt-5.1", req.RequestedModel)
+		require.True(t, cfg.probeEnabled)
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: 200, Reason: "probe_ok"}
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_failback_probe_ok", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37901), selection.Account.ID)
+	require.True(t, decision.StickySessionHit)
+	require.True(t, decision.StickySessionRebind)
+	require.Equal(t, "higher_priority_available", decision.RebindReason)
+	require.Equal(t, 1, probeCalls)
+	require.Equal(t, int64(37901), cache.sessionBindings["openai:session_hash_failback_probe_ok"])
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabledSessionStickyPreferHigherPriority(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10118)
+	accounts := []Account{
+		{ID: 37501, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 37502, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	cache := &schedulerTestGatewayCache{
+		sessionBindings: map[string]int64{"openai:session_hash_legacy_failback": 37502},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	require.False(t, svc.isOpenAIAdvancedSchedulerEnabled(ctx))
+
+	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_legacy_failback", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37501), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.Equal(t, int64(37501), cache.sessionBindings["openai:session_hash_legacy_failback"])
 }
 
 func TestOpenAIGatewayService_SelectAccountForModelWithExclusions_AutoPauseBy5hThreshold(t *testing.T) {

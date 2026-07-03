@@ -2229,6 +2229,14 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingPaymentVisibleMethodAlipayEnabled] = strconv.FormatBool(settings.PaymentVisibleMethodAlipayEnabled)
 	updates[SettingPaymentVisibleMethodWxpayEnabled] = strconv.FormatBool(settings.PaymentVisibleMethodWxpayEnabled)
 	updates[openAIAdvancedSchedulerSettingKey] = strconv.FormatBool(settings.OpenAIAdvancedSchedulerEnabled)
+	updates[openAIStickyPreferHigherPrioritySettingKey] = strconv.FormatBool(settings.OpenAIStickyPreferHigherPriorityEnabled)
+	updates[openAIStickyPreferHigherPriorityMinIntervalSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds))
+	updates[openAIStickyFailbackFailureCooldownSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackFailureCooldownSeconds))
+	updates[openAIPreviousResponseRebindSettingKey] = strconv.FormatBool(settings.OpenAIPreviousResponseRebindEnabled)
+	updates[openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey] = strconv.FormatBool(settings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy)
+	if err := s.filterOpenAIStickyFailbackDefaultUpdates(ctx, updates, settings); err != nil {
+		return nil, err
+	}
 
 	// 余额、订阅到期与账号限额通知
 	updates[SettingKeyBalanceLowNotifyEnabled] = strconv.FormatBool(settings.BalanceLowNotifyEnabled)
@@ -2273,6 +2281,111 @@ func validateDefaultPlatformQuotaMap(m map[string]*DefaultPlatformQuotaSetting) 
 		}
 	}
 	return nil
+}
+
+func nonNegativeInt(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func (s *SettingService) filterOpenAIStickyFailbackDefaultUpdates(ctx context.Context, updates map[string]string, settings *SystemSettings) error {
+	if s == nil || s.settingRepo == nil || len(updates) == 0 || settings == nil {
+		return nil
+	}
+
+	keys := []string{
+		openAIStickyPreferHigherPrioritySettingKey,
+		openAIStickyPreferHigherPriorityMinIntervalSettingKey,
+		openAIStickyFailbackFailureCooldownSettingKey,
+		openAIPreviousResponseRebindSettingKey,
+		openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey,
+	}
+	existing, err := s.settingRepo.GetMultiple(ctx, keys)
+	if err != nil {
+		return fmt.Errorf("get openai sticky failback settings: %w", err)
+	}
+	defaults := s.openAIStickyFailbackConfigDefaults()
+
+	deleteIfImplicitDefault := func(key string, submitted string, defaultValue string) {
+		if _, exists := existing[key]; exists {
+			return
+		}
+		if strings.TrimSpace(submitted) == defaultValue {
+			delete(updates, key)
+		}
+	}
+
+	deleteIfImplicitDefault(openAIStickyPreferHigherPrioritySettingKey,
+		strconv.FormatBool(settings.OpenAIStickyPreferHigherPriorityEnabled),
+		strconv.FormatBool(defaults.stickyEnabled))
+	deleteIfImplicitDefault(openAIStickyPreferHigherPriorityMinIntervalSettingKey,
+		strconv.Itoa(nonNegativeInt(settings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds)),
+		strconv.Itoa(int(defaults.minInterval/time.Second)))
+	deleteIfImplicitDefault(openAIStickyFailbackFailureCooldownSettingKey,
+		strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackFailureCooldownSeconds)),
+		strconv.Itoa(int(defaults.failureCooldown/time.Second)))
+	deleteIfImplicitDefault(openAIPreviousResponseRebindSettingKey,
+		strconv.FormatBool(settings.OpenAIPreviousResponseRebindEnabled),
+		strconv.FormatBool(defaults.previousResponseEnabled))
+	deleteIfImplicitDefault(openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey,
+		strconv.FormatBool(settings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy),
+		strconv.FormatBool(defaults.previousResponseOnlyWhenUnhealthy))
+	return nil
+}
+
+func (s *SettingService) openAIStickyFailbackConfigDefaults() openAIStickyPreferHigherPriorityConfig {
+	cfg := openAIStickyPreferHigherPriorityConfig{
+		previousResponseOnlyWhenUnhealthy: true,
+		minInterval:                       time.Minute,
+		failureCooldown:                   5 * time.Minute,
+		probeEnabled:                      true,
+		probeTimeout:                      5 * time.Second,
+		probeSuccessTTL:                   30 * time.Second,
+		probeFailureTTL:                   time.Minute,
+	}
+	if s == nil || s.cfg == nil {
+		return cfg
+	}
+	raw := s.cfg.Gateway.OpenAIScheduler
+	if !openAISchedulerConfigLoaded(raw) {
+		return cfg
+	}
+	cfg.stickyEnabled = raw.StickyPreferHigherPriorityEnabled
+	cfg.previousResponseEnabled = raw.PreviousResponseRebindEnabled
+	cfg.previousResponseOnlyWhenUnhealthy = raw.PreviousResponseRebindOnlyWhenCurrentUnhealthy
+	cfg.probeEnabled = raw.StickyFailbackProbeEnabled
+	if raw.StickyPreferHigherPriorityMinIntervalSeconds >= 0 {
+		cfg.minInterval = time.Duration(raw.StickyPreferHigherPriorityMinIntervalSeconds) * time.Second
+	}
+	if raw.StickyFailbackFailureCooldownSeconds >= 0 {
+		cfg.failureCooldown = time.Duration(raw.StickyFailbackFailureCooldownSeconds) * time.Second
+	}
+	if raw.StickyFailbackProbeTimeoutSeconds > 0 {
+		cfg.probeTimeout = time.Duration(raw.StickyFailbackProbeTimeoutSeconds) * time.Second
+	}
+	if raw.StickyFailbackProbeSuccessTTLSeconds >= 0 {
+		cfg.probeSuccessTTL = time.Duration(raw.StickyFailbackProbeSuccessTTLSeconds) * time.Second
+	}
+	if raw.StickyFailbackProbeFailureTTLSeconds >= 0 {
+		cfg.probeFailureTTL = time.Duration(raw.StickyFailbackProbeFailureTTLSeconds) * time.Second
+	}
+	return cfg
+}
+
+func openAISchedulerConfigLoaded(raw config.GatewayOpenAISchedulerConfig) bool {
+	return raw.StickyEscapeEnabled ||
+		raw.StickyEscapeTTFTMs != 0 ||
+		raw.StickyEscapeErrorRate != 0 ||
+		raw.StickyPreferHigherPriorityEnabled ||
+		raw.StickyPreferHigherPriorityMinIntervalSeconds != 0 ||
+		raw.StickyFailbackFailureCooldownSeconds != 0 ||
+		raw.StickyFailbackProbeEnabled ||
+		raw.StickyFailbackProbeTimeoutSeconds != 0 ||
+		raw.StickyFailbackProbeSuccessTTLSeconds != 0 ||
+		raw.StickyFailbackProbeFailureTTLSeconds != 0 ||
+		raw.PreviousResponseRebindEnabled
 }
 
 func (s *SettingService) buildAuthSourceDefaultUpdates(ctx context.Context, settings *AuthSourceDefaultSettings) (map[string]string, error) {
@@ -2377,6 +2490,17 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	openAIAdvancedSchedulerSettingSF.Forget(openAIAdvancedSchedulerSettingKey)
 	openAIAdvancedSchedulerSettingCache.Store(&cachedOpenAIAdvancedSchedulerSetting{
 		enabled:   settings.OpenAIAdvancedSchedulerEnabled,
+		expiresAt: time.Now().Add(openAIAdvancedSchedulerSettingCacheTTL).UnixNano(),
+	})
+	openAIStickyPreferHigherPrioritySettingSF.Forget("openai_sticky_prefer_higher_priority")
+	stickyFailbackCfg := s.openAIStickyFailbackConfigDefaults()
+	stickyFailbackCfg.stickyEnabled = settings.OpenAIStickyPreferHigherPriorityEnabled
+	stickyFailbackCfg.previousResponseEnabled = settings.OpenAIPreviousResponseRebindEnabled
+	stickyFailbackCfg.previousResponseOnlyWhenUnhealthy = settings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy
+	stickyFailbackCfg.minInterval = time.Duration(nonNegativeInt(settings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds)) * time.Second
+	stickyFailbackCfg.failureCooldown = time.Duration(nonNegativeInt(settings.OpenAIStickyFailbackFailureCooldownSeconds)) * time.Second
+	openAIStickyPreferHigherPrioritySettingCache.Store(&cachedOpenAIStickyPreferHigherPrioritySetting{
+		cfg:       stickyFailbackCfg,
 		expiresAt: time.Now().Add(openAIAdvancedSchedulerSettingCacheTTL).UnixNano(),
 	})
 	// Invalidate the quota auto-pause cache and let the next read trigger a fresh load.
@@ -3769,6 +3893,12 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.PaymentVisibleMethodAlipayEnabled = settings[SettingPaymentVisibleMethodAlipayEnabled] == "true"
 	result.PaymentVisibleMethodWxpayEnabled = settings[SettingPaymentVisibleMethodWxpayEnabled] == "true"
 	result.OpenAIAdvancedSchedulerEnabled = settings[openAIAdvancedSchedulerSettingKey] == "true"
+	stickyFailbackDefaults := s.openAIStickyFailbackConfigDefaults()
+	result.OpenAIStickyPreferHigherPriorityEnabled = parseOpenAIBoolSetting(settings[openAIStickyPreferHigherPrioritySettingKey], stickyFailbackDefaults.stickyEnabled)
+	result.OpenAIStickyPreferHigherPriorityMinIntervalSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyPreferHigherPriorityMinIntervalSettingKey], int(stickyFailbackDefaults.minInterval/time.Second))
+	result.OpenAIStickyFailbackFailureCooldownSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyFailbackFailureCooldownSettingKey], int(stickyFailbackDefaults.failureCooldown/time.Second))
+	result.OpenAIPreviousResponseRebindEnabled = parseOpenAIBoolSetting(settings[openAIPreviousResponseRebindSettingKey], stickyFailbackDefaults.previousResponseEnabled)
+	result.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy = parseOpenAIBoolSetting(settings[openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey], stickyFailbackDefaults.previousResponseOnlyWhenUnhealthy)
 
 	// 余额、订阅到期与账号限额通知
 	result.BalanceLowNotifyEnabled = settings[SettingKeyBalanceLowNotifyEnabled] == "true"

@@ -4014,6 +4014,148 @@
                 </div>
                 <Toggle v-model="form.openai_advanced_scheduler_enabled" />
               </div>
+
+              <div class="border-t border-gray-100 pt-5 dark:border-dark-700">
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <label
+                      class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        localText(
+                          "优先账号恢复后自动切回",
+                          "Prefer recovered higher-priority account",
+                        )
+                      }}
+                    </label>
+                    <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "当 sticky 会话命中低优先级账号时，探测并切回可用的更高优先级账号。",
+                          "Probe higher-priority accounts when a sticky session is bound to a lower-priority fallback.",
+                        )
+                      }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="form.openai_sticky_prefer_higher_priority_enabled"
+                  />
+                </div>
+
+                <div class="mt-4 grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        localText(
+                          "探测最小间隔（秒）",
+                          "Probe minimum interval (seconds)",
+                        )
+                      }}
+                    </label>
+                    <input
+                      v-model.number="
+                        form.openai_sticky_prefer_higher_priority_min_interval_seconds
+                      "
+                      type="number"
+                      min="0"
+                      class="input w-40"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "同一 session 或 previous_response_id 的探测节流；0 表示每次请求都探测。",
+                          "Throttles probes for the same session or previous_response_id; 0 probes every request.",
+                        )
+                      }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        localText(
+                          "失败冷却（秒）",
+                          "Failure cooldown (seconds)",
+                        )
+                      }}
+                    </label>
+                    <input
+                      v-model.number="
+                        form.openai_sticky_failback_failure_cooldown_seconds
+                      "
+                      type="number"
+                      min="0"
+                      class="input w-40"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "failback 账号再次返回 5xx 后，临时跳过该账号的时间。",
+                          "Temporarily skips a failback account after it returns another 5xx.",
+                        )
+                      }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="border-t border-gray-100 pt-5 dark:border-dark-700">
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <label
+                      class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        localText(
+                          "允许 previous_response_id 重绑",
+                          "Allow previous_response_id rebind",
+                        )
+                      }}
+                    </label>
+                    <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "仅在首包 input 可重放且不是工具结果续链时，才会删除 previous_response_id 并切回更高优先级账号。",
+                          "Only drops previous_response_id when the first input is replayable and not a tool-output continuation.",
+                        )
+                      }}
+                    </p>
+                  </div>
+                  <Toggle v-model="form.openai_previous_response_rebind_enabled" />
+                </div>
+
+                <div class="mt-4 flex items-center justify-between gap-4">
+                  <div>
+                    <label
+                      class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        localText(
+                          "仅原账号不可用时重绑",
+                          "Rebind only when current account is unhealthy",
+                        )
+                      }}
+                    </label>
+                    <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "开启后，健康的 previous_response_id 绑定账号不会被抢回。",
+                          "When enabled, a healthy previous_response_id binding is not preempted.",
+                        )
+                      }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="
+                      form.openai_previous_response_rebind_only_when_current_unhealthy
+                    "
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -7903,6 +8045,11 @@ type SettingsForm = Omit<
   google_oauth_client_secret: string;
   force_email_on_third_party_signup: boolean;
   openai_advanced_scheduler_enabled: boolean;
+  openai_sticky_prefer_higher_priority_enabled: boolean;
+  openai_sticky_prefer_higher_priority_min_interval_seconds: number;
+  openai_sticky_failback_failure_cooldown_seconds: number;
+  openai_previous_response_rebind_enabled: boolean;
+  openai_previous_response_rebind_only_when_current_unhealthy: boolean;
   // 系统全局平台限额 map；form 内始终归一化为全 4 平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
 };
@@ -8094,6 +8241,11 @@ const form = reactive<SettingsForm>({
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
   openai_advanced_scheduler_enabled: false,
+  openai_sticky_prefer_higher_priority_enabled: false,
+  openai_sticky_prefer_higher_priority_min_interval_seconds: 60,
+  openai_sticky_failback_failure_cooldown_seconds: 300,
+  openai_previous_response_rebind_enabled: false,
+  openai_previous_response_rebind_only_when_current_unhealthy: true,
   // Gateway forwarding behavior
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
@@ -9359,6 +9511,23 @@ async function saveSettings() {
         form.payment_cancel_rate_limit_window_mode,
       payment_alipay_force_qrcode: form.payment_alipay_force_qrcode,
       openai_advanced_scheduler_enabled: form.openai_advanced_scheduler_enabled,
+      openai_sticky_prefer_higher_priority_enabled:
+        form.openai_sticky_prefer_higher_priority_enabled,
+      openai_sticky_prefer_higher_priority_min_interval_seconds:
+        Math.max(
+          0,
+          Number(
+            form.openai_sticky_prefer_higher_priority_min_interval_seconds,
+          ) || 0,
+        ),
+      openai_sticky_failback_failure_cooldown_seconds: Math.max(
+        0,
+        Number(form.openai_sticky_failback_failure_cooldown_seconds) || 0,
+      ),
+      openai_previous_response_rebind_enabled:
+        form.openai_previous_response_rebind_enabled,
+      openai_previous_response_rebind_only_when_current_unhealthy:
+        form.openai_previous_response_rebind_only_when_current_unhealthy,
       // 余额、订阅到期与账号限额通知
       balance_low_notify_enabled: form.balance_low_notify_enabled,
       balance_low_notify_threshold:

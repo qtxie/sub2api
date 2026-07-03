@@ -208,7 +208,12 @@ type SystemSettings struct {
 	PaymentVisibleMethodWxpayEnabled  bool   `json:"payment_visible_method_wxpay_enabled"`
 
 	// OpenAI account scheduling
-	OpenAIAdvancedSchedulerEnabled bool `json:"openai_advanced_scheduler_enabled"`
+	OpenAIAdvancedSchedulerEnabled                       bool `json:"openai_advanced_scheduler_enabled"`
+	OpenAIStickyPreferHigherPriorityEnabled              bool `json:"openai_sticky_prefer_higher_priority_enabled"`
+	OpenAIStickyPreferHigherPriorityMinIntervalSeconds   int  `json:"openai_sticky_prefer_higher_priority_min_interval_seconds"`
+	OpenAIStickyFailbackFailureCooldownSeconds           int  `json:"openai_sticky_failback_failure_cooldown_seconds"`
+	OpenAIPreviousResponseRebindEnabled                  bool `json:"openai_previous_response_rebind_enabled"`
+	OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy bool `json:"openai_previous_response_rebind_only_when_current_unhealthy"`
 
 	// Payment configuration
 	PaymentEnabled                   bool     `json:"payment_enabled"`

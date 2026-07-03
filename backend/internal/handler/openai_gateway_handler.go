@@ -392,6 +392,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.String("layer", scheduleDecision.Layer),
 			zap.Bool("sticky_previous_hit", scheduleDecision.StickyPreviousHit),
 			zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
+			zap.Bool("sticky_session_rebind", scheduleDecision.StickySessionRebind),
+			zap.Bool("previous_response_rebind", scheduleDecision.PreviousRebind),
+			zap.Int64("previous_account_id", scheduleDecision.PreviousAccountID),
+			zap.String("rebind_reason", scheduleDecision.RebindReason),
 			zap.Int("candidate_count", scheduleDecision.CandidateCount),
 			zap.Int("top_k", scheduleDecision.TopK),
 			zap.Int64("latency_ms", scheduleDecision.LatencyMs),
@@ -467,6 +471,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							}
 							continue
 						}
+					}
+					if scheduleDecision.StickySessionRebind || scheduleDecision.PreviousRebind {
+						h.gatewayService.RecordOpenAIStickyFailbackFailure(c.Request.Context(), account.ID, failoverErr.StatusCode)
 					}
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
@@ -1266,6 +1273,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "previous_response_id must be a response.id (resp_*), not a message id")
 		return
 	}
+	hasFunctionCallOutput := service.ValidateFunctionCallOutputContextBytes(firstMessage).HasFunctionCallOutput
+	previousResponseReplayable := !hasFunctionCallOutput && service.IsOpenAIResponseReplayableWithoutPreviousID(firstMessage)
 	reqLog = reqLog.With(
 		zap.Bool("ws_ingress", true),
 		zap.String("model", reqModel),
@@ -1371,7 +1380,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	for {
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityWithOptions(
 			ctx,
 			apiKey.GroupID,
 			previousResponseID,
@@ -1381,6 +1390,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			requiredTransport,
 			service.OpenAIEndpointCapabilityChatCompletions,
 			false,
+			service.OpenAIAccountScheduleOptions{
+				HasFunctionCallOutput:      hasFunctionCallOutput,
+				PreviousResponseReplayable: previousResponseReplayable,
+			},
 			requestPlatform,
 		)
 		if err != nil {
@@ -1447,6 +1460,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			zap.Int64("account_id", account.ID),
 			zap.String("account_name", account.Name),
 			zap.String("schedule_layer", scheduleDecision.Layer),
+			zap.Bool("sticky_previous_hit", scheduleDecision.StickyPreviousHit),
+			zap.Bool("sticky_session_hit", scheduleDecision.StickySessionHit),
+			zap.Bool("sticky_session_rebind", scheduleDecision.StickySessionRebind),
+			zap.Bool("previous_response_rebind", scheduleDecision.PreviousRebind),
+			zap.Int64("previous_account_id", scheduleDecision.PreviousAccountID),
+			zap.String("rebind_reason", scheduleDecision.RebindReason),
 			zap.Int("candidate_count", scheduleDecision.CandidateCount),
 		)
 
@@ -1581,12 +1600,26 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// 说明该会话链不属于本次调度到的账号，原样转发会触发上游会话链鉴权失败（“鉴权失败，请检查 API Key”）。
 		// 故剥离首包里的 previous_response_id，改用首包内 input 重建上下文；带 function_call_output 的
 		// 工具续链无法重建，保持原样。仅作用于首轮首包，后续 turn 的续链由 WS 转发层既有逻辑处理。
-		if previousResponseID != "" && !scheduleDecision.StickyPreviousHit &&
-			!service.ValidateFunctionCallOutputContextBytes(wsFirstMessage).HasFunctionCallOutput {
+		if previousResponseID != "" && scheduleDecision.DropPreviousID && previousResponseReplayable {
+			wsFirstMessage = service.RemovePreviousResponseIDFromBody(wsFirstMessage)
+			reqLog.Warn("openai.previous_response_chain_rebound",
+				zap.Int64("previous_account_id", scheduleDecision.PreviousAccountID),
+				zap.Int64("account_id", account.ID),
+				zap.String("reason", scheduleDecision.RebindReason),
+				zap.Bool("dropped_previous_response_id", true),
+			)
+		} else if previousResponseID != "" && !scheduleDecision.StickyPreviousHit && previousResponseReplayable {
 			wsFirstMessage = service.RemovePreviousResponseIDFromBody(wsFirstMessage)
 			reqLog.Debug("openai.websocket_previous_response_id_stripped_cross_group",
 				zap.Int64("account_id", account.ID),
 				zap.String("schedule_layer", scheduleDecision.Layer),
+			)
+		} else if previousResponseID != "" && !scheduleDecision.StickyPreviousHit && !previousResponseReplayable {
+			reqLog.Info("openai.websocket_previous_response_id_strip_skipped",
+				zap.Int64("account_id", account.ID),
+				zap.String("schedule_layer", scheduleDecision.Layer),
+				zap.String("reason", "not_replayable"),
+				zap.Bool("has_function_call_output", hasFunctionCallOutput),
 			)
 		}
 
@@ -1597,6 +1630,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if scheduleDecision.StickySessionRebind || scheduleDecision.PreviousRebind {
+					h.gatewayService.RecordOpenAIStickyFailbackFailure(ctx, account.ID, failoverErr.StatusCode)
+				}
 				releaseAccountSlot()
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr

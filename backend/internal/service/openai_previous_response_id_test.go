@@ -32,3 +32,31 @@ func TestIsOpenAIPreviousResponseIDLikelyMessageID(t *testing.T) {
 		t.Fatal("expected resp_123 not to be identified as message id")
 	}
 }
+
+func TestIsOpenAIResponseReplayableWithoutPreviousID(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "plain string input", body: `{"input":"hello"}`, want: true},
+		{name: "empty string input", body: `{"input":"  "}`, want: false},
+		{name: "input text item", body: `{"input":[{"type":"input_text","text":"hello"}]}`, want: true},
+		{name: "message string content", body: `{"input":[{"type":"message","role":"user","content":"hello"}]}`, want: true},
+		{name: "message content item", body: `{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`, want: true},
+		{name: "image input item", body: `{"input":[{"type":"input_image","image_url":"https://example.test/image.png"}]}`, want: true},
+		{name: "function call output", body: `{"input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`, want: false},
+		{name: "reasoning encrypted only", body: `{"input":[{"type":"reasoning","encrypted_content":"gAAA"}]}`, want: false},
+		{name: "unknown item", body: `{"input":[{"type":"custom","value":"hello"}]}`, want: false},
+		{name: "invalid json", body: `{`, want: false},
+		{name: "missing input", body: `{"model":"gpt-5.1"}`, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsOpenAIResponseReplayableWithoutPreviousID([]byte(tc.body)); got != tc.want {
+				t.Fatalf("IsOpenAIResponseReplayableWithoutPreviousID()=%v want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -218,7 +218,12 @@ type SystemSettings struct {
 	PaymentVisibleMethodWxpayEnabled  bool
 
 	// OpenAI 账号调度
-	OpenAIAdvancedSchedulerEnabled bool
+	OpenAIAdvancedSchedulerEnabled                       bool
+	OpenAIStickyPreferHigherPriorityEnabled              bool
+	OpenAIStickyPreferHigherPriorityMinIntervalSeconds   int
+	OpenAIStickyFailbackFailureCooldownSeconds           int
+	OpenAIPreviousResponseRebindEnabled                  bool
+	OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy bool
 
 	// 余额不足提醒
 	BalanceLowNotifyEnabled     bool
