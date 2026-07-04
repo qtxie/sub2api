@@ -70,7 +70,7 @@ func (s *bmUpdateRepoStub) Set(ctx context.Context, key, value string) error {
 }
 
 func (s *bmUpdateRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
-	panic("unexpected GetMultiple call")
+	return map[string]string{}, nil
 }
 
 func (s *bmUpdateRepoStub) SetMultiple(ctx context.Context, settings map[string]string) error {

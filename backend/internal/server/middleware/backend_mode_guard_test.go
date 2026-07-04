@@ -34,8 +34,14 @@ func (r *bmSettingRepo) Set(_ context.Context, _, _ string) error {
 	panic("unexpected Set call")
 }
 
-func (r *bmSettingRepo) GetMultiple(_ context.Context, _ []string) (map[string]string, error) {
-	panic("unexpected GetMultiple call")
+func (r *bmSettingRepo) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
+	result := make(map[string]string)
+	for _, key := range keys {
+		if value, ok := r.values[key]; ok {
+			result[key] = value
+		}
+	}
+	return result, nil
 }
 
 func (r *bmSettingRepo) SetMultiple(_ context.Context, settings map[string]string) error {
