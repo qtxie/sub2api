@@ -185,7 +185,7 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateUpstream(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
-	httpReq.Header.Set("Originator", "codex_cli_rs")
+	httpReq.Header.Set("Originator", codexCLIOriginator)
 	httpReq.Header.Set("User-Agent", codexCLIUserAgent)
 	httpReq.Header.Set("Version", codexCLIVersion)
 	if req.RequireCompact {

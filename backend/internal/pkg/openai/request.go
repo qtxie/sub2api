@@ -10,6 +10,7 @@ import (
 var CodexCLIUserAgentPrefixes = []string{
 	"codex_vscode/",
 	"codex_cli_rs/",
+	"codex-tui/",
 }
 
 // codexOfficialClientUAPrefixes：Codex 官方客户端家族 User-Agent 前缀（均含下划线/连字符，

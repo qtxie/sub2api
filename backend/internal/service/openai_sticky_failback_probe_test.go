@@ -72,8 +72,8 @@ func TestOpenAIStickyFailbackProbeUsesCodexResponsesPayloadShape(t *testing.T) {
 	if ua := upstream.req.Header.Get("User-Agent"); ua != codexCLIUserAgent {
 		t.Fatalf("User-Agent=%q want %q", ua, codexCLIUserAgent)
 	}
-	if originator := upstream.req.Header.Get("Originator"); originator != "codex_cli_rs" {
-		t.Fatalf("Originator=%q want codex_cli_rs", originator)
+	if originator := upstream.req.Header.Get("Originator"); originator != codexCLIOriginator {
+		t.Fatalf("Originator=%q want %q", originator, codexCLIOriginator)
 	}
 }
 

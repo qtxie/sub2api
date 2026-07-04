@@ -10,6 +10,7 @@ func TestIsCodexCLIRequest(t *testing.T) {
 	}{
 		{name: "codex_cli_rs 前缀", ua: "codex_cli_rs/0.1.0", want: true},
 		{name: "codex_vscode 前缀", ua: "codex_vscode/1.2.3", want: true},
+		{name: "codex-tui 前缀", ua: "codex-tui/0.142.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.142.5)", want: true},
 		{name: "大小写混合", ua: "Codex_CLI_Rs/0.1.0", want: true},
 		{name: "复合 UA 包含 codex", ua: "Mozilla/5.0 codex_cli_rs/0.1.0", want: true},
 		{name: "空白包裹", ua: "  codex_vscode/1.2.3  ", want: true},

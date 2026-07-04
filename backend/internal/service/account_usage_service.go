@@ -111,7 +111,7 @@ const (
 	apiQueryMaxJitter       = 800 * time.Millisecond // 用量查询最大随机延迟
 	windowStatsCacheTTL     = 1 * time.Minute
 	openAIProbeCacheTTL     = 10 * time.Minute
-	openAICodexProbeVersion = "0.125.0"
+	openAICodexProbeVersion = codexCLIVersion
 )
 
 // UsageCache 封装账户使用量相关的缓存
@@ -704,7 +704,7 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("Originator", codexCLIOriginator)
 	req.Header.Set("Version", openAICodexProbeVersion)
 	req.Header.Set("User-Agent", codexCLIUserAgent)
 	if s.identityCache != nil {

@@ -45,10 +45,10 @@ const (
 	openaiPlatformAPIURL            = "https://api.openai.com/v1/responses"
 	openaiPlatformAPIInputTokensURL = "https://api.openai.com/v1/responses/input_tokens"
 	openaiStickySessionTTL          = time.Hour // 粘性会话TTL
-	// 与真实 Codex CLI 的 User-Agent 结构对齐：
+	// 与真实 Codex TUI 的 User-Agent 结构对齐：
 	// {originator}/{version} ({OS} {OS_version}; {arch}) {terminal}
-	// 旧值 "codex_cli_rs/0.125.0" 缺少 OS/架构/终端后缀，易被上游指纹识别为非官方客户端。
-	codexCLIUserAgent = "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color"
+	codexCLIOriginator = "codex-tui"
+	codexCLIUserAgent  = "codex-tui/0.142.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.142.5)"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 
@@ -62,7 +62,7 @@ const (
 	openAIWSRetryBackoffMaxDefault     = 2 * time.Second
 	openAIWSRetryJitterRatioDefault    = 0.2
 	openAICompactSessionSeedKey        = "openai_compact_session_seed"
-	codexCLIVersion                    = "0.125.0"
+	codexCLIVersion                    = "0.142.5"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
 	// 配额自动暂停时，超过该时长仍未刷新的 used% 快照视为陈旧，不再据此暂停账号。
@@ -1343,7 +1343,7 @@ func resolveOpenAIUpstreamOriginator(c *gin.Context, isOfficialClient bool) stri
 		}
 	}
 	if isOfficialClient {
-		return "codex_cli_rs"
+		return codexCLIOriginator
 	}
 	return "opencode"
 }
@@ -3873,7 +3873,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			req.Header.Set("OpenAI-Beta", "responses=experimental")
 		}
 		if req.Header.Get("originator") == "" {
-			req.Header.Set("originator", "codex_cli_rs")
+			req.Header.Set("originator", codexCLIOriginator)
 		}
 		// 用隔离后的 session 标识符覆盖客户端透传值，防止跨用户会话碰撞。
 		if clientSessionID == "" {
