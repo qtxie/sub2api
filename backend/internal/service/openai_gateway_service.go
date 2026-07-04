@@ -364,6 +364,7 @@ type OpenAIGatewayService struct {
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
 	openaiSchedulerOnce           sync.Once
+	openaiAccountStatsOnce        sync.Once
 	openaiWSPassthroughDialerOnce sync.Once
 	openaiWSPool                  *openAIWSConnPool
 	openaiWSStateStore            OpenAIWSStateStore
@@ -1886,6 +1887,20 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
+	if snapshot, marked := s.isOpenAIAccountMarkedSlow(accountID, time.Now()); marked {
+		errorRate, ttft, _ := 0.0, 0.0, false
+		if s.openaiAccountStats != nil {
+			errorRate, ttft, _ = s.openaiAccountStats.snapshot(accountID)
+		}
+		slog.Info("openai.sticky_escape_triggered",
+			"account_id", accountID,
+			"reason", "slow_ttft",
+			"error_rate", errorRate,
+			"ttft", ttft,
+			"slow_until", snapshot.slowUntil,
+		)
+		return nil
+	}
 
 	// 刷新会话 TTL 并返回账号
 	// Refresh session TTL and return account
@@ -1902,6 +1917,11 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 // (only meaningful when requireCompact=true).
 func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *int64, platform string, accounts []Account, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability) (*Account, bool) {
 	platform = normalizeOpenAICompatiblePlatform(platform)
+	type bestCandidate struct {
+		account     *Account
+		compactTier int
+	}
+	candidates := make([]bestCandidate, 0, len(accounts))
 	var selected *Account
 	selectedCompactTier := -1
 	compactBlocked := false
@@ -1936,26 +1956,63 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			}
 		}
 
+		candidates = append(candidates, bestCandidate{
+			account:     fresh,
+			compactTier: compactTier,
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, compactBlocked
+	}
+	filterInput := make([]*Account, 0, len(candidates))
+	for _, candidate := range candidates {
+		filterInput = append(filterInput, candidate.account)
+	}
+	filteredAccounts := s.filterCircuitOpenOpenAIAccountsIfAlternativesExist(OpenAIAccountScheduleRequest{
+		GroupID:            groupID,
+		Platform:           platform,
+		RequestedModel:     requestedModel,
+		RequiredCapability: requiredCapability,
+		RequireCompact:     requireCompact,
+		ExcludedIDs:        excludedIDs,
+	}, filterInput, time.Now())
+	allowed := make(map[int64]struct{}, len(filteredAccounts))
+	for _, account := range filteredAccounts {
+		if account != nil {
+			allowed[account.ID] = struct{}{}
+		}
+	}
+
+	for _, candidate := range candidates {
+		fresh := candidate.account
+		if fresh == nil {
+			continue
+		}
+		if _, ok := allowed[fresh.ID]; !ok {
+			continue
+		}
+
 		// 选择优先级最高且最久未使用的账号
 		// Select highest priority and least recently used
 		if selected == nil {
 			selected = fresh
-			selectedCompactTier = compactTier
+			selectedCompactTier = candidate.compactTier
 			continue
 		}
 
 		// compact 模式下高 tier 优先；同 tier 内才比较 priority/LRU。
-		if requireCompact && compactTier != selectedCompactTier {
-			if compactTier > selectedCompactTier {
+		if requireCompact && candidate.compactTier != selectedCompactTier {
+			if candidate.compactTier > selectedCompactTier {
 				selected = fresh
-				selectedCompactTier = compactTier
+				selectedCompactTier = candidate.compactTier
 			}
 			continue
 		}
 
 		if s.isBetterAccount(fresh, selected) {
 			selected = fresh
-			selectedCompactTier = compactTier
+			selectedCompactTier = candidate.compactTier
 		}
 	}
 
@@ -2126,24 +2183,38 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 								ExcludedIDs:             excludedIDs,
 							}, "session_hash", account.ID, 0, "attempt_interval")
 						}
-						result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
-						if err == nil && result != nil && result.Acquired {
-							selection, selectErr := s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
-							if selectErr != nil {
-								return nil, selectErr
+						if snapshot, marked := s.isOpenAIAccountMarkedSlow(accountID, time.Now()); marked {
+							errorRate, ttft, _ := 0.0, 0.0, false
+							if s.openaiAccountStats != nil {
+								errorRate, ttft, _ = s.openaiAccountStats.snapshot(accountID)
 							}
-							_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIWSSessionStickyTTL())
-							return selection, nil
-						}
+							slog.Info("openai.sticky_escape_triggered",
+								"account_id", accountID,
+								"reason", "slow_ttft",
+								"error_rate", errorRate,
+								"ttft", ttft,
+								"slow_until", snapshot.slowUntil,
+							)
+						} else {
+							result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
+							if err == nil && result != nil && result.Acquired {
+								selection, selectErr := s.newAcquiredSelectionResult(ctx, account, result.ReleaseFunc)
+								if selectErr != nil {
+									return nil, selectErr
+								}
+								_ = s.refreshStickySessionTTL(ctx, groupID, sessionHash, s.openAIWSSessionStickyTTL())
+								return selection, nil
+							}
 
-						waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-						if waitingCount < cfg.StickySessionMaxWaiting {
-							return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
-								AccountID:      accountID,
-								MaxConcurrency: account.Concurrency,
-								Timeout:        cfg.StickySessionWaitTimeout,
-								MaxWaiting:     cfg.StickySessionMaxWaiting,
-							})
+							waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
+							if waitingCount < cfg.StickySessionMaxWaiting {
+								return s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
+									AccountID:      accountID,
+									MaxConcurrency: account.Concurrency,
+									Timeout:        cfg.StickySessionWaitTimeout,
+									MaxWaiting:     cfg.StickySessionMaxWaiting,
+								})
+							}
 						}
 					}
 				}
@@ -2195,6 +2266,17 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if len(candidates) == 0 {
 		return nil, ErrNoAvailableAccounts
 	}
+	candidates = s.filterCircuitOpenOpenAIAccountsIfAlternativesExist(OpenAIAccountScheduleRequest{
+		GroupID:                 groupID,
+		Platform:                platform,
+		SessionHash:             sessionHash,
+		RequestedModel:          requestedModel,
+		RequiredTransport:       requiredTransport,
+		RequiredCapability:      requiredCapability,
+		RequiredImageCapability: requiredImageCapability,
+		RequireCompact:          requireCompact,
+		ExcludedIDs:             excludedIDs,
+	}, candidates, time.Now())
 
 	accountLoads := make([]AccountWithConcurrency, 0, len(candidates))
 	for _, acc := range candidates {

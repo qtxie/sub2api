@@ -989,6 +989,122 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseRebindS
 	require.False(t, decision.DropPreviousID)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseSlowReplayableRebinds(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10118)
+	accounts := []Account{
+		{ID: 37501, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{
+			ID:          37502,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+	}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		openaiAccountStats: newOpenAIAccountRuntimeStats(),
+	}
+	slow := 31000
+	svc.openaiAccountStats.report(37502, true, &slow, svc.openAISlowAccountConfig())
+	svc.openaiAccountStats.report(37502, true, &slow, svc.openAISlowAccountConfig())
+	svc.openaiAccountStats.report(37502, true, &slow, svc.openAISlowAccountConfig())
+	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, groupID, "resp_rebind_slow", 37502, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityWithOptions(
+		ctx,
+		&groupID,
+		"resp_rebind_slow",
+		"session_hash_prev_slow",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+		OpenAIAccountScheduleOptions{PreviousResponseReplayable: true},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37501), selection.Account.ID)
+	require.True(t, decision.PreviousRebind)
+	require.True(t, decision.DropPreviousID)
+	require.Equal(t, int64(37502), decision.PreviousAccountID)
+	require.Equal(t, "slow_ttft", decision.RebindReason)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseSlowRebindDisabledPreservesChain(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10121)
+	accounts := []Account{
+		{ID: 37801, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{
+			ID:          37802,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+			Extra: map[string]any{
+				"openai_apikey_responses_websockets_v2_enabled": true,
+			},
+		},
+	}
+	cfg := newSchedulerTestOpenAIWSV2Config()
+	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		openaiAccountStats: newOpenAIAccountRuntimeStats(),
+	}
+	slow := 31000
+	svc.openaiAccountStats.report(37802, true, &slow, svc.openAISlowAccountConfig())
+	svc.openaiAccountStats.report(37802, true, &slow, svc.openAISlowAccountConfig())
+	svc.openaiAccountStats.report(37802, true, &slow, svc.openAISlowAccountConfig())
+	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, groupID, "resp_rebind_slow_disabled", 37802, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapabilityWithOptions(
+		ctx,
+		&groupID,
+		"resp_rebind_slow_disabled",
+		"session_hash_prev_slow_disabled",
+		"gpt-5.1",
+		nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false,
+		OpenAIAccountScheduleOptions{PreviousResponseReplayable: true},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(37802), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerPreviousResponse, decision.Layer)
+	require.True(t, decision.StickyPreviousHit)
+	require.False(t, decision.PreviousRebind)
+	require.False(t, decision.DropPreviousID)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseRebindSkipsNonReplayableInput(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
@@ -2483,6 +2599,76 @@ func TestOpenAIAccountRuntimeStats_ReportAndSnapshot(t *testing.T) {
 	require.Equal(t, 1, stats.size())
 }
 
+func TestOpenAIAccountRuntimeStats_SlowMarkAndRecover(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	cfg := openAISlowAccountConfig{
+		enabled:           true,
+		thresholdMs:       30000,
+		softThresholdMs:   15000,
+		recoveryTTFTMs:    10000,
+		consecutiveCount:  2,
+		minSamples:        2,
+		cooldown:          time.Minute,
+		recoveryFastCount: 2,
+		markScore:         5,
+		skipScore:         8,
+		maxScore:          10,
+		decayInterval:     time.Minute,
+	}
+	accountID := int64(1002)
+
+	slow := 31000
+	first := stats.report(accountID, true, &slow, cfg)
+	require.False(t, first.markedSlow)
+	require.Equal(t, int64(3), first.slowScore)
+	require.False(t, stats.slowSnapshot(accountID, time.Now()).marked)
+
+	second := stats.report(accountID, true, &slow, cfg)
+	require.True(t, second.markedSlow)
+	require.Equal(t, int64(6), second.slowScore)
+	require.True(t, stats.slowSnapshot(accountID, time.Now()).marked)
+
+	fast := 9000
+	recovering := stats.report(accountID, true, &fast, cfg)
+	require.False(t, recovering.recoveredSlow)
+	require.True(t, stats.slowSnapshot(accountID, time.Now()).marked)
+
+	recovered := stats.report(accountID, true, &fast, cfg)
+	require.True(t, recovered.recoveredSlow)
+	require.Equal(t, int64(4), recovered.slowScore)
+	require.False(t, stats.slowSnapshot(accountID, time.Now()).marked)
+}
+
+func TestOpenAIAccountRuntimeStats_SlowScoreSoftSampleAndDecayAvoidTemporarySwitch(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	cfg := openAISlowAccountConfig{
+		enabled:           true,
+		thresholdMs:       30000,
+		softThresholdMs:   15000,
+		recoveryTTFTMs:    10000,
+		minSamples:        3,
+		cooldown:          time.Minute,
+		recoveryFastCount: 2,
+		markScore:         5,
+		skipScore:         8,
+		maxScore:          10,
+		decayInterval:     time.Millisecond,
+	}
+	accountID := int64(1003)
+	soft := 16000
+
+	report := stats.report(accountID, true, &soft, cfg)
+	require.False(t, report.markedSlow)
+	require.Equal(t, int64(1), report.slowScore)
+
+	time.Sleep(2 * time.Millisecond)
+	fast := 9000
+	report = stats.report(accountID, true, &fast, cfg)
+	require.False(t, report.markedSlow)
+	require.Equal(t, int64(0), report.slowScore)
+	require.False(t, stats.slowSnapshot(accountID, time.Now()).marked)
+}
+
 func TestOpenAIAccountRuntimeStats_ReportConcurrent(t *testing.T) {
 	stats := newOpenAIAccountRuntimeStats()
 
@@ -2515,6 +2701,82 @@ func TestOpenAIAccountRuntimeStats_ReportConcurrent(t *testing.T) {
 		require.True(t, hasTTFT)
 		require.Greater(t, ttft, 0.0)
 	}
+}
+
+func TestDefaultOpenAIAccountScheduler_FilterCircuitOpenCandidatesKeepsFallbackWhenAllSlow(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	cfg := openAISlowAccountConfig{
+		enabled:           true,
+		thresholdMs:       30000,
+		softThresholdMs:   15000,
+		recoveryTTFTMs:    10000,
+		consecutiveCount:  2,
+		minSamples:        2,
+		cooldown:          time.Minute,
+		recoveryFastCount: 2,
+		markScore:         5,
+		skipScore:         8,
+		maxScore:          10,
+		decayInterval:     time.Minute,
+	}
+	slow := 31000
+	stats.report(2001, true, &slow, cfg)
+	stats.report(2001, true, &slow, cfg)
+	stats.report(2001, true, &slow, cfg)
+
+	svc := &OpenAIGatewayService{
+		cfg:                &config.Config{},
+		openaiAccountStats: stats,
+	}
+	scheduler := &defaultOpenAIAccountScheduler{
+		service: svc,
+		stats:   stats,
+	}
+	req := OpenAIAccountScheduleRequest{
+		GroupID:        int64PtrForTest(1),
+		RequestedModel: "gpt-5.1",
+	}
+	candidates := []openAIAccountCandidateScore{
+		{account: &Account{ID: 2001, Priority: 0}, loadInfo: &AccountLoadInfo{AccountID: 2001}},
+		{account: &Account{ID: 2002, Priority: 1}, loadInfo: &AccountLoadInfo{AccountID: 2002}},
+	}
+
+	filtered := scheduler.filterCircuitOpenOpenAIAccountCandidatesIfAlternativesExist(req, candidates, time.Now())
+	require.Len(t, filtered, 1)
+	require.Equal(t, int64(2002), filtered[0].account.ID)
+
+	stats.report(2002, true, &slow, cfg)
+	stats.report(2002, true, &slow, cfg)
+	stats.report(2002, true, &slow, cfg)
+	allSlow := scheduler.filterCircuitOpenOpenAIAccountCandidatesIfAlternativesExist(req, candidates, time.Now())
+	require.Len(t, allSlow, 2)
+}
+
+func TestOpenAIAccountSlowPenaltyStages(t *testing.T) {
+	cfg := openAISlowAccountConfig{
+		enabled:       true,
+		penaltyWeight: 100,
+		markScore:     5,
+		skipScore:     8,
+		maxScore:      10,
+	}
+
+	require.InDelta(t, 15.0, openAIAccountSlowPenalty(openAIAccountSlowSnapshot{slowScore: 3}, cfg), 1e-9)
+	require.InDelta(t, 60.0, openAIAccountSlowPenalty(openAIAccountSlowSnapshot{marked: true, slowScore: 6}, cfg), 1e-9)
+	require.Equal(t, 0.0, openAIAccountSlowPenalty(openAIAccountSlowSnapshot{marked: false, slowScore: 6}, cfg))
+}
+
+func TestOpenAIGatewayService_ReportScheduleResultRecordsSlowStatsWhenAdvancedSchedulerDisabled(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	slow := 31000
+
+	svc.ReportOpenAIAccountScheduleResult(3001, true, &slow)
+	svc.ReportOpenAIAccountScheduleResult(3001, true, &slow)
+	svc.ReportOpenAIAccountScheduleResult(3001, true, &slow)
+
+	require.NotNil(t, svc.openaiAccountStats)
+	require.True(t, svc.openaiAccountStats.slowSnapshot(3001, time.Now()).marked)
 }
 
 func TestSelectTopKOpenAICandidates(t *testing.T) {

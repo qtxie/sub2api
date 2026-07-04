@@ -168,6 +168,53 @@ type openAIAccountRuntimeStats struct {
 type openAIAccountRuntimeStat struct {
 	errorRateEWMABits atomic.Uint64
 	ttftEWMABits      atomic.Uint64
+	slowStreak        atomic.Int64
+	fastStreak        atomic.Int64
+	slowScore         atomic.Int64
+	sampleCount       atomic.Int64
+	slowUntilUnixNano atomic.Int64
+	lastTTFTSampleAt  atomic.Int64
+	lastScoreUpdateAt atomic.Int64
+}
+
+type openAISlowAccountConfig struct {
+	enabled           bool
+	thresholdMs       int
+	softThresholdMs   int
+	recoveryTTFTMs    int
+	consecutiveCount  int
+	minSamples        int
+	cooldown          time.Duration
+	recoveryFastCount int
+	penaltyWeight     float64
+	markScore         int
+	skipScore         int
+	maxScore          int
+	decayInterval     time.Duration
+}
+
+type openAIAccountRuntimeReport struct {
+	errorRate     float64
+	ttft          float64
+	hasTTFT       bool
+	firstTokenMs  int
+	sampleCount   int64
+	slowStreak    int64
+	fastStreak    int64
+	slowScore     int64
+	slowUntil     time.Time
+	markedSlow    bool
+	recoveredSlow bool
+}
+
+type openAIAccountSlowSnapshot struct {
+	marked       bool
+	slowUntil    time.Time
+	sampleCount  int64
+	slowStreak   int64
+	fastStreak   int64
+	slowScore    int64
+	lastSampleAt time.Time
 }
 
 func newOpenAIAccountRuntimeStats() *openAIAccountRuntimeStats {
@@ -207,9 +254,9 @@ func updateEWMAAtomic(target *atomic.Uint64, sample float64, alpha float64) {
 	}
 }
 
-func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstTokenMs *int) {
+func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstTokenMs *int, slowCfgs ...openAISlowAccountConfig) openAIAccountRuntimeReport {
 	if s == nil || accountID <= 0 {
-		return
+		return openAIAccountRuntimeReport{}
 	}
 	const alpha = 0.2
 	stat := s.loadOrCreate(accountID)
@@ -220,8 +267,10 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 	}
 	updateEWMAAtomic(&stat.errorRateEWMABits, errorSample, alpha)
 
+	report := openAIAccountRuntimeReport{}
 	if firstTokenMs != nil && *firstTokenMs > 0 {
 		ttft := float64(*firstTokenMs)
+		report.firstTokenMs = *firstTokenMs
 		ttftBits := math.Float64bits(ttft)
 		for {
 			oldBits := stat.ttftEWMABits.Load()
@@ -236,6 +285,143 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 			if stat.ttftEWMABits.CompareAndSwap(oldBits, math.Float64bits(newValue)) {
 				break
 			}
+		}
+		if len(slowCfgs) > 0 {
+			report = s.updateSlowAccountState(stat, *firstTokenMs, slowCfgs[0])
+		}
+	}
+	report.errorRate, report.ttft, report.hasTTFT = s.snapshot(accountID)
+	if firstTokenMs != nil && *firstTokenMs > 0 {
+		report.firstTokenMs = *firstTokenMs
+	}
+	if report.sampleCount == 0 {
+		report.sampleCount = stat.sampleCount.Load()
+		report.slowStreak = stat.slowStreak.Load()
+		report.fastStreak = stat.fastStreak.Load()
+		if until := stat.slowUntilUnixNano.Load(); until > 0 {
+			report.slowUntil = time.Unix(0, until)
+		}
+	}
+	return report
+}
+
+func (s *openAIAccountRuntimeStats) updateSlowAccountState(stat *openAIAccountRuntimeStat, firstTokenMs int, cfg openAISlowAccountConfig) openAIAccountRuntimeReport {
+	if stat == nil || !cfg.enabled || firstTokenMs <= 0 {
+		return openAIAccountRuntimeReport{}
+	}
+	cfg = normalizeOpenAISlowAccountConfig(cfg)
+	now := time.Now()
+	nowNano := now.UnixNano()
+	sampleCount := stat.sampleCount.Add(1)
+	stat.lastTTFTSampleAt.Store(nowNano)
+	score := decayOpenAIAccountSlowScore(stat, now, cfg)
+
+	report := openAIAccountRuntimeReport{
+		firstTokenMs: firstTokenMs,
+		sampleCount:  sampleCount,
+	}
+	switch {
+	case firstTokenMs > cfg.thresholdMs:
+		report.slowStreak = stat.slowStreak.Add(1)
+		stat.fastStreak.Store(0)
+		report.fastStreak = 0
+		score = addOpenAIAccountSlowScore(stat, 3, cfg)
+	case firstTokenMs > cfg.softThresholdMs:
+		stat.slowStreak.Store(0)
+		stat.fastStreak.Store(0)
+		report.slowStreak = 0
+		report.fastStreak = 0
+		score = addOpenAIAccountSlowScore(stat, 1, cfg)
+	case firstTokenMs <= cfg.recoveryTTFTMs:
+		report.fastStreak = stat.fastStreak.Add(1)
+		stat.slowStreak.Store(0)
+		report.slowStreak = 0
+		score = addOpenAIAccountSlowScore(stat, -1, cfg)
+	default:
+		stat.slowStreak.Store(0)
+		stat.fastStreak.Store(0)
+		report.slowStreak = 0
+		report.fastStreak = 0
+	}
+
+	report.slowScore = score
+	if sampleCount >= int64(cfg.minSamples) && score >= int64(cfg.markScore) {
+		until := now.Add(cfg.cooldown)
+		oldUntilNano := stat.slowUntilUnixNano.Swap(until.UnixNano())
+		report.slowUntil = until
+		report.markedSlow = oldUntilNano <= nowNano
+	}
+	if score < int64(cfg.markScore) && report.fastStreak >= int64(cfg.recoveryFastCount) {
+		oldUntilNano := stat.slowUntilUnixNano.Load()
+		if oldUntilNano > 0 {
+			if oldUntilNano <= nowNano || stat.slowUntilUnixNano.CompareAndSwap(oldUntilNano, 0) {
+				report.recoveredSlow = true
+			}
+		}
+	}
+	if untilNano := stat.slowUntilUnixNano.Load(); untilNano > 0 {
+		report.slowUntil = time.Unix(0, untilNano)
+	}
+	if report.slowStreak == 0 {
+		report.slowStreak = stat.slowStreak.Load()
+	}
+	if report.fastStreak == 0 {
+		report.fastStreak = stat.fastStreak.Load()
+	}
+	if report.slowScore == 0 {
+		report.slowScore = stat.slowScore.Load()
+	}
+	return report
+}
+
+func decayOpenAIAccountSlowScore(stat *openAIAccountRuntimeStat, now time.Time, cfg openAISlowAccountConfig) int64 {
+	if stat == nil || cfg.decayInterval <= 0 {
+		return 0
+	}
+	nowNano := now.UnixNano()
+	for {
+		lastNano := stat.lastScoreUpdateAt.Load()
+		if lastNano <= 0 {
+			if stat.lastScoreUpdateAt.CompareAndSwap(lastNano, nowNano) {
+				return stat.slowScore.Load()
+			}
+			continue
+		}
+		elapsed := time.Duration(nowNano - lastNano)
+		if elapsed < cfg.decayInterval {
+			return stat.slowScore.Load()
+		}
+		decay := int64(elapsed / cfg.decayInterval)
+		if decay <= 0 {
+			return stat.slowScore.Load()
+		}
+		newLast := lastNano + int64(time.Duration(decay)*cfg.decayInterval)
+		if !stat.lastScoreUpdateAt.CompareAndSwap(lastNano, newLast) {
+			continue
+		}
+		return addOpenAIAccountSlowScore(stat, -decay, cfg)
+	}
+}
+
+func addOpenAIAccountSlowScore(stat *openAIAccountRuntimeStat, delta int64, cfg openAISlowAccountConfig) int64 {
+	if stat == nil {
+		return 0
+	}
+	maxScore := int64(cfg.maxScore)
+	if maxScore <= 0 {
+		maxScore = 10
+	}
+	for {
+		oldScore := stat.slowScore.Load()
+		newScore := oldScore + delta
+		if newScore < 0 {
+			newScore = 0
+		}
+		if newScore > maxScore {
+			newScore = maxScore
+		}
+		if stat.slowScore.CompareAndSwap(oldScore, newScore) {
+			return newScore
 		}
 	}
 }
@@ -258,6 +444,80 @@ func (s *openAIAccountRuntimeStats) snapshot(accountID int64) (errorRate float64
 		return errorRate, 0, false
 	}
 	return errorRate, ttftValue, true
+}
+
+func (s *openAIAccountRuntimeStats) slowSnapshot(accountID int64, now time.Time) openAIAccountSlowSnapshot {
+	if s == nil || accountID <= 0 {
+		return openAIAccountSlowSnapshot{}
+	}
+	value, ok := s.accounts.Load(accountID)
+	if !ok {
+		return openAIAccountSlowSnapshot{}
+	}
+	stat, _ := value.(*openAIAccountRuntimeStat)
+	if stat == nil {
+		return openAIAccountSlowSnapshot{}
+	}
+	snapshot := openAIAccountSlowSnapshot{
+		sampleCount: stat.sampleCount.Load(),
+		slowStreak:  stat.slowStreak.Load(),
+		fastStreak:  stat.fastStreak.Load(),
+		slowScore:   stat.slowScore.Load(),
+	}
+	if last := stat.lastTTFTSampleAt.Load(); last > 0 {
+		snapshot.lastSampleAt = time.Unix(0, last)
+	}
+	if until := stat.slowUntilUnixNano.Load(); until > 0 {
+		snapshot.slowUntil = time.Unix(0, until)
+		snapshot.marked = now.Before(snapshot.slowUntil)
+	}
+	return snapshot
+}
+
+func normalizeOpenAISlowAccountConfig(cfg openAISlowAccountConfig) openAISlowAccountConfig {
+	if cfg.thresholdMs <= 0 {
+		cfg.thresholdMs = 30000
+	}
+	if cfg.softThresholdMs <= 0 || cfg.softThresholdMs >= cfg.thresholdMs {
+		cfg.softThresholdMs = 15000
+	}
+	if cfg.recoveryTTFTMs <= 0 {
+		cfg.recoveryTTFTMs = 10000
+	}
+	if cfg.recoveryTTFTMs >= cfg.softThresholdMs {
+		cfg.recoveryTTFTMs = cfg.softThresholdMs / 2
+		if cfg.recoveryTTFTMs <= 0 {
+			cfg.recoveryTTFTMs = 10000
+		}
+	}
+	if cfg.consecutiveCount <= 0 {
+		cfg.consecutiveCount = 2
+	}
+	if cfg.minSamples <= 0 {
+		cfg.minSamples = 3
+	}
+	if cfg.cooldown < 0 {
+		cfg.cooldown = 0
+	}
+	if cfg.recoveryFastCount <= 0 {
+		cfg.recoveryFastCount = 2
+	}
+	if cfg.penaltyWeight < 0 {
+		cfg.penaltyWeight = 0
+	}
+	if cfg.markScore <= 0 {
+		cfg.markScore = 5
+	}
+	if cfg.skipScore < cfg.markScore {
+		cfg.skipScore = 8
+	}
+	if cfg.maxScore < cfg.skipScore {
+		cfg.maxScore = 10
+	}
+	if cfg.decayInterval <= 0 {
+		cfg.decayInterval = time.Minute
+	}
+	return cfg
 }
 
 func (s *openAIAccountRuntimeStats) size() int {
@@ -307,6 +567,8 @@ func (s *defaultOpenAIAccountScheduler) Select(
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
 	start := time.Now()
+	slowPreviousAccountID := int64(0)
+	slowPreviousReason := ""
 	defer func() {
 		decision.LatencyMs = time.Since(start).Milliseconds()
 		s.metrics.recordSelect(decision)
@@ -335,6 +597,37 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			}
 		}
 		if selection != nil && selection.Account != nil {
+			failbackCfg := s.service.openAIStickyPreferHigherPriorityConfig(ctx)
+			if snapshot, marked := s.service.isOpenAIAccountMarkedSlow(selection.Account.ID, time.Now()); marked {
+				if failbackCfg.previousResponseEnabled && !req.HasFunctionCallOutput && req.PreviousResponseReplayable {
+					errorRate, ttft, _ := s.stats.snapshot(selection.Account.ID)
+					slog.Info("openai.sticky_escape_triggered",
+						"account_id", selection.Account.ID,
+						"reason", "slow_ttft",
+						"binding", "previous_response_id",
+						"error_rate", errorRate,
+						"ttft", ttft,
+						"slow_until", snapshot.slowUntil,
+					)
+					slowPreviousAccountID = selection.Account.ID
+					slowPreviousReason = "slow_ttft"
+					if selection.ReleaseFunc != nil {
+						selection.ReleaseFunc()
+					}
+				} else {
+					s.service.logOpenAIStickyFailbackSkipped(req, "previous_response_id", selection.Account.ID, 0, openAIStickyRebindSkipReason(req))
+					decision.Layer = openAIAccountScheduleLayerPreviousResponse
+					decision.StickyPreviousHit = true
+					decision.SelectedAccountID = selection.Account.ID
+					decision.SelectedAccountType = selection.Account.Type
+					if req.SessionHash != "" {
+						_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, selection.Account.ID)
+					}
+					return selection, decision, nil
+				}
+			}
+		}
+		if selection != nil && selection.Account != nil && slowPreviousAccountID == 0 {
 			failbackCfg := s.service.openAIStickyPreferHigherPriorityConfig(ctx)
 			if failbackCfg.previousResponseEnabled &&
 				!failbackCfg.previousResponseOnlyWhenUnhealthy &&
@@ -391,6 +684,12 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		decision.RebindReason = rebindReason
 		decision.SelectedAccountID = selection.Account.ID
 		decision.SelectedAccountType = selection.Account.Type
+		if slowPreviousAccountID > 0 && selection.Account.ID != slowPreviousAccountID {
+			decision.PreviousRebind = true
+			decision.DropPreviousID = true
+			decision.PreviousAccountID = slowPreviousAccountID
+			decision.RebindReason = slowPreviousReason
+		}
 		return selection, decision, nil
 	}
 	if escapedSticky {
@@ -407,7 +706,12 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	}
 	if selection != nil && selection.Account != nil {
 		failbackCfg := s.service.openAIStickyPreferHigherPriorityConfig(ctx)
-		if previousResponseID != "" &&
+		if slowPreviousAccountID > 0 && selection.Account.ID != slowPreviousAccountID {
+			decision.PreviousRebind = true
+			decision.DropPreviousID = true
+			decision.PreviousAccountID = slowPreviousAccountID
+			decision.RebindReason = slowPreviousReason
+		} else if previousResponseID != "" &&
 			failbackCfg.previousResponseEnabled &&
 			failbackCfg.previousResponseOnlyWhenUnhealthy &&
 			req.PreviousResponseReplayable {
@@ -491,12 +795,16 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	}
 	escapeCfg := s.service.openAIStickyEscapeConfig()
 	if reason, errorRate, ttft, shouldEscape := s.shouldEscapeStickyAccount(accountID, escapeCfg); shouldEscape {
-		slog.Info("sticky_escape_triggered",
+		attrs := []any{
 			"account_id", accountID,
 			"reason", reason,
 			"error_rate", errorRate,
 			"ttft", ttft,
-		)
+		}
+		if snapshot, marked := s.service.isOpenAIAccountMarkedSlow(accountID, time.Now()); marked {
+			attrs = append(attrs, "slow_until", snapshot.slowUntil)
+		}
+		slog.Info("openai.sticky_escape_triggered", attrs...)
 		return nil, true, false, 0, "", nil
 	}
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
@@ -514,7 +822,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if s.service.concurrencyService != nil {
 		if escapeCfg.enabled && acquireErr == nil && result != nil && !result.Acquired {
 			errorRate, ttft, _ := s.stats.snapshot(accountID)
-			slog.Info("sticky_escape_triggered",
+			slog.Info("openai.sticky_escape_triggered",
 				"account_id", accountID,
 				"reason", "concurrency_full",
 				"error_rate", errorRate,
@@ -560,6 +868,12 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 		return "", 0, 0, false
 	}
 	errorRate, ttft, hasTTFT := s.stats.snapshot(accountID)
+	if s.service != nil {
+		slowCfg := s.service.openAISlowAccountConfig()
+		if slowCfg.enabled && s.stats.slowSnapshot(accountID, time.Now()).marked {
+			return "slow_ttft", errorRate, ttft, true
+		}
+	}
 	if hasTTFT && ttft > cfg.ttftMs {
 		return "ttft", errorRate, ttft, true
 	}
@@ -569,6 +883,138 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 	return "", errorRate, ttft, false
 }
 
+func (s *OpenAIGatewayService) isOpenAIAccountMarkedSlow(accountID int64, now time.Time) (openAIAccountSlowSnapshot, bool) {
+	if s == nil || accountID <= 0 || s.openaiAccountStats == nil {
+		return openAIAccountSlowSnapshot{}, false
+	}
+	cfg := s.openAISlowAccountConfig()
+	if !cfg.enabled {
+		return openAIAccountSlowSnapshot{}, false
+	}
+	snapshot := s.openaiAccountStats.slowSnapshot(accountID, now)
+	return snapshot, snapshot.marked && snapshot.slowScore >= int64(cfg.markScore)
+}
+
+func openAIAccountSlowSkip(snapshot openAIAccountSlowSnapshot, cfg openAISlowAccountConfig) bool {
+	return cfg.enabled && snapshot.marked && snapshot.slowScore >= int64(cfg.skipScore)
+}
+
+func openAIAccountSlowPenalty(snapshot openAIAccountSlowSnapshot, cfg openAISlowAccountConfig) float64 {
+	if !cfg.enabled || cfg.penaltyWeight <= 0 || snapshot.slowScore <= 0 {
+		return 0
+	}
+	if snapshot.slowScore >= int64(cfg.markScore) && !snapshot.marked {
+		return 0
+	}
+	if snapshot.slowScore < int64(cfg.markScore) {
+		return cfg.penaltyWeight * 0.25 * float64(snapshot.slowScore) / float64(cfg.markScore)
+	}
+	return cfg.penaltyWeight * float64(snapshot.slowScore) / float64(cfg.maxScore)
+}
+
+func (s *OpenAIGatewayService) logOpenAISlowAccountSkipped(req OpenAIAccountScheduleRequest, accountID int64, selectedAlternativeID int64, snapshot openAIAccountSlowSnapshot) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	slog.Info("openai.slow_account_skipped",
+		"account_id", accountID,
+		"selected_alternative_account_id", selectedAlternativeID,
+		"group_id", derefGroupID(req.GroupID),
+		"model", req.RequestedModel,
+		"slow_until", snapshot.slowUntil,
+		"slow_streak", snapshot.slowStreak,
+		"slow_score", snapshot.slowScore,
+		"sample_count", snapshot.sampleCount,
+	)
+}
+
+func (s *defaultOpenAIAccountScheduler) filterCircuitOpenOpenAIAccountCandidatesIfAlternativesExist(
+	req OpenAIAccountScheduleRequest,
+	candidates []openAIAccountCandidateScore,
+	now time.Time,
+) []openAIAccountCandidateScore {
+	if s == nil || s.service == nil || len(candidates) <= 1 {
+		return candidates
+	}
+	cfg := s.service.openAISlowAccountConfig()
+	if !cfg.enabled || s.stats == nil {
+		return candidates
+	}
+	nonSlow := make([]openAIAccountCandidateScore, 0, len(candidates))
+	type slowCandidate struct {
+		candidate openAIAccountCandidateScore
+		snapshot  openAIAccountSlowSnapshot
+	}
+	slow := make([]slowCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.account == nil {
+			continue
+		}
+		snapshot := s.stats.slowSnapshot(candidate.account.ID, now)
+		if openAIAccountSlowSkip(snapshot, cfg) {
+			candidate.slow = true
+			candidate.slowUntil = snapshot.slowUntil
+			candidate.slowScore = snapshot.slowScore
+			slow = append(slow, slowCandidate{candidate: candidate, snapshot: snapshot})
+			continue
+		}
+		nonSlow = append(nonSlow, candidate)
+	}
+	if len(nonSlow) == 0 || len(slow) == 0 {
+		return candidates
+	}
+	selectedAlternativeID := int64(0)
+	if nonSlow[0].account != nil {
+		selectedAlternativeID = nonSlow[0].account.ID
+	}
+	for _, item := range slow {
+		s.service.logOpenAISlowAccountSkipped(req, item.candidate.account.ID, selectedAlternativeID, item.snapshot)
+	}
+	return nonSlow
+}
+
+func (s *OpenAIGatewayService) filterCircuitOpenOpenAIAccountsIfAlternativesExist(
+	req OpenAIAccountScheduleRequest,
+	accounts []*Account,
+	now time.Time,
+) []*Account {
+	if s == nil || len(accounts) <= 1 {
+		return accounts
+	}
+	cfg := s.openAISlowAccountConfig()
+	if !cfg.enabled || s.openaiAccountStats == nil {
+		return accounts
+	}
+	nonSlow := make([]*Account, 0, len(accounts))
+	type slowAccount struct {
+		account  *Account
+		snapshot openAIAccountSlowSnapshot
+	}
+	slow := make([]slowAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		snapshot := s.openaiAccountStats.slowSnapshot(account.ID, now)
+		if openAIAccountSlowSkip(snapshot, cfg) {
+			slow = append(slow, slowAccount{account: account, snapshot: snapshot})
+			continue
+		}
+		nonSlow = append(nonSlow, account)
+	}
+	if len(nonSlow) == 0 || len(slow) == 0 {
+		return accounts
+	}
+	selectedAlternativeID := int64(0)
+	if nonSlow[0] != nil {
+		selectedAlternativeID = nonSlow[0].ID
+	}
+	for _, item := range slow {
+		s.logOpenAISlowAccountSkipped(req, item.account.ID, selectedAlternativeID, item.snapshot)
+	}
+	return nonSlow
+}
+
 type openAIAccountCandidateScore struct {
 	account   *Account
 	loadInfo  *AccountLoadInfo
@@ -576,6 +1022,9 @@ type openAIAccountCandidateScore struct {
 	errorRate float64
 	ttft      float64
 	hasTTFT   bool
+	slow      bool
+	slowUntil time.Time
+	slowScore int64
 }
 
 type openAIAccountCandidateHeap []openAIAccountCandidateScore
@@ -776,14 +1225,17 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	loadMap map[int64]*AccountLoadInfo,
 ) openAIAccountLoadPlan {
 	allCandidates := make([]openAIAccountCandidateScore, 0, len(filtered))
+	now := time.Now()
 	for _, account := range filtered {
 		loadInfo := loadMap[account.ID]
 		if loadInfo == nil {
 			loadInfo = &AccountLoadInfo{AccountID: account.ID}
 		}
 		errorRate, ttft, hasTTFT := 0.0, 0.0, false
+		slowSnapshot := openAIAccountSlowSnapshot{}
 		if s.stats != nil {
 			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
+			slowSnapshot = s.stats.slowSnapshot(account.ID, now)
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
 			account:   account,
@@ -791,6 +1243,9 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			errorRate: errorRate,
 			ttft:      ttft,
 			hasTTFT:   hasTTFT,
+			slow:      slowSnapshot.marked,
+			slowUntil: slowSnapshot.slowUntil,
+			slowScore: slowSnapshot.slowScore,
 		})
 	}
 
@@ -806,6 +1261,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			candidates = append(candidates, candidate)
 		}
 	}
+	candidates = s.filterCircuitOpenOpenAIAccountCandidatesIfAlternativesExist(req, candidates, now)
 
 	plan := openAIAccountLoadPlan{
 		allCandidates:             allCandidates,
@@ -882,7 +1338,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		}
 	}
 
-	now := time.Now()
+	now = time.Now()
 	for i := range candidates {
 		item := &candidates[i]
 		priorityFactor := 1.0
@@ -911,6 +1367,14 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		if weights.QuotaHeadroom > 0 {
 			quotaHeadroomFactor = openAIQuotaHeadroomFactor(item.account, now)
 		}
+		slowPenalty := 0.0
+		if s.stats != nil {
+			snapshot := s.stats.slowSnapshot(item.account.ID, now)
+			slowPenalty = openAIAccountSlowPenalty(snapshot, s.service.openAISlowAccountConfig())
+			item.slowScore = snapshot.slowScore
+			item.slow = snapshot.marked
+			item.slowUntil = snapshot.slowUntil
+		}
 
 		item.score = weights.Priority*priorityFactor +
 			weights.Load*loadFactor +
@@ -918,7 +1382,8 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			weights.ErrorRate*errorFactor +
 			weights.TTFT*ttftFactor +
 			weights.Reset*resetFactor +
-			weights.QuotaHeadroom*quotaHeadroomFactor
+			weights.QuotaHeadroom*quotaHeadroomFactor -
+			slowPenalty
 	}
 	plan.candidates = candidates
 
@@ -1235,6 +1700,12 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 		if s.isOpenAIAccountRuntimeBlocked(account) {
 			continue
 		}
+		if snapshot, marked := s.isOpenAIAccountMarkedSlow(account.ID, time.Now()); marked {
+			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, account.ID, "slow_ttft",
+				slog.Time("slow_until", snapshot.slowUntil),
+			)
+			continue
+		}
 		if needsUpstreamCheck && req.GroupID != nil &&
 			s.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
 			continue
@@ -1414,7 +1885,14 @@ func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bo
 	if s == nil || s.stats == nil {
 		return
 	}
-	s.stats.report(accountID, success, firstTokenMs)
+	cfg := openAISlowAccountConfig{}
+	if s.service != nil {
+		cfg = s.service.openAISlowAccountConfig()
+	}
+	report := s.stats.report(accountID, success, firstTokenMs, cfg)
+	if s.service != nil {
+		s.service.logOpenAIAccountSlowStateChange(accountID, report, cfg)
+	}
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportSwitch() {
@@ -1505,14 +1983,24 @@ func (s *OpenAIGatewayService) getOpenAIAccountScheduler(ctx context.Context) Op
 		return nil
 	}
 	s.openaiSchedulerOnce.Do(func() {
-		if s.openaiAccountStats == nil {
-			s.openaiAccountStats = newOpenAIAccountRuntimeStats()
-		}
+		stats := s.openAIAccountRuntimeStats()
 		if s.openaiScheduler == nil {
-			s.openaiScheduler = newDefaultOpenAIAccountScheduler(s, s.openaiAccountStats)
+			s.openaiScheduler = newDefaultOpenAIAccountScheduler(s, stats)
 		}
 	})
 	return s.openaiScheduler
+}
+
+func (s *OpenAIGatewayService) openAIAccountRuntimeStats() *openAIAccountRuntimeStats {
+	if s == nil {
+		return nil
+	}
+	s.openaiAccountStatsOnce.Do(func() {
+		if s.openaiAccountStats == nil {
+			s.openaiAccountStats = newOpenAIAccountRuntimeStats()
+		}
+	})
+	return s.openaiAccountStats
 }
 
 func resetOpenAIAdvancedSchedulerSettingCacheForTest() {
@@ -1747,10 +2235,16 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64, success bool, firstTokenMs *int) {
 	scheduler := s.getOpenAIAccountScheduler(context.Background())
-	if scheduler == nil {
+	if scheduler != nil {
+		scheduler.ReportResult(accountID, success, firstTokenMs)
 		return
 	}
-	scheduler.ReportResult(accountID, success, firstTokenMs)
+	stats := s.openAIAccountRuntimeStats()
+	if stats == nil {
+		return
+	}
+	report := stats.report(accountID, success, firstTokenMs, s.openAISlowAccountConfig())
+	s.logOpenAIAccountSlowStateChange(accountID, report, s.openAISlowAccountConfig())
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {
@@ -1811,6 +2305,114 @@ func (s *OpenAIGatewayService) openAIStickyEscapeConfig() openAIStickyEscapeConf
 		enabled:   true,
 		ttftMs:    15000,
 		errorRate: 0.5,
+	}
+}
+
+func (s *OpenAIGatewayService) openAISlowAccountConfig() openAISlowAccountConfig {
+	cfg := openAISlowAccountConfig{
+		enabled:           true,
+		thresholdMs:       30000,
+		softThresholdMs:   15000,
+		recoveryTTFTMs:    10000,
+		consecutiveCount:  2,
+		minSamples:        3,
+		cooldown:          5 * time.Minute,
+		recoveryFastCount: 2,
+		penaltyWeight:     100,
+		markScore:         5,
+		skipScore:         8,
+		maxScore:          10,
+		decayInterval:     time.Minute,
+	}
+	if s == nil || s.cfg == nil {
+		return cfg
+	}
+	raw := s.cfg.Gateway.OpenAIScheduler
+	if !raw.SlowAccountEscapeEnabled &&
+		raw.SlowTTFTThresholdMs == 0 &&
+		raw.SlowSoftTTFTThresholdMs == 0 &&
+		raw.SlowRecoveryTTFTMs == 0 &&
+		raw.SlowTTFTConsecutiveCount == 0 &&
+		raw.SlowMinSamples == 0 &&
+		raw.SlowCooldownSeconds == 0 &&
+		raw.SlowRecoveryFastCount == 0 &&
+		raw.SlowPenaltyWeight == 0 &&
+		raw.SlowScoreMarkThreshold == 0 &&
+		raw.SlowScoreSkipThreshold == 0 &&
+		raw.SlowScoreMax == 0 &&
+		raw.SlowScoreDecayIntervalSeconds == 0 {
+		return cfg
+	}
+	cfg.enabled = raw.SlowAccountEscapeEnabled
+	if raw.SlowTTFTThresholdMs > 0 {
+		cfg.thresholdMs = raw.SlowTTFTThresholdMs
+	}
+	if raw.SlowSoftTTFTThresholdMs > 0 {
+		cfg.softThresholdMs = raw.SlowSoftTTFTThresholdMs
+	}
+	if raw.SlowRecoveryTTFTMs > 0 {
+		cfg.recoveryTTFTMs = raw.SlowRecoveryTTFTMs
+	}
+	if raw.SlowTTFTConsecutiveCount > 0 {
+		cfg.consecutiveCount = raw.SlowTTFTConsecutiveCount
+	}
+	if raw.SlowMinSamples > 0 {
+		cfg.minSamples = raw.SlowMinSamples
+	}
+	if raw.SlowCooldownSeconds >= 0 {
+		cfg.cooldown = time.Duration(raw.SlowCooldownSeconds) * time.Second
+	}
+	if raw.SlowRecoveryFastCount > 0 {
+		cfg.recoveryFastCount = raw.SlowRecoveryFastCount
+	}
+	if raw.SlowPenaltyWeight >= 0 {
+		cfg.penaltyWeight = raw.SlowPenaltyWeight
+	}
+	if raw.SlowScoreMarkThreshold > 0 {
+		cfg.markScore = raw.SlowScoreMarkThreshold
+	}
+	if raw.SlowScoreSkipThreshold > 0 {
+		cfg.skipScore = raw.SlowScoreSkipThreshold
+	}
+	if raw.SlowScoreMax > 0 {
+		cfg.maxScore = raw.SlowScoreMax
+	}
+	if raw.SlowScoreDecayIntervalSeconds > 0 {
+		cfg.decayInterval = time.Duration(raw.SlowScoreDecayIntervalSeconds) * time.Second
+	}
+	return normalizeOpenAISlowAccountConfig(cfg)
+}
+
+func (s *OpenAIGatewayService) logOpenAIAccountSlowStateChange(accountID int64, report openAIAccountRuntimeReport, cfg openAISlowAccountConfig) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if report.markedSlow {
+		slog.Warn("openai.account_marked_slow",
+			"account_id", accountID,
+			"first_token_ms", report.firstTokenMs,
+			"ttft_ewma_ms", report.ttft,
+			"slow_streak", report.slowStreak,
+			"slow_score", report.slowScore,
+			"sample_count", report.sampleCount,
+			"slow_until", report.slowUntil,
+			"threshold_ms", cfg.thresholdMs,
+			"mark_score", cfg.markScore,
+			"skip_score", cfg.skipScore,
+			"cooldown_seconds", int(cfg.cooldown/time.Second),
+		)
+		return
+	}
+	if report.recoveredSlow {
+		slog.Info("openai.account_slow_recovered",
+			"account_id", accountID,
+			"first_token_ms", report.firstTokenMs,
+			"ttft_ewma_ms", report.ttft,
+			"fast_streak", report.fastStreak,
+			"slow_score", report.slowScore,
+			"sample_count", report.sampleCount,
+			"recovery_ttft_ms", cfg.recoveryTTFTMs,
+		)
 	}
 }
 

@@ -1014,6 +1014,32 @@ type GatewayOpenAISchedulerConfig struct {
 	PreviousResponseRebindEnabled bool `mapstructure:"previous_response_rebind_enabled"`
 	// PreviousResponseRebindOnlyWhenCurrentUnhealthy: true 时仅在原 previous_response_id 账号不可用时允许重绑；false 时健康账号也可被更高优先级账号抢回
 	PreviousResponseRebindOnlyWhenCurrentUnhealthy bool `mapstructure:"previous_response_rebind_only_when_current_unhealthy"`
+	// SlowAccountEscapeEnabled: 是否根据近期 TTFT 将慢账号临时从调度候选中降级/跳过
+	SlowAccountEscapeEnabled bool `mapstructure:"slow_account_escape_enabled"`
+	// SlowTTFTThresholdMs: 单次首 token 延迟超过该阈值计入慢请求
+	SlowTTFTThresholdMs int `mapstructure:"slow_ttft_threshold_ms"`
+	// SlowSoftTTFTThresholdMs: 单次首 token 延迟超过该阈值计入轻度慢请求
+	SlowSoftTTFTThresholdMs int `mapstructure:"slow_soft_ttft_threshold_ms"`
+	// SlowRecoveryTTFTMs: 单次首 token 延迟低于等于该阈值计入恢复样本
+	SlowRecoveryTTFTMs int `mapstructure:"slow_recovery_ttft_ms"`
+	// SlowTTFTConsecutiveCount: 连续慢请求达到该数量后临时跳过账号
+	SlowTTFTConsecutiveCount int `mapstructure:"slow_ttft_consecutive_count"`
+	// SlowMinSamples: 达到该样本数后才允许标记慢账号
+	SlowMinSamples int `mapstructure:"slow_min_samples"`
+	// SlowCooldownSeconds: 慢账号临时跳过时长
+	SlowCooldownSeconds int `mapstructure:"slow_cooldown_seconds"`
+	// SlowRecoveryFastCount: 慢账号在冷却期内连续快速样本达到该数量后提前恢复
+	SlowRecoveryFastCount int `mapstructure:"slow_recovery_fast_count"`
+	// SlowPenaltyWeight: 慢分对调度得分的惩罚权重
+	SlowPenaltyWeight float64 `mapstructure:"slow_penalty_weight"`
+	// SlowScoreMarkThreshold: 慢分达到该值后 sticky 可逃逸
+	SlowScoreMarkThreshold int `mapstructure:"slow_score_mark_threshold"`
+	// SlowScoreSkipThreshold: 慢分达到该值后有替代账号时跳过
+	SlowScoreSkipThreshold int `mapstructure:"slow_score_skip_threshold"`
+	// SlowScoreMax: 慢分上限
+	SlowScoreMax int `mapstructure:"slow_score_max"`
+	// SlowScoreDecayIntervalSeconds: 距离上次 TTFT 样本每经过该时间，慢分自动衰减 1 分
+	SlowScoreDecayIntervalSeconds int `mapstructure:"slow_score_decay_interval_seconds"`
 }
 
 // GatewayUsageRecordConfig 使用量记录异步队列配置
@@ -1457,6 +1483,9 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	}
 	if !cfg.Gateway.OpenAIScheduler.StickyEscapeEnabled && !viper.IsSet("gateway.openai_scheduler.sticky_escape_enabled") {
 		cfg.Gateway.OpenAIScheduler.StickyEscapeEnabled = true
+	}
+	if !cfg.Gateway.OpenAIScheduler.SlowAccountEscapeEnabled && !viper.IsSet("gateway.openai_scheduler.slow_account_escape_enabled") {
+		cfg.Gateway.OpenAIScheduler.SlowAccountEscapeEnabled = true
 	}
 
 	cfg.RunMode = NormalizeRunMode(cfg.RunMode)
@@ -1937,6 +1966,19 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.sticky_failback_probe_failure_ttl_seconds", 60)
 	viper.SetDefault("gateway.openai_scheduler.previous_response_rebind_enabled", false)
 	viper.SetDefault("gateway.openai_scheduler.previous_response_rebind_only_when_current_unhealthy", true)
+	viper.SetDefault("gateway.openai_scheduler.slow_account_escape_enabled", true)
+	viper.SetDefault("gateway.openai_scheduler.slow_ttft_threshold_ms", 30000)
+	viper.SetDefault("gateway.openai_scheduler.slow_soft_ttft_threshold_ms", 15000)
+	viper.SetDefault("gateway.openai_scheduler.slow_recovery_ttft_ms", 10000)
+	viper.SetDefault("gateway.openai_scheduler.slow_ttft_consecutive_count", 2)
+	viper.SetDefault("gateway.openai_scheduler.slow_min_samples", 3)
+	viper.SetDefault("gateway.openai_scheduler.slow_cooldown_seconds", 300)
+	viper.SetDefault("gateway.openai_scheduler.slow_recovery_fast_count", 2)
+	viper.SetDefault("gateway.openai_scheduler.slow_penalty_weight", 100.0)
+	viper.SetDefault("gateway.openai_scheduler.slow_score_mark_threshold", 5)
+	viper.SetDefault("gateway.openai_scheduler.slow_score_skip_threshold", 8)
+	viper.SetDefault("gateway.openai_scheduler.slow_score_max", 10)
+	viper.SetDefault("gateway.openai_scheduler.slow_score_decay_interval_seconds", 60)
 	viper.SetDefault("gateway.openai_switch_notify.min_interval_seconds", 60)
 	viper.SetDefault("gateway.openai_switch_notify.telegram.enabled", false)
 	viper.SetDefault("gateway.openai_switch_notify.telegram.bot_token", "")
@@ -2757,6 +2799,48 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIScheduler.StickyFailbackProbeFailureTTLSeconds < 0 {
 		return fmt.Errorf("gateway.openai_scheduler.sticky_failback_probe_failure_ttl_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIScheduler.SlowTTFTThresholdMs <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_ttft_threshold_ms must be positive")
+	}
+	if c.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_soft_ttft_threshold_ms must be positive")
+	}
+	if c.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs >= c.Gateway.OpenAIScheduler.SlowTTFTThresholdMs {
+		return fmt.Errorf("gateway.openai_scheduler.slow_soft_ttft_threshold_ms must be less than slow_ttft_threshold_ms")
+	}
+	if c.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_recovery_ttft_ms must be positive")
+	}
+	if c.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs >= c.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs {
+		return fmt.Errorf("gateway.openai_scheduler.slow_recovery_ttft_ms must be less than slow_soft_ttft_threshold_ms")
+	}
+	if c.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_ttft_consecutive_count must be positive")
+	}
+	if c.Gateway.OpenAIScheduler.SlowMinSamples <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_min_samples must be positive")
+	}
+	if c.Gateway.OpenAIScheduler.SlowCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIScheduler.SlowRecoveryFastCount <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_recovery_fast_count must be positive")
+	}
+	if c.Gateway.OpenAIScheduler.SlowPenaltyWeight < 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_penalty_weight must be non-negative")
+	}
+	if c.Gateway.OpenAIScheduler.SlowScoreMarkThreshold <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_score_mark_threshold must be positive")
+	}
+	if c.Gateway.OpenAIScheduler.SlowScoreSkipThreshold < c.Gateway.OpenAIScheduler.SlowScoreMarkThreshold {
+		return fmt.Errorf("gateway.openai_scheduler.slow_score_skip_threshold must be greater than or equal to slow_score_mark_threshold")
+	}
+	if c.Gateway.OpenAIScheduler.SlowScoreMax < c.Gateway.OpenAIScheduler.SlowScoreSkipThreshold {
+		return fmt.Errorf("gateway.openai_scheduler.slow_score_max must be greater than or equal to slow_score_skip_threshold")
+	}
+	if c.Gateway.OpenAIScheduler.SlowScoreDecayIntervalSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.slow_score_decay_interval_seconds must be positive")
 	}
 	if c.Gateway.OpenAISwitchNotify.MinIntervalSeconds < 0 {
 		return fmt.Errorf("gateway.openai_switch_notify.min_interval_seconds must be non-negative")

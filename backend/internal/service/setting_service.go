@@ -2385,7 +2385,20 @@ func openAISchedulerConfigLoaded(raw config.GatewayOpenAISchedulerConfig) bool {
 		raw.StickyFailbackProbeTimeoutSeconds != 0 ||
 		raw.StickyFailbackProbeSuccessTTLSeconds != 0 ||
 		raw.StickyFailbackProbeFailureTTLSeconds != 0 ||
-		raw.PreviousResponseRebindEnabled
+		raw.PreviousResponseRebindEnabled ||
+		raw.SlowAccountEscapeEnabled ||
+		raw.SlowTTFTThresholdMs != 0 ||
+		raw.SlowSoftTTFTThresholdMs != 0 ||
+		raw.SlowRecoveryTTFTMs != 0 ||
+		raw.SlowTTFTConsecutiveCount != 0 ||
+		raw.SlowMinSamples != 0 ||
+		raw.SlowCooldownSeconds != 0 ||
+		raw.SlowRecoveryFastCount != 0 ||
+		raw.SlowPenaltyWeight != 0 ||
+		raw.SlowScoreMarkThreshold != 0 ||
+		raw.SlowScoreSkipThreshold != 0 ||
+		raw.SlowScoreMax != 0 ||
+		raw.SlowScoreDecayIntervalSeconds != 0
 }
 
 func (s *SettingService) buildAuthSourceDefaultUpdates(ctx context.Context, settings *AuthSourceDefaultSettings) (map[string]string, error) {

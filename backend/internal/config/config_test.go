@@ -119,6 +119,33 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIScheduler.StickyEscapeErrorRate != 0.5 {
 		t.Fatalf("Gateway.OpenAIScheduler.StickyEscapeErrorRate = %v, want 0.5", cfg.Gateway.OpenAIScheduler.StickyEscapeErrorRate)
 	}
+	if !cfg.Gateway.OpenAIScheduler.SlowAccountEscapeEnabled {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowAccountEscapeEnabled = false, want true")
+	}
+	if cfg.Gateway.OpenAIScheduler.SlowTTFTThresholdMs != 30000 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowTTFTThresholdMs = %d, want 30000", cfg.Gateway.OpenAIScheduler.SlowTTFTThresholdMs)
+	}
+	if cfg.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs != 15000 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs = %d, want 15000", cfg.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs)
+	}
+	if cfg.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs != 10000 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowRecoveryTTFTMs = %d, want 10000", cfg.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs)
+	}
+	if cfg.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount != 2 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount = %d, want 2", cfg.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount)
+	}
+	if cfg.Gateway.OpenAIScheduler.SlowCooldownSeconds != 300 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowCooldownSeconds = %d, want 300", cfg.Gateway.OpenAIScheduler.SlowCooldownSeconds)
+	}
+	if cfg.Gateway.OpenAIScheduler.SlowMinSamples != 3 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowMinSamples = %d, want 3", cfg.Gateway.OpenAIScheduler.SlowMinSamples)
+	}
+	if cfg.Gateway.OpenAIScheduler.SlowScoreMarkThreshold != 5 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowScoreMarkThreshold = %d, want 5", cfg.Gateway.OpenAIScheduler.SlowScoreMarkThreshold)
+	}
+	if cfg.Gateway.OpenAIScheduler.SlowScoreSkipThreshold != 8 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowScoreSkipThreshold = %d, want 8", cfg.Gateway.OpenAIScheduler.SlowScoreSkipThreshold)
+	}
 	if !cfg.Gateway.OpenAIWS.SessionHashReadOldFallback {
 		t.Fatalf("Gateway.OpenAIWS.SessionHashReadOldFallback = false, want true")
 	}
@@ -1784,6 +1811,84 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			name:    "sticky_escape_error_rate 不能大于 1",
 			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.StickyEscapeErrorRate = 1.1 },
 			wantErr: "gateway.openai_scheduler.sticky_escape_error_rate",
+		},
+		{
+			name:    "slow_ttft_threshold_ms 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowTTFTThresholdMs = 0 },
+			wantErr: "gateway.openai_scheduler.slow_ttft_threshold_ms",
+		},
+		{
+			name:    "slow_recovery_ttft_ms 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs = 0 },
+			wantErr: "gateway.openai_scheduler.slow_recovery_ttft_ms",
+		},
+		{
+			name:    "slow_soft_ttft_threshold_ms 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs = 0 },
+			wantErr: "gateway.openai_scheduler.slow_soft_ttft_threshold_ms",
+		},
+		{
+			name: "slow_soft_ttft_threshold_ms 必须小于 slow_ttft_threshold_ms",
+			mutate: func(c *Config) {
+				c.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs = c.Gateway.OpenAIScheduler.SlowTTFTThresholdMs
+			},
+			wantErr: "gateway.openai_scheduler.slow_soft_ttft_threshold_ms",
+		},
+		{
+			name: "slow_recovery_ttft_ms 必须小于 slow_soft_ttft_threshold_ms",
+			mutate: func(c *Config) {
+				c.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs = c.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs
+			},
+			wantErr: "gateway.openai_scheduler.slow_recovery_ttft_ms",
+		},
+		{
+			name:    "slow_ttft_consecutive_count 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount = 0 },
+			wantErr: "gateway.openai_scheduler.slow_ttft_consecutive_count",
+		},
+		{
+			name:    "slow_min_samples 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowMinSamples = 0 },
+			wantErr: "gateway.openai_scheduler.slow_min_samples",
+		},
+		{
+			name:    "slow_cooldown_seconds 不能小于 0",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowCooldownSeconds = -1 },
+			wantErr: "gateway.openai_scheduler.slow_cooldown_seconds",
+		},
+		{
+			name:    "slow_recovery_fast_count 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowRecoveryFastCount = 0 },
+			wantErr: "gateway.openai_scheduler.slow_recovery_fast_count",
+		},
+		{
+			name:    "slow_penalty_weight 不能小于 0",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowPenaltyWeight = -1 },
+			wantErr: "gateway.openai_scheduler.slow_penalty_weight",
+		},
+		{
+			name:    "slow_score_mark_threshold 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowScoreMarkThreshold = 0 },
+			wantErr: "gateway.openai_scheduler.slow_score_mark_threshold",
+		},
+		{
+			name: "slow_score_skip_threshold 必须大于等于 mark",
+			mutate: func(c *Config) {
+				c.Gateway.OpenAIScheduler.SlowScoreSkipThreshold = c.Gateway.OpenAIScheduler.SlowScoreMarkThreshold - 1
+			},
+			wantErr: "gateway.openai_scheduler.slow_score_skip_threshold",
+		},
+		{
+			name: "slow_score_max 必须大于等于 skip",
+			mutate: func(c *Config) {
+				c.Gateway.OpenAIScheduler.SlowScoreMax = c.Gateway.OpenAIScheduler.SlowScoreSkipThreshold - 1
+			},
+			wantErr: "gateway.openai_scheduler.slow_score_max",
+		},
+		{
+			name:    "slow_score_decay_interval_seconds 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowScoreDecayIntervalSeconds = 0 },
+			wantErr: "gateway.openai_scheduler.slow_score_decay_interval_seconds",
 		},
 	}
 
