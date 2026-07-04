@@ -162,10 +162,12 @@ func (n *OpenAIAccountSwitchNotifier) sendTelegram(ctx context.Context, event Op
 	if err != nil {
 		return fmt.Errorf("send Telegram request: %s", redactTelegramToken(err.Error(), n.botToken))
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("Telegram returned status %d: %s", resp.StatusCode, redactTelegramToken(strings.TrimSpace(string(respBody)), n.botToken))
+		return fmt.Errorf("telegram returned status %d: %s", resp.StatusCode, redactTelegramToken(strings.TrimSpace(string(respBody)), n.botToken))
 	}
 	return nil
 }
@@ -202,7 +204,7 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 		eventName = "openai.upstream_failover_switching"
 	}
 	var b strings.Builder
-	b.WriteString("sub2api OpenAI account switch\n")
+	_, _ = b.WriteString("sub2api OpenAI account switch\n")
 	writeNotificationLine(&b, "event", eventName)
 	writeNotificationLine(&b, "route", e.Route)
 	writeNotificationLine(&b, "model", e.Model)
@@ -230,8 +232,8 @@ func writeNotificationLine(b *strings.Builder, key, value string) {
 	if value == "" {
 		return
 	}
-	b.WriteString(key)
-	b.WriteString(": ")
-	b.WriteString(value)
-	b.WriteByte('\n')
+	_, _ = b.WriteString(key)
+	_, _ = b.WriteString(": ")
+	_, _ = b.WriteString(value)
+	_ = b.WriteByte('\n')
 }

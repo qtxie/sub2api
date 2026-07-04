@@ -144,7 +144,7 @@ func TestOpenAIAccountSwitchNotifierTelegramError(t *testing.T) {
 	}
 	err := notifier.Notify(context.Background(), OpenAIAccountSwitchNotification{AccountID: 1, UpstreamStatus: http.StatusBadGateway})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "Telegram returned status 429")
+	require.Contains(t, err.Error(), "telegram returned status 429")
 	require.NotContains(t, err.Error(), "bottoken")
 	require.Contains(t, err.Error(), "bot<redacted>/sendMessage")
 }
