@@ -37,6 +37,7 @@ type OpenAIGatewayHandler struct {
 	opsService               *service.OpsService
 	concurrencyHelper        *ConcurrencyHelper
 	imageLimiter             *imageConcurrencyLimiter
+	accountSwitchNotifier    *service.OpenAIAccountSwitchNotifier
 	maxAccountSwitches       int
 	cfg                      *config.Config
 }
@@ -144,9 +145,63 @@ func NewOpenAIGatewayHandler(
 		opsService:               opsService,
 		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		imageLimiter:             &imageConcurrencyLimiter{},
+		accountSwitchNotifier:    service.NewOpenAIAccountSwitchNotifier(cfg),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
 	}
+}
+
+func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitch(
+	c *gin.Context,
+	eventName string,
+	route string,
+	apiKey *service.APIKey,
+	userID int64,
+	model string,
+	stream bool,
+	accountID int64,
+	upstreamStatus int,
+	switchCount int,
+	maxSwitches int,
+) {
+	if h == nil || h.accountSwitchNotifier == nil {
+		return
+	}
+
+	var requestID, clientRequestID, path, method string
+	if c != nil && c.Request != nil {
+		requestID, _ = c.Request.Context().Value(ctxkey.RequestID).(string)
+		clientRequestID, _ = c.Request.Context().Value(ctxkey.ClientRequestID).(string)
+		path = c.Request.URL.Path
+		method = c.Request.Method
+	}
+
+	var apiKeyID int64
+	var groupID string
+	if apiKey != nil {
+		apiKeyID = apiKey.ID
+		if apiKey.GroupID != nil {
+			groupID = strconv.FormatInt(*apiKey.GroupID, 10)
+		}
+	}
+
+	h.accountSwitchNotifier.NotifyAsync(service.OpenAIAccountSwitchNotification{
+		EventName:       eventName,
+		Route:           route,
+		RequestID:       strings.TrimSpace(requestID),
+		ClientRequestID: strings.TrimSpace(clientRequestID),
+		Path:            strings.TrimSpace(path),
+		Method:          strings.TrimSpace(method),
+		UserID:          userID,
+		APIKeyID:        apiKeyID,
+		GroupID:         groupID,
+		Model:           strings.TrimSpace(model),
+		Stream:          stream,
+		AccountID:       accountID,
+		UpstreamStatus:  upstreamStatus,
+		SwitchCount:     switchCount,
+		MaxSwitches:     maxSwitches,
+	})
 }
 
 // Responses handles OpenAI Responses API endpoint
@@ -493,6 +548,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
+					h.notifyOpenAIAccountSwitch(c, "openai.upstream_failover_switching", "responses", apiKey, subject.UserID, reqModel, reqStream, account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -916,6 +972,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
+					h.notifyOpenAIAccountSwitch(c, "openai_messages.upstream_failover_switching", "messages", apiKey, subject.UserID, reqModel, reqStream, account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					continue
 				}
 				if result != nil && result.ClientDisconnect {
@@ -1652,6 +1709,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					zap.Int("switch_count", switchCount),
 					zap.Int("max_switches", maxAccountSwitches),
 				)
+				h.notifyOpenAIAccountSwitch(c, "openai.websocket_upstream_failover_switching", "websocket", apiKey, subject.UserID, reqModel, true, account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 				if !ensureUserSlotHeld() {
 					return
 				}

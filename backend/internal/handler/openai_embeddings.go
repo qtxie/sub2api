@@ -201,6 +201,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 					zap.Int("switch_count", switchCount),
 					zap.Int("max_switches", maxAccountSwitches),
 				)
+				h.notifyOpenAIAccountSwitch(c, "openai_embeddings.upstream_failover_switching", "embeddings", apiKey, subject.UserID, reqModel, false, account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 				continue
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)

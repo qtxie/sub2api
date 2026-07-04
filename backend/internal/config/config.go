@@ -730,6 +730,8 @@ type GatewayConfig struct {
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
+	// OpenAISwitchNotify: OpenAI account switch notification configuration.
+	OpenAISwitchNotify GatewayOpenAISwitchNotifyConfig `mapstructure:"openai_switch_notify"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
 	ImageConcurrency ImageConcurrencyConfig `mapstructure:"image_concurrency"`
 
@@ -821,6 +823,21 @@ type GatewayOpenAIHTTP2Config struct {
 	FallbackWindowSeconds int `mapstructure:"fallback_window_seconds"`
 	// FallbackTTLSeconds: 触发后回退 HTTP/1.1 的持续时间（秒）
 	FallbackTTLSeconds int `mapstructure:"fallback_ttl_seconds"`
+}
+
+// GatewayOpenAISwitchNotifyConfig controls account-switch notifications.
+type GatewayOpenAISwitchNotifyConfig struct {
+	// MinIntervalSeconds suppresses duplicate switch notifications for the same key.
+	MinIntervalSeconds int                                     `mapstructure:"min_interval_seconds"`
+	Telegram           GatewayOpenAISwitchNotifyTelegramConfig `mapstructure:"telegram"`
+}
+
+// GatewayOpenAISwitchNotifyTelegramConfig controls Telegram delivery.
+type GatewayOpenAISwitchNotifyTelegramConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	BotToken       string `mapstructure:"bot_token"`
+	ChatID         string `mapstructure:"chat_id"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
 }
 
 // UserMessageQueueConfig 用户消息串行队列配置
@@ -1461,6 +1478,8 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.LinuxDo.UserInfoEmailPath = strings.TrimSpace(cfg.LinuxDo.UserInfoEmailPath)
 	cfg.LinuxDo.UserInfoIDPath = strings.TrimSpace(cfg.LinuxDo.UserInfoIDPath)
 	cfg.LinuxDo.UserInfoUsernamePath = strings.TrimSpace(cfg.LinuxDo.UserInfoUsernamePath)
+	cfg.Gateway.OpenAISwitchNotify.Telegram.BotToken = strings.TrimSpace(cfg.Gateway.OpenAISwitchNotify.Telegram.BotToken)
+	cfg.Gateway.OpenAISwitchNotify.Telegram.ChatID = strings.TrimSpace(cfg.Gateway.OpenAISwitchNotify.Telegram.ChatID)
 	applyLegacyWeChatConnectEnvCompatibility(&cfg.WeChat)
 	normalizeWeChatConnectConfig(&cfg.WeChat)
 	cfg.OIDC.ProviderName = strings.TrimSpace(cfg.OIDC.ProviderName)
@@ -1918,6 +1937,11 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.sticky_failback_probe_failure_ttl_seconds", 60)
 	viper.SetDefault("gateway.openai_scheduler.previous_response_rebind_enabled", false)
 	viper.SetDefault("gateway.openai_scheduler.previous_response_rebind_only_when_current_unhealthy", true)
+	viper.SetDefault("gateway.openai_switch_notify.min_interval_seconds", 60)
+	viper.SetDefault("gateway.openai_switch_notify.telegram.enabled", false)
+	viper.SetDefault("gateway.openai_switch_notify.telegram.bot_token", "")
+	viper.SetDefault("gateway.openai_switch_notify.telegram.chat_id", "")
+	viper.SetDefault("gateway.openai_switch_notify.telegram.timeout_seconds", 5)
 	// OpenAI HTTP upstream protocol strategy
 	viper.SetDefault("gateway.openai_http2.enabled", true)
 	viper.SetDefault("gateway.openai_http2.allow_proxy_fallback_to_http1", true)
@@ -2733,6 +2757,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIScheduler.StickyFailbackProbeFailureTTLSeconds < 0 {
 		return fmt.Errorf("gateway.openai_scheduler.sticky_failback_probe_failure_ttl_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAISwitchNotify.MinIntervalSeconds < 0 {
+		return fmt.Errorf("gateway.openai_switch_notify.min_interval_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAISwitchNotify.Telegram.TimeoutSeconds < 0 {
+		return fmt.Errorf("gateway.openai_switch_notify.telegram.timeout_seconds must be non-negative")
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")

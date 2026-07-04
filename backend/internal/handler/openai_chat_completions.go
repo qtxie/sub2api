@@ -271,6 +271,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
+					h.notifyOpenAIAccountSwitch(c, "openai_chat_completions.upstream_failover_switching", "chat_completions", apiKey, subject.UserID, reqModel, reqStream, account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)

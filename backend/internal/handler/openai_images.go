@@ -302,6 +302,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
+					h.notifyOpenAIAccountSwitch(c, "openai.images.upstream_failover_switching", "images", apiKey, subject.UserID, requestModel, parsed.Stream, account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
