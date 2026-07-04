@@ -69,21 +69,21 @@ func TestOpenAIStickyFailbackProbeUsesCodexResponsesPayloadShape(t *testing.T) {
 	if !isKnownOpenAIStickyFailbackProbePrompt(prompt) {
 		t.Fatalf("unexpected probe prompt %q", prompt)
 	}
-	if ua := upstream.req.Header.Get("User-Agent"); !isKnownOpenAIStickyFailbackProbeUserAgent(ua) {
-		t.Fatalf("unexpected probe User-Agent %q", ua)
+	if ua := upstream.req.Header.Get("User-Agent"); ua != codexCLIUserAgent {
+		t.Fatalf("User-Agent=%q want %q", ua, codexCLIUserAgent)
 	}
-	if originator := upstream.req.Header.Get("Originator"); strings.TrimSpace(originator) == "" {
-		t.Fatal("probe should include Originator")
+	if originator := upstream.req.Header.Get("Originator"); originator != "codex_cli_rs" {
+		t.Fatalf("Originator=%q want codex_cli_rs", originator)
 	}
 }
 
 func TestOpenAIStickyFailbackProbePayloadUsesMeaningfulPrompt(t *testing.T) {
-	payload := openAIStickyFailbackProbePayload("gpt-5.1", false, false, "Confirm availability with OK.")
+	payload := openAIStickyFailbackProbePayload("gpt-5.1", false, false, "What is 17 + 25?")
 	body, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal payload: %v", err)
 	}
-	if got := strings.TrimSpace(gjson.GetBytes(body, "input.0.content.0.text").String()); got != "Confirm availability with OK." {
+	if got := strings.TrimSpace(gjson.GetBytes(body, "input.0.content.0.text").String()); got != "What is 17 + 25?" {
 		t.Fatalf("prompt=%q", got)
 	}
 }
@@ -91,15 +91,6 @@ func TestOpenAIStickyFailbackProbePayloadUsesMeaningfulPrompt(t *testing.T) {
 func isKnownOpenAIStickyFailbackProbePrompt(prompt string) bool {
 	for _, candidate := range openAIStickyFailbackProbePrompts {
 		if prompt == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-func isKnownOpenAIStickyFailbackProbeUserAgent(userAgent string) bool {
-	for _, candidate := range openAIStickyFailbackProbeClients {
-		if userAgent == candidate.userAgent {
 			return true
 		}
 	}

@@ -24,22 +24,12 @@ const (
 	openAIStickyFailbackProbeBodyLimit      = 64 << 10
 )
 
-var openAIStickyFailbackProbeClients = []struct {
-	userAgent  string
-	originator string
-}{
-	{userAgent: codexCLIUserAgent, originator: "codex_cli_rs"},
-	{userAgent: "OpenClaw/1.0.0 (Gateway; Linux x86_64)", originator: "openclaw"},
-	{userAgent: "OpenClaw/1.0.0 (Desktop; macOS arm64)", originator: "openclaw"},
-	{userAgent: "openclaw-gateway/1.0.0 (linux; amd64)", originator: "openclaw"},
-}
-
 var openAIStickyFailbackProbePrompts = []string{
-	"Reply with OK if you can receive this availability check.",
-	"Return a short OK response to confirm this model is reachable.",
-	"Answer OK only. This is a lightweight routing health check.",
-	"Please respond with OK so the gateway can verify this route.",
-	"Confirm availability with a brief OK response.",
+	"What is 17 + 25? Answer with only the number.",
+	"Name the capital of France in one word.",
+	"Write a five-word sentence about clean code.",
+	"What is the next number after 99?",
+	"Translate 'good morning' to Spanish.",
 }
 
 type openAIStickyFailbackProbeResult struct {
@@ -195,9 +185,8 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateUpstream(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
-	clientIdentity := openAIStickyFailbackProbeClient()
-	httpReq.Header.Set("Originator", clientIdentity.originator)
-	httpReq.Header.Set("User-Agent", clientIdentity.userAgent)
+	httpReq.Header.Set("Originator", "codex_cli_rs")
+	httpReq.Header.Set("User-Agent", codexCLIUserAgent)
 	httpReq.Header.Set("Version", codexCLIVersion)
 	if req.RequireCompact {
 		httpReq.Header.Set("Accept", "application/json")
@@ -304,7 +293,7 @@ func (s *OpenAIGatewayService) openAIStickyFailbackValidateBaseURL(baseURL strin
 func openAIStickyFailbackProbePayload(model string, isOAuth bool, compact bool, prompt string) map[string]any {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		prompt = "Reply with OK if you can receive this availability check."
+		prompt = "What is 17 + 25? Answer with only the number."
 	}
 	if compact {
 		return map[string]any{
@@ -351,13 +340,6 @@ func openAIStickyFailbackProbeCacheKey(req OpenAIAccountScheduleRequest, account
 		strconv.FormatBool(req.RequireCompact),
 	}
 	return strings.Join(parts, "|")
-}
-
-func openAIStickyFailbackProbeClient() struct {
-	userAgent  string
-	originator string
-} {
-	return openAIStickyFailbackProbeClients[openAIStickyFailbackProbeRandomIndex(len(openAIStickyFailbackProbeClients))]
 }
 
 func openAIStickyFailbackProbePrompt() string {
