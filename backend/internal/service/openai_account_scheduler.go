@@ -474,6 +474,40 @@ func (s *openAIAccountRuntimeStats) slowSnapshot(accountID int64, now time.Time)
 	return snapshot
 }
 
+func (s *openAIAccountRuntimeStats) recoverSlowAccountAfterProbe(accountID int64, cfg openAISlowAccountConfig) openAIAccountRuntimeReport {
+	if s == nil || accountID <= 0 {
+		return openAIAccountRuntimeReport{}
+	}
+	value, ok := s.accounts.Load(accountID)
+	if !ok {
+		return openAIAccountRuntimeReport{}
+	}
+	stat, _ := value.(*openAIAccountRuntimeStat)
+	if stat == nil {
+		return openAIAccountRuntimeReport{}
+	}
+	cfg = normalizeOpenAISlowAccountConfig(cfg)
+	now := time.Now()
+	nowNano := now.UnixNano()
+	oldUntilNano := stat.slowUntilUnixNano.Swap(0)
+	oldScore := stat.slowScore.Swap(0)
+	stat.slowStreak.Store(0)
+	stat.fastStreak.Store(int64(cfg.recoveryFastCount))
+	stat.lastTTFTSampleAt.Store(nowNano)
+	stat.lastScoreUpdateAt.Store(nowNano)
+	stat.ttftEWMABits.Store(math.Float64bits(float64(cfg.recoveryTTFTMs)))
+
+	return openAIAccountRuntimeReport{
+		firstTokenMs:  cfg.recoveryTTFTMs,
+		sampleCount:   stat.sampleCount.Load(),
+		fastStreak:    int64(cfg.recoveryFastCount),
+		slowScore:     0,
+		ttft:          float64(cfg.recoveryTTFTMs),
+		hasTTFT:       true,
+		recoveredSlow: oldUntilNano > nowNano || oldScore >= int64(cfg.markScore),
+	}
+}
+
 func normalizeOpenAISlowAccountConfig(cfg openAISlowAccountConfig) openAISlowAccountConfig {
 	if cfg.thresholdMs <= 0 {
 		cfg.thresholdMs = 30000
@@ -1662,6 +1696,7 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID)
 	candidates := make([]accountWithLoad, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	slowCandidateSnapshots := make(map[int64]openAIAccountSlowSnapshot)
 	parentCache := make(map[int64]*Account)
 	parentLookup := func(id int64) *Account {
 		if account, ok := parentCache[id]; ok {
@@ -1701,10 +1736,13 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 			continue
 		}
 		if snapshot, marked := s.isOpenAIAccountMarkedSlow(account.ID, time.Now()); marked {
-			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, account.ID, "slow_ttft",
-				slog.Time("slow_until", snapshot.slowUntil),
-			)
-			continue
+			if !failbackCfg.probeEnabled || req.RequiredImageCapability != "" {
+				s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, account.ID, "slow_ttft",
+					slog.Time("slow_until", snapshot.slowUntil),
+				)
+				continue
+			}
+			slowCandidateSnapshots[account.ID] = snapshot
 		}
 		if needsUpstreamCheck && req.GroupID != nil &&
 			s.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
@@ -1784,7 +1822,14 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 			s.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, fresh, req.RequestedModel, req.RequireCompact) {
 			continue
 		}
-		if probe := s.probeOpenAIStickyFailbackCandidate(ctx, req, fresh, failbackCfg); !probe.Healthy {
+		_, wasSlowCandidate := slowCandidateSnapshots[fresh.ID]
+		probe := openAIStickyFailbackProbeResult{Healthy: true, Reason: "probe_not_required"}
+		if wasSlowCandidate {
+			probe = s.probeOpenAIStickyFailbackCandidateFresh(ctx, req, fresh, failbackCfg)
+		} else {
+			probe = s.probeOpenAIStickyFailbackCandidate(ctx, req, fresh, failbackCfg)
+		}
+		if !probe.Healthy {
 			args := []slog.Attr{
 				slog.String("probe_reason", probe.Reason),
 			}
@@ -1794,8 +1839,14 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 			if probe.Err != nil {
 				args = append(args, slog.String("probe_error", probe.Err.Error()))
 			}
+			if snapshot, ok := slowCandidateSnapshots[fresh.ID]; ok {
+				args = append(args, slog.Time("slow_until", snapshot.slowUntil))
+			}
 			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, fresh.ID, "failback_probe_unhealthy", args...)
 			continue
+		}
+		if wasSlowCandidate {
+			s.recoverOpenAIAccountSlowStateAfterProbe(fresh.ID, req, probe)
 		}
 		result, acquireErr := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 		if acquireErr != nil {
@@ -2414,6 +2465,31 @@ func (s *OpenAIGatewayService) logOpenAIAccountSlowStateChange(accountID int64, 
 			"recovery_ttft_ms", cfg.recoveryTTFTMs,
 		)
 	}
+}
+
+func (s *OpenAIGatewayService) recoverOpenAIAccountSlowStateAfterProbe(accountID int64, req OpenAIAccountScheduleRequest, probe openAIStickyFailbackProbeResult) {
+	if s == nil || accountID <= 0 || s.openaiAccountStats == nil {
+		return
+	}
+	cfg := s.openAISlowAccountConfig()
+	if !cfg.enabled {
+		return
+	}
+	report := s.openaiAccountStats.recoverSlowAccountAfterProbe(accountID, cfg)
+	if !report.recoveredSlow {
+		return
+	}
+	slog.Info("openai.account_slow_probe_recovered",
+		"account_id", accountID,
+		"group_id", derefGroupID(req.GroupID),
+		"model", req.RequestedModel,
+		"probe_status", probe.StatusCode,
+		"probe_reason", probe.Reason,
+		"ttft_ewma_ms", report.ttft,
+		"slow_score", report.slowScore,
+		"sample_count", report.sampleCount,
+		"recovery_ttft_ms", cfg.recoveryTTFTMs,
+	)
 }
 
 func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx context.Context) openAIStickyPreferHigherPriorityConfig {

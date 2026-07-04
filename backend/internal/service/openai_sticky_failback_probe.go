@@ -42,6 +42,25 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidate(
 	account *Account,
 	cfg openAIStickyPreferHigherPriorityConfig,
 ) openAIStickyFailbackProbeResult {
+	return s.probeOpenAIStickyFailbackCandidateCached(ctx, req, account, cfg, false)
+}
+
+func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateFresh(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	account *Account,
+	cfg openAIStickyPreferHigherPriorityConfig,
+) openAIStickyFailbackProbeResult {
+	return s.probeOpenAIStickyFailbackCandidateCached(ctx, req, account, cfg, true)
+}
+
+func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateCached(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	account *Account,
+	cfg openAIStickyPreferHigherPriorityConfig,
+	bypassCache bool,
+) openAIStickyFailbackProbeResult {
 	if !cfg.probeEnabled {
 		return openAIStickyFailbackProbeResult{Healthy: true, Reason: "probe_disabled"}
 	}
@@ -54,16 +73,24 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidate(
 
 	now := time.Now()
 	cacheKey := openAIStickyFailbackProbeCacheKey(req, account.ID)
-	if cached, ok := s.openaiStickyFailbackProbeCache.Load(cacheKey); ok {
-		if entry, ok := cached.(openAIStickyFailbackProbeCacheEntry); ok && now.UnixNano() < entry.expiresAt {
-			return entry.result
+	if !bypassCache {
+		if cached, ok := s.openaiStickyFailbackProbeCache.Load(cacheKey); ok {
+			if entry, ok := cached.(openAIStickyFailbackProbeCacheEntry); ok && now.UnixNano() < entry.expiresAt {
+				return entry.result
+			}
 		}
 	}
 
-	resultAny, _, _ := openAIStickyFailbackProbeSF.Do(cacheKey, func() (any, error) {
-		if cached, ok := s.openaiStickyFailbackProbeCache.Load(cacheKey); ok {
-			if entry, ok := cached.(openAIStickyFailbackProbeCacheEntry); ok && time.Now().UnixNano() < entry.expiresAt {
-				return entry.result, nil
+	sfKey := cacheKey
+	if bypassCache {
+		sfKey += "|fresh"
+	}
+	resultAny, _, _ := openAIStickyFailbackProbeSF.Do(sfKey, func() (any, error) {
+		if !bypassCache {
+			if cached, ok := s.openaiStickyFailbackProbeCache.Load(cacheKey); ok {
+				if entry, ok := cached.(openAIStickyFailbackProbeCacheEntry); ok && time.Now().UnixNano() < entry.expiresAt {
+					return entry.result, nil
+				}
 			}
 		}
 
