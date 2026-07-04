@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -64,4 +65,43 @@ func TestOpenAIStickyFailbackProbeUsesCodexResponsesPayloadShape(t *testing.T) {
 	if got := gjson.GetBytes(body, "instructions"); strings.TrimSpace(got.String()) == "" {
 		t.Fatal("probe payload should include instructions")
 	}
+	prompt := strings.TrimSpace(gjson.GetBytes(body, "input.0.content.0.text").String())
+	if !isKnownOpenAIStickyFailbackProbePrompt(prompt) {
+		t.Fatalf("unexpected probe prompt %q", prompt)
+	}
+	if ua := upstream.req.Header.Get("User-Agent"); !isKnownOpenAIStickyFailbackProbeUserAgent(ua) {
+		t.Fatalf("unexpected probe User-Agent %q", ua)
+	}
+	if originator := upstream.req.Header.Get("Originator"); strings.TrimSpace(originator) == "" {
+		t.Fatal("probe should include Originator")
+	}
+}
+
+func TestOpenAIStickyFailbackProbePayloadUsesMeaningfulPrompt(t *testing.T) {
+	payload := openAIStickyFailbackProbePayload("gpt-5.1", false, false, "Confirm availability with OK.")
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if got := strings.TrimSpace(gjson.GetBytes(body, "input.0.content.0.text").String()); got != "Confirm availability with OK." {
+		t.Fatalf("prompt=%q", got)
+	}
+}
+
+func isKnownOpenAIStickyFailbackProbePrompt(prompt string) bool {
+	for _, candidate := range openAIStickyFailbackProbePrompts {
+		if prompt == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func isKnownOpenAIStickyFailbackProbeUserAgent(userAgent string) bool {
+	for _, candidate := range openAIStickyFailbackProbeClients {
+		if userAgent == candidate.userAgent {
+			return true
+		}
+	}
+	return false
 }

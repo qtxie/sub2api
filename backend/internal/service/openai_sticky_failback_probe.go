@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +23,24 @@ const (
 	openAIStickyFailbackProbeDefaultTimeout = 5 * time.Second
 	openAIStickyFailbackProbeBodyLimit      = 64 << 10
 )
+
+var openAIStickyFailbackProbeClients = []struct {
+	userAgent  string
+	originator string
+}{
+	{userAgent: codexCLIUserAgent, originator: "codex_cli_rs"},
+	{userAgent: "OpenClaw/1.0.0 (Gateway; Linux x86_64)", originator: "openclaw"},
+	{userAgent: "OpenClaw/1.0.0 (Desktop; macOS arm64)", originator: "openclaw"},
+	{userAgent: "openclaw-gateway/1.0.0 (linux; amd64)", originator: "openclaw"},
+}
+
+var openAIStickyFailbackProbePrompts = []string{
+	"Reply with OK if you can receive this availability check.",
+	"Return a short OK response to confirm this model is reachable.",
+	"Answer OK only. This is a lightweight routing health check.",
+	"Please respond with OK so the gateway can verify this route.",
+	"Confirm availability with a brief OK response.",
+}
 
 type openAIStickyFailbackProbeResult struct {
 	Healthy    bool
@@ -160,7 +180,8 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateUpstream(
 		model = resolveOpenAICompactForwardModel(account, model)
 	}
 
-	payload := openAIStickyFailbackProbePayload(model, isOAuth, req.RequireCompact)
+	probePrompt := openAIStickyFailbackProbePrompt()
+	payload := openAIStickyFailbackProbePayload(model, isOAuth, req.RequireCompact, probePrompt)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return openAIStickyFailbackProbeResult{Healthy: false, Reason: "payload_error", Err: err}
@@ -174,8 +195,9 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateUpstream(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("OpenAI-Beta", "responses=experimental")
-	httpReq.Header.Set("Originator", "codex_cli_rs")
-	httpReq.Header.Set("User-Agent", codexCLIUserAgent)
+	clientIdentity := openAIStickyFailbackProbeClient()
+	httpReq.Header.Set("Originator", clientIdentity.originator)
+	httpReq.Header.Set("User-Agent", clientIdentity.userAgent)
 	httpReq.Header.Set("Version", codexCLIVersion)
 	if req.RequireCompact {
 		httpReq.Header.Set("Accept", "application/json")
@@ -279,11 +301,44 @@ func (s *OpenAIGatewayService) openAIStickyFailbackValidateBaseURL(baseURL strin
 	return normalized, nil
 }
 
-func openAIStickyFailbackProbePayload(model string, isOAuth bool, compact bool) map[string]any {
-	if compact {
-		return createOpenAICompactProbePayload(model)
+func openAIStickyFailbackProbePayload(model string, isOAuth bool, compact bool, prompt string) map[string]any {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		prompt = "Reply with OK if you can receive this availability check."
 	}
-	return createOpenAITestPayload(model, isOAuth)
+	if compact {
+		return map[string]any{
+			"model":        strings.TrimSpace(model),
+			"instructions": "You are a helpful coding assistant.",
+			"input": []any{
+				map[string]any{
+					"type":    "message",
+					"role":    "user",
+					"content": prompt,
+				},
+			},
+		}
+	}
+	payload := map[string]any{
+		"model": strings.TrimSpace(model),
+		"input": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type": "input_text",
+						"text": prompt,
+					},
+				},
+			},
+		},
+		"stream":       true,
+		"instructions": openaipkg.DefaultInstructions,
+	}
+	if isOAuth {
+		payload["store"] = false
+	}
+	return payload
 }
 
 func openAIStickyFailbackProbeCacheKey(req OpenAIAccountScheduleRequest, accountID int64) string {
@@ -296,4 +351,26 @@ func openAIStickyFailbackProbeCacheKey(req OpenAIAccountScheduleRequest, account
 		strconv.FormatBool(req.RequireCompact),
 	}
 	return strings.Join(parts, "|")
+}
+
+func openAIStickyFailbackProbeClient() struct {
+	userAgent  string
+	originator string
+} {
+	return openAIStickyFailbackProbeClients[openAIStickyFailbackProbeRandomIndex(len(openAIStickyFailbackProbeClients))]
+}
+
+func openAIStickyFailbackProbePrompt() string {
+	return openAIStickyFailbackProbePrompts[openAIStickyFailbackProbeRandomIndex(len(openAIStickyFailbackProbePrompts))]
+}
+
+func openAIStickyFailbackProbeRandomIndex(length int) int {
+	if length <= 1 {
+		return 0
+	}
+	var seed [8]byte
+	if _, err := cryptorand.Read(seed[:]); err == nil {
+		return int(binary.LittleEndian.Uint64(seed[:]) % uint64(length))
+	}
+	return int(time.Now().UnixNano() % int64(length))
 }
