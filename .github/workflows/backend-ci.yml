@@ -11,7 +11,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
@@ -31,7 +31,7 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
@@ -51,7 +51,7 @@ jobs:
   golangci-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
