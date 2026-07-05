@@ -62,6 +62,9 @@ func TestOpenAIStickyFailbackProbeUsesCodexResponsesPayloadShape(t *testing.T) {
 	if got := gjson.GetBytes(body, "stream"); !got.Bool() {
 		t.Fatalf("stream=%s want true", got.Raw)
 	}
+	if got := gjson.GetBytes(body, "model").String(); got != openAIStickyFailbackProbeModel {
+		t.Fatalf("model=%q want %q", got, openAIStickyFailbackProbeModel)
+	}
 	if gjson.GetBytes(body, "max_output_tokens").Exists() {
 		t.Fatal("probe payload should not set max_output_tokens")
 	}

@@ -22,6 +22,7 @@ import (
 const (
 	openAIStickyFailbackProbeDefaultTimeout = 5 * time.Second
 	openAIStickyFailbackProbeBodyLimit      = 64 << 10
+	openAIStickyFailbackProbeModel          = "gpt-5.5"
 )
 
 var openAIStickyFailbackProbePrompts = []string{
@@ -173,10 +174,7 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateUpstream(
 		return openAIStickyFailbackProbeResult{Healthy: false, Reason: "url_error", Err: err}
 	}
 
-	model := strings.TrimSpace(req.RequestedModel)
-	if model == "" {
-		model = openaipkg.DefaultTestModel
-	}
+	model := openAIStickyFailbackProbeModel
 	model = account.GetMappedModel(model)
 	if req.RequireCompact {
 		model = resolveOpenAICompactForwardModel(account, model)
