@@ -536,7 +536,7 @@ function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const configContent = `model_provider = "OpenAI"
 model = "gpt-5.5"
 review_model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "high"
 disable_response_storage = true
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
@@ -576,7 +576,7 @@ function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
   const configContent = `model_provider = "OpenAI"
 model = "gpt-5.5"
 review_model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
+model_reasoning_effort = "high"
 disable_response_storage = true
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
@@ -620,26 +620,10 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     }
   }
   const openaiModels = {
-    'gpt-5.2': {
-      name: 'GPT-5.2',
-      limit: {
-        context: 400000,
-        output: 128000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {},
-        xhigh: {}
-      }
-    },
     'gpt-5.5': {
       name: 'GPT-5.5',
       limit: {
-        context: 1050000,
+        context: 258000,
         output: 128000
       },
       options: {
@@ -655,7 +639,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.4': {
       name: 'GPT-5.4',
       limit: {
-        context: 1050000,
+        context: 400000,
         output: 128000
       },
       options: {
@@ -671,7 +655,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.4-mini': {
       name: 'GPT-5.4 Mini',
       limit: {
-        context: 400000,
+        context: 256000,
         output: 128000
       },
       options: {
@@ -698,21 +682,6 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         medium: {},
         high: {},
         xhigh: {}
-      }
-    },
-    'codex-mini-latest': {
-      name: 'Codex Mini',
-      limit: {
-        context: 200000,
-        output: 100000
-      },
-      options: {
-        store: false
-      },
-      variants: {
-        low: {},
-        medium: {},
-        high: {}
       }
     }
   }
