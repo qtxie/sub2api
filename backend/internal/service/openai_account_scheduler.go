@@ -1848,6 +1848,18 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, fresh.ID, "failback_probe_unhealthy", args...)
 			continue
 		}
+		if s.isOpenAIStickyFailbackProbeTooSlow(probe) {
+			slowCfg := s.openAISlowAccountConfig()
+			args := []slog.Attr{
+				slog.Int64("probe_elapsed_ms", probe.ElapsedMs),
+				slog.Int("recovery_ttft_ms", slowCfg.recoveryTTFTMs),
+			}
+			if snapshot, ok := slowCandidateSnapshots[fresh.ID]; ok {
+				args = append(args, slog.Time("slow_until", snapshot.slowUntil))
+			}
+			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, fresh.ID, "failback_probe_slow", args...)
+			continue
+		}
 		if wasSlowCandidate {
 			if !s.recoverOpenAIAccountSlowStateAfterProbe(fresh.ID, req, probe) {
 				slowCfg := s.openAISlowAccountConfig()
@@ -1885,6 +1897,17 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 
 	s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, 0, "no_eligible_higher_priority_account")
 	return nil, "", nil
+}
+
+func (s *OpenAIGatewayService) isOpenAIStickyFailbackProbeTooSlow(probe openAIStickyFailbackProbeResult) bool {
+	if s == nil || probe.ElapsedMs <= 0 {
+		return false
+	}
+	cfg := s.openAISlowAccountConfig()
+	if !cfg.enabled {
+		return false
+	}
+	return probe.ElapsedMs > int64(cfg.recoveryTTFTMs)
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
