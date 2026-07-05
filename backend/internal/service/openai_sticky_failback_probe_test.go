@@ -46,6 +46,9 @@ func TestOpenAIStickyFailbackProbeUsesCodexResponsesPayloadShape(t *testing.T) {
 	if !result.Healthy {
 		t.Fatalf("probe healthy=%v reason=%s err=%v", result.Healthy, result.Reason, result.Err)
 	}
+	if result.ElapsedMs <= 0 {
+		t.Fatalf("probe ElapsedMs=%d want positive", result.ElapsedMs)
+	}
 	if upstream.req == nil {
 		t.Fatal("expected probe request")
 	}

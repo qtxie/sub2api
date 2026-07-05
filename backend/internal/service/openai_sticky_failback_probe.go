@@ -37,6 +37,7 @@ type openAIStickyFailbackProbeResult struct {
 	StatusCode int
 	Reason     string
 	Err        error
+	ElapsedMs  int64
 }
 
 type openAIStickyFailbackProbeCacheEntry struct {
@@ -104,7 +105,11 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateCached(
 			}
 		}
 
+		startedAt := time.Now()
 		result := s.runOpenAIStickyFailbackProbe(ctx, account, req, cfg)
+		if result.ElapsedMs <= 0 {
+			result.ElapsedMs = openAIStickyFailbackProbeElapsedMs(time.Since(startedAt))
+		}
 		ttl := cfg.probeFailureTTL
 		if result.Healthy {
 			ttl = cfg.probeSuccessTTL
@@ -143,7 +148,14 @@ func (s *OpenAIGatewayService) probeOpenAIStickyFailbackCandidateUpstream(
 	account *Account,
 	req OpenAIAccountScheduleRequest,
 	cfg openAIStickyPreferHigherPriorityConfig,
-) openAIStickyFailbackProbeResult {
+) (result openAIStickyFailbackProbeResult) {
+	startedAt := time.Now()
+	defer func() {
+		if result.ElapsedMs <= 0 {
+			result.ElapsedMs = openAIStickyFailbackProbeElapsedMs(time.Since(startedAt))
+		}
+	}()
+
 	timeout := cfg.probeTimeout
 	if timeout <= 0 {
 		timeout = openAIStickyFailbackProbeDefaultTimeout
@@ -344,6 +356,16 @@ func openAIStickyFailbackProbeCacheKey(req OpenAIAccountScheduleRequest, account
 
 func openAIStickyFailbackProbePrompt() string {
 	return openAIStickyFailbackProbePrompts[openAIStickyFailbackProbeRandomIndex(len(openAIStickyFailbackProbePrompts))]
+}
+
+func openAIStickyFailbackProbeElapsedMs(elapsed time.Duration) int64 {
+	if elapsed < 0 {
+		return 0
+	}
+	if elapsed < time.Millisecond {
+		return 1
+	}
+	return elapsed.Milliseconds()
 }
 
 func openAIStickyFailbackProbeRandomIndex(length int) int {
