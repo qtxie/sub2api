@@ -15,6 +15,10 @@ services:
     image: weishaw/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
+    env_file:
+      # Pass every key from .env into the container. Set ENV_FILE to use a
+      # different file, for example: ENV_FILE=.env.example docker compose config
+      - ${ENV_FILE:-.env}
     ulimits:
       nofile:
         soft: 100000

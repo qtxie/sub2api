@@ -225,6 +225,66 @@ See `.env.example` for all available options.
 
 > **Note:** The `docker-deploy.sh` script automatically generates `JWT_SECRET`, `TOTP_ENCRYPTION_KEY`, and `POSTGRES_PASSWORD` for you.
 
+### OpenAI Account Failback, Slow Escape, and Telegram Alerts
+
+The Docker Compose templates load `.env` with `env_file`, so OpenAI gateway
+options added to `.env` are passed into the `sub2api` container. Set
+`ENV_FILE` if you want Compose to load a different env file. Existing explicit
+`environment` entries still provide required service wiring and defaults.
+
+The sticky failback features require **Admin Settings → Scheduling → OpenAI
+Experimental Scheduler** to be enabled. The first three failback controls and
+the `previous_response_id` rebind controls are also available in the admin UI;
+probe, slow-account, and Telegram notification options are configured through
+`.env` or `config.yaml`.
+
+**Sticky failback and probing**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_OPENAI_SCHEDULER_STICKY_PREFER_HIGHER_PRIORITY_ENABLED` | `false` | Probe and switch sticky sessions back to recovered higher-priority accounts. |
+| `GATEWAY_OPENAI_SCHEDULER_STICKY_PREFER_HIGHER_PRIORITY_MIN_INTERVAL_SECONDS` | `60` | Minimum interval between failback probes for the same session or `previous_response_id`; `0` probes every request. |
+| `GATEWAY_OPENAI_SCHEDULER_STICKY_FAILBACK_FAILURE_COOLDOWN_SECONDS` | `300` | Temporarily avoid a failback account after it fails again. |
+| `GATEWAY_OPENAI_SCHEDULER_STICKY_FAILBACK_PROBE_ENABLED` | `true` | Send a lightweight real `/responses` probe before switching back. |
+| `GATEWAY_OPENAI_SCHEDULER_STICKY_FAILBACK_PROBE_TIMEOUT_SECONDS` | `5` | Total timeout for the failback probe. |
+| `GATEWAY_OPENAI_SCHEDULER_STICKY_FAILBACK_PROBE_SUCCESS_TTL_SECONDS` | `30` | Cache duration for a successful probe. |
+| `GATEWAY_OPENAI_SCHEDULER_STICKY_FAILBACK_PROBE_FAILURE_TTL_SECONDS` | `60` | Cache duration for a failed probe. |
+
+**`previous_response_id` rebind**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_OPENAI_SCHEDULER_PREVIOUS_RESPONSE_REBIND_ENABLED` | `false` | Allow sub2api to drop `previous_response_id` and replay safe input on a higher-priority account. |
+| `GATEWAY_OPENAI_SCHEDULER_PREVIOUS_RESPONSE_REBIND_ONLY_WHEN_CURRENT_UNHEALTHY` | `true` | Rebind only when the current response-chain account is unavailable. |
+
+**Slow account escape**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_ACCOUNT_ESCAPE_ENABLED` | `true` | Temporarily downgrade or skip accounts with poor recent first-token latency. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_TTFT_THRESHOLD_MS` | `30000` | First-token latency above this is a hard slow sample. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_SOFT_TTFT_THRESHOLD_MS` | `15000` | First-token latency above this is a soft slow sample. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_RECOVERY_TTFT_MS` | `10000` | Fast sample/probe threshold required for recovery and fast failback. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_TTFT_CONSECUTIVE_COUNT` | `2` | Consecutive slow samples needed to mark an account slow. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_MIN_SAMPLES` | `3` | Minimum TTFT samples before an account can be marked slow. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_COOLDOWN_SECONDS` | `300` | Temporary skip duration for a slow account when alternatives exist. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_RECOVERY_FAST_COUNT` | `2` | Consecutive fast samples needed for early recovery. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_PENALTY_WEIGHT` | `100` | Scheduler score penalty weight for slow accounts. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_SCORE_MARK_THRESHOLD` | `5` | Slow score where sticky sessions may escape the account. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_SCORE_SKIP_THRESHOLD` | `8` | Slow score where the account is skipped if alternatives exist. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_SCORE_MAX` | `10` | Maximum slow score. |
+| `GATEWAY_OPENAI_SCHEDULER_SLOW_SCORE_DECAY_INTERVAL_SECONDS` | `60` | Slow score decays by 1 after each interval without new TTFT samples. |
+
+**Telegram switch alerts**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_OPENAI_SWITCH_NOTIFY_TELEGRAM_ENABLED` | `false` | Send Telegram alerts when OpenAI account failover switches happen. |
+| `GATEWAY_OPENAI_SWITCH_NOTIFY_TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram Bot API token. |
+| `GATEWAY_OPENAI_SWITCH_NOTIFY_TELEGRAM_CHAT_ID` | *(empty)* | Telegram user, group, or channel chat ID. |
+| `GATEWAY_OPENAI_SWITCH_NOTIFY_MIN_INTERVAL_SECONDS` | `60` | Deduplicate repeated switch alerts for the same event/account/status/model. |
+| `GATEWAY_OPENAI_SWITCH_NOTIFY_TELEGRAM_TIMEOUT_SECONDS` | `5` | Telegram send timeout. |
+
 ### Easy Migration (Local Directory Version)
 
 When using `docker-compose.local.yml`, all data is stored in local directories, making migration simple:
