@@ -346,54 +346,59 @@
           </template>
 
           <template #cell-actions="{ row }">
-            <div class="flex items-center gap-1">
-              <!-- Use Key Button -->
-              <button
-                @click="openUseKeyModal(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400"
-              >
-                <Icon name="terminal" size="sm" />
-                <span class="text-xs">{{ t('keys.useKey') }}</span>
-              </button>
-              <!-- Import to CC Switch Button -->
-              <button
-                v-if="!publicSettings?.hide_ccs_import_button"
-                @click="importToCcswitch(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
-              >
-                <Icon name="upload" size="sm" />
-                <span class="text-xs">{{ t('keys.importToCcSwitch') }}</span>
-              </button>
-              <!-- Toggle Status Button -->
-              <button
-                @click="toggleKeyStatus(row)"
-                :class="[
-                  'flex flex-col items-center gap-0.5 rounded-lg p-1.5 transition-colors',
-                  row.status === 'active'
-                    ? 'text-gray-500 hover:bg-yellow-50 hover:text-yellow-600 dark:hover:bg-yellow-900/20 dark:hover:text-yellow-400'
-                    : 'text-gray-500 hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400'
-                ]"
-              >
-                <Icon v-if="row.status === 'active'" name="ban" size="sm" />
-                <Icon v-else name="checkCircle" size="sm" />
-                <span class="text-xs">{{ row.status === 'active' ? t('keys.disable') : t('keys.enable') }}</span>
-              </button>
-              <!-- Edit Button -->
-              <button
-                @click="editKey(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400"
-              >
-                <Icon name="edit" size="sm" />
-                <span class="text-xs">{{ t('common.edit') }}</span>
-              </button>
-              <!-- Delete Button -->
-              <button
-                @click="confirmDelete(row)"
-                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
-              >
-                <Icon name="trash" size="sm" />
-                <span class="text-xs">{{ t('common.delete') }}</span>
-              </button>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <!-- Use Key Button -->
+                <button
+                  @click="openUseKeyModal(row)"
+                  class="inline-flex min-h-[34px] items-center gap-1.5 whitespace-nowrap rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm ring-1 ring-emerald-500/30 transition-all hover:bg-emerald-500 hover:shadow focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-1 dark:bg-emerald-500 dark:text-emerald-950 dark:ring-emerald-300/40 dark:hover:bg-emerald-400"
+                >
+                  <Icon name="terminal" size="sm" />
+                  <span>{{ t('keys.useKey') }}</span>
+                </button>
+                <!-- Import to CC Switch Button -->
+                <button
+                  v-if="!publicSettings?.hide_ccs_import_button"
+                  @click="importToCcswitch(row)"
+                  class="inline-flex min-h-[34px] items-center gap-1.5 whitespace-nowrap rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm ring-1 ring-blue-500/30 transition-all hover:bg-blue-500 hover:shadow focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 dark:bg-blue-500 dark:text-blue-950 dark:ring-blue-300/40 dark:hover:bg-blue-400"
+                >
+                  <Icon name="upload" size="sm" />
+                  <span>{{ t('keys.importToCcSwitch') }}</span>
+                </button>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-1 border-l border-gray-200 pl-1.5 dark:border-dark-600">
+                <!-- Toggle Status Button -->
+                <button
+                  @click="toggleKeyStatus(row)"
+                  :class="[
+                    'flex flex-col items-center gap-0.5 rounded-lg p-1.5 transition-colors',
+                    row.status === 'active'
+                      ? 'text-gray-500 hover:bg-yellow-50 hover:text-yellow-600 dark:hover:bg-yellow-900/20 dark:hover:text-yellow-400'
+                      : 'text-gray-500 hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400'
+                  ]"
+                >
+                  <Icon v-if="row.status === 'active'" name="ban" size="sm" />
+                  <Icon v-else name="checkCircle" size="sm" />
+                  <span class="text-xs">{{ row.status === 'active' ? t('keys.disable') : t('keys.enable') }}</span>
+                </button>
+                <!-- Edit Button -->
+                <button
+                  @click="editKey(row)"
+                  class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:hover:bg-dark-700 dark:hover:text-primary-400"
+                >
+                  <Icon name="edit" size="sm" />
+                  <span class="text-xs">{{ t('common.edit') }}</span>
+                </button>
+                <!-- Delete Button -->
+                <button
+                  @click="confirmDelete(row)"
+                  class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                >
+                  <Icon name="trash" size="sm" />
+                  <span class="text-xs">{{ t('common.delete') }}</span>
+                </button>
+              </div>
             </div>
           </template>
 
