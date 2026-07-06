@@ -3504,10 +3504,15 @@ export default {
       openai: {
         baseUrlHint: 'Leave default for official OpenAI API',
         apiKeyHint: 'Your OpenAI API Key',
+        smartUserAgent: 'Smart upstream User-Agent',
+        smartUserAgentDesc:
+          'Normalize Codex upstream User-Agent for this account to a small fixed set of Codex TUI/Desktop profiles.',
         userAgent: 'Upstream User-Agent',
         userAgentPlaceholder: 'codex-tui/0.142.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.142.5)',
         userAgentDesc:
           'Optional. When set, this account sends this User-Agent to OpenAI instead of the client User-Agent.',
+        userAgentDisabledBySmart:
+          'Ignored while smart upstream User-Agent is enabled. Turn smart mode off to use this manual value.',
         oauthPassthrough: 'Auto passthrough (auth only)',
         oauthPassthroughDesc:
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',

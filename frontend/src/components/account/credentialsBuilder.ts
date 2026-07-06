@@ -12,6 +12,7 @@ export function applyInterceptWarmup(
 
 export const ANTIGRAVITY_PROJECT_ID_CREDENTIAL_KEY = 'antigravity_project_id'
 export const OPENAI_USER_AGENT_CREDENTIAL_KEY = 'user_agent'
+export const OPENAI_SMART_USER_AGENT_CREDENTIAL_KEY = 'smart_user_agent_enabled'
 
 export function applyAntigravityProjectID(
   credentials: Record<string, unknown>,
@@ -36,5 +37,17 @@ export function applyOpenAIUserAgent(
     credentials[OPENAI_USER_AGENT_CREDENTIAL_KEY] = trimmed
   } else if (mode === 'edit') {
     delete credentials[OPENAI_USER_AGENT_CREDENTIAL_KEY]
+  }
+}
+
+export function applyOpenAISmartUserAgent(
+  credentials: Record<string, unknown>,
+  enabled: boolean,
+  mode: 'create' | 'edit'
+): void {
+  if (enabled) {
+    credentials[OPENAI_SMART_USER_AGENT_CREDENTIAL_KEY] = true
+  } else if (mode === 'edit') {
+    delete credentials[OPENAI_SMART_USER_AGENT_CREDENTIAL_KEY]
   }
 }

@@ -3682,10 +3682,15 @@ export default {
       openai: {
         baseUrlHint: '留空使用官方 OpenAI API',
         apiKeyHint: '您的 OpenAI API Key',
+        smartUserAgent: '智能上游 User-Agent',
+        smartUserAgentDesc:
+          '为该账号将 Codex 上游 User-Agent 归一化为少量固定的 Codex TUI/Desktop 配置。',
         userAgent: '上游 User-Agent',
         userAgentPlaceholder: 'codex-tui/0.142.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.142.5)',
         userAgentDesc:
           '可选。填写后，该账号转发到 OpenAI 时使用此 User-Agent，而不是客户端传入的 User-Agent。',
+        userAgentDisabledBySmart:
+          '开启智能上游 User-Agent 时会忽略此手动值。关闭智能模式后可使用该手动值。',
         oauthPassthrough: '自动透传（仅替换认证）',
         oauthPassthroughDesc:
           '开启后，该 OpenAI 账号将自动透传请求与响应，仅替换认证并保留计费/并发/审计及必要安全过滤；如遇兼容性问题可随时关闭回滚。',

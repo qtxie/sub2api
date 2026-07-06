@@ -159,9 +159,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			}
 		}
 	}
-	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
-		upstreamReq.Header.Set("user-agent", customUA)
+	if upstreamUA := resolveOpenAIUpstreamUserAgent(account, c.GetHeader("User-Agent")); upstreamUA != "" {
+		upstreamReq.Header.Set("user-agent", upstreamUA)
 	} else if account.Platform == PlatformGrok {
 		upstreamReq.Header.Set("user-agent", "sub2api-grok/1.0")
 	}

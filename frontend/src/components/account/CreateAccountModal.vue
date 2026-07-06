@@ -2577,14 +2577,47 @@
         v-if="form.platform === 'openai'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
+        <div class="mb-4 flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.smartUserAgent') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.smartUserAgentDesc') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="openAISmartUserAgentEnabled = !openAISmartUserAgentEnabled"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              openAISmartUserAgentEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                openAISmartUserAgentEnabled ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
         <label class="input-label">{{ t('admin.accounts.openai.userAgent') }}</label>
         <input
           v-model="openAIUserAgent"
           type="text"
-          class="input font-mono text-sm"
+          :disabled="openAISmartUserAgentEnabled"
+          :class="[
+            'input font-mono text-sm',
+            openAISmartUserAgentEnabled ? 'cursor-not-allowed opacity-60' : ''
+          ]"
           :placeholder="t('admin.accounts.openai.userAgentPlaceholder')"
         />
-        <p class="input-hint">{{ t('admin.accounts.openai.userAgentDesc') }}</p>
+        <p class="input-hint">
+          {{
+            openAISmartUserAgentEnabled
+              ? t('admin.accounts.openai.userAgentDisabledBySmart')
+              : t('admin.accounts.openai.userAgentDesc')
+          }}
+        </p>
       </div>
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
@@ -3344,6 +3377,7 @@ import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import {
   applyAntigravityProjectID,
   applyInterceptWarmup,
+  applyOpenAISmartUserAgent,
   applyOpenAIUserAgent
 } from '@/components/account/credentialsBuilder'
 import { formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
@@ -3531,6 +3565,7 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
+const openAISmartUserAgentEnabled = ref(false)
 const openAIUserAgent = ref('')
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
@@ -4430,6 +4465,7 @@ const resetForm = () => {
   grokOAuth.resetState()
   oauthFlowRef.value?.reset()
   antigravityMixedChannelConfirmed.value = false
+  openAISmartUserAgentEnabled.value = false
   openAIUserAgent.value = ''
   clearMixedChannelDialog()
 }
@@ -4495,6 +4531,14 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   return Object.keys(extra).length > 0 ? extra : undefined
+}
+
+const applyOpenAIUserAgentSettings = (
+  credentials: Record<string, unknown>,
+  mode: 'create' | 'edit'
+) => {
+  applyOpenAIUserAgent(credentials, openAIUserAgent.value, mode)
+  applyOpenAISmartUserAgent(credentials, openAISmartUserAgentEnabled.value, mode)
 }
 
 const buildAnthropicExtra = (base?: Record<string, unknown>): Record<string, unknown> | undefined => {
@@ -4784,7 +4828,7 @@ const handleSubmit = async () => {
     }
   }
   if (form.platform === 'openai') {
-    applyOpenAIUserAgent(credentials, openAIUserAgent.value, 'create')
+    applyOpenAIUserAgentSettings(credentials, 'create')
     applyOpenAIEndpointCapabilities(credentials)
     const compactModelMapping = buildOpenAICompactModelMapping()
     if (compactModelMapping) {
@@ -4878,7 +4922,7 @@ const createAccountAndFinish = async (
   extra?: Record<string, unknown>
 ) => {
   if (platform === 'openai') {
-    applyOpenAIUserAgent(credentials, openAIUserAgent.value, 'create')
+    applyOpenAIUserAgentSettings(credentials, 'create')
   }
   if (!applyTempUnschedConfig(credentials)) {
     return
@@ -5081,7 +5125,7 @@ const handleOpenAIExchange = async (authCode: string) => {
       }
     }
     if (shouldCreateOpenAI) {
-      applyOpenAIUserAgent(credentials, openAIUserAgent.value, 'create')
+      applyOpenAIUserAgentSettings(credentials, 'create')
       const compactModelMapping = buildOpenAICompactModelMapping()
       if (compactModelMapping) {
         credentials.compact_model_mapping = compactModelMapping
@@ -5129,7 +5173,7 @@ const OPENAI_MOBILE_RT_CLIENT_ID = 'app_LlGpXReQgckcGGUo2JrYvtJK'
 
 const buildOpenAICodexImportCredentialExtras = (): Record<string, unknown> | null => {
   const credentials: Record<string, unknown> = {}
-  applyOpenAIUserAgent(credentials, openAIUserAgent.value, 'create')
+  applyOpenAIUserAgentSettings(credentials, 'create')
   if (!isOpenAIModelRestrictionDisabled.value) {
     const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
     if (modelMapping) {
@@ -5337,7 +5381,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
           }
         }
         if (shouldCreateOpenAI) {
-          applyOpenAIUserAgent(credentials, openAIUserAgent.value, 'create')
+          applyOpenAIUserAgentSettings(credentials, 'create')
           const compactModelMapping = buildOpenAICompactModelMapping()
           if (compactModelMapping) {
             credentials.compact_model_mapping = compactModelMapping
@@ -5822,7 +5866,7 @@ const handleCookieAuth = async (sessionKey: string) => {
 
         const credentials: Record<string, unknown> = { ...tokenInfo }
         if (form.platform === 'openai') {
-          applyOpenAIUserAgent(credentials, openAIUserAgent.value, 'create')
+          applyOpenAIUserAgentSettings(credentials, 'create')
         }
         applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
         if (tempUnschedEnabled.value) {

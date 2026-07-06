@@ -1166,12 +1166,12 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	}
 	headers.Set("OpenAI-Beta", betaValue)
 
-	customUA := ""
-	if account != nil {
-		customUA = account.GetOpenAIUserAgent()
+	clientUA := ""
+	if c != nil {
+		clientUA = c.GetHeader("User-Agent")
 	}
-	if strings.TrimSpace(customUA) != "" {
-		headers.Set("user-agent", customUA)
+	if upstreamUA := resolveOpenAIUpstreamUserAgent(account, clientUA); upstreamUA != "" {
+		headers.Set("user-agent", upstreamUA)
 	} else if c != nil {
 		if ua := strings.TrimSpace(c.GetHeader("User-Agent")); ua != "" {
 			headers.Set("user-agent", ua)

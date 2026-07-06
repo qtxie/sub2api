@@ -1267,6 +1267,25 @@ func (a *Account) GetOpenAIUserAgent() string {
 	return a.GetCredential("user_agent")
 }
 
+func (a *Account) IsOpenAISmartUserAgentEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Credentials == nil {
+		return false
+	}
+	raw, ok := a.Credentials["smart_user_agent_enabled"]
+	if !ok || raw == nil {
+		return false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		normalized := strings.TrimSpace(strings.ToLower(v))
+		return normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "on"
+	default:
+		return false
+	}
+}
+
 func (a *Account) GetChatGPTAccountID() string {
 	if !a.IsOpenAIOAuth() {
 		return ""
