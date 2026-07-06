@@ -265,10 +265,13 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchDetailed(
 		Stream:            event.Stream,
 		AccountID:         event.AccountID,
 		AccountName:       event.AccountName,
+		AccountPriority:   event.AccountPriority,
 		FailedAccountID:   event.FailedAccountID,
 		FailedAccountName: event.FailedAccountName,
+		FailedPriority:    event.FailedPriority,
 		TargetAccountID:   event.TargetAccountID,
 		TargetAccountName: event.TargetAccountName,
+		TargetPriority:    event.TargetPriority,
 		UpstreamStatus:    event.UpstreamStatus,
 		FinalStatus:       event.FinalStatus,
 		FinalError:        event.FinalError,
@@ -407,6 +410,75 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchCancelled(
 		event.TargetAccountName = target.Name
 	}
 	h.notifyOpenAIAccountSwitchDetailed(c, event, apiKey, userID)
+}
+
+func (h *OpenAIGatewayHandler) notifyOpenAIAccountFailbackToHighestPriority(
+	c *gin.Context,
+	route string,
+	apiKey *service.APIKey,
+	userID int64,
+	model string,
+	stream bool,
+	selected *service.Account,
+	decision service.OpenAIAccountScheduleDecision,
+	platform string,
+	requireCompact bool,
+	requiredTransport service.OpenAIUpstreamTransport,
+	requiredCapability service.OpenAIEndpointCapability,
+	requiredImageCapability service.OpenAIImagesCapability,
+) {
+	if h == nil || h.accountSwitchNotifier == nil || h.gatewayService == nil || selected == nil {
+		return
+	}
+	if decision.PreviousAccountID <= 0 || (!decision.StickySessionRebind && !decision.PreviousRebind) {
+		return
+	}
+	if decision.PreviousAccountID == selected.ID {
+		return
+	}
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	previous, err := h.gatewayService.GetOpenAIAccountForNotification(ctx, decision.PreviousAccountID)
+	if err != nil || previous == nil {
+		return
+	}
+	if selected.Priority >= previous.Priority {
+		return
+	}
+	if !h.gatewayService.IsHighestPriorityOpenAIAccountForRequest(ctx, apiKeyGroupID(apiKey), selected, platform, model, requireCompact, requiredTransport, requiredCapability, requiredImageCapability) {
+		return
+	}
+	reason := strings.TrimSpace(decision.RebindReason)
+	if reason == "" {
+		reason = "higher_priority_available"
+	}
+	h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
+		EventName:         "openai.account_failback_to_highest_priority",
+		Phase:             service.OpenAIAccountSwitchPhaseFailback,
+		OccurredAt:        time.Now(),
+		Route:             route,
+		Model:             strings.TrimSpace(model),
+		Stream:            stream,
+		AccountID:         previous.ID,
+		AccountName:       previous.Name,
+		AccountPriority:   previous.Priority,
+		FailedAccountID:   previous.ID,
+		FailedAccountName: previous.Name,
+		FailedPriority:    previous.Priority,
+		TargetAccountID:   selected.ID,
+		TargetAccountName: selected.Name,
+		TargetPriority:    selected.Priority,
+		FinalError:        reason,
+	}, apiKey, userID)
+}
+
+func apiKeyGroupID(apiKey *service.APIKey) *int64 {
+	if apiKey == nil {
+		return nil
+	}
+	return apiKey.GroupID
 }
 
 func (h *OpenAIGatewayHandler) openAIFailoverFinalStatus(upstreamStatus int) int {
@@ -803,6 +875,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
+		h.notifyOpenAIAccountFailbackToHighestPriority(c, "responses", apiKey, subject.UserID, reqModel, reqStream, account, scheduleDecision, requestPlatform, requireCompact, service.OpenAIUpstreamTransportAny, service.OpenAIEndpointCapabilityChatCompletions, "")
 		if failoverAttempt.started() {
 			h.notifyOpenAIAccountSwitchCompleted(c, failoverAttempt, apiKey, subject.UserID, account, http.StatusOK, time.Since(requestStart).Milliseconds())
 		}
@@ -1993,6 +2066,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		if failoverAttempt.started() {
 			switch {
 			case wsSuccessfulTurns.Load() > 0:
+				h.notifyOpenAIAccountFailbackToHighestPriority(c, "websocket", apiKey, subject.UserID, reqModel, true, account, scheduleDecision, requestPlatform, false, requiredTransport, service.OpenAIEndpointCapabilityChatCompletions, "")
 				h.notifyOpenAIAccountSwitchCompleted(c, failoverAttempt, apiKey, subject.UserID, account, http.StatusOK, time.Since(requestStart).Milliseconds())
 			case wsClientDisconnected.Load():
 				reason, _ := wsClientDisconnectReason.Load().(string)
@@ -2003,6 +2077,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			default:
 				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, "websocket proxy ended before any successful turn", time.Since(requestStart).Milliseconds())
 			}
+		} else if wsSuccessfulTurns.Load() > 0 {
+			h.notifyOpenAIAccountFailbackToHighestPriority(c, "websocket", apiKey, subject.UserID, reqModel, true, account, scheduleDecision, requestPlatform, false, requiredTransport, service.OpenAIEndpointCapabilityChatCompletions, "")
 		}
 		reqLog.Info("openai.websocket_ingress_closed", zap.Int64("account_id", account.ID))
 		return

@@ -23,6 +23,7 @@ const (
 	OpenAIAccountSwitchPhaseCompleted = "completed"
 	OpenAIAccountSwitchPhaseFailed    = "failed"
 	OpenAIAccountSwitchPhaseCancelled = "cancelled"
+	OpenAIAccountSwitchPhaseFailback  = "failback"
 )
 
 // OpenAIAccountSwitchNotification describes an OpenAI upstream account switch.
@@ -45,10 +46,13 @@ type OpenAIAccountSwitchNotification struct {
 	Stream            bool
 	AccountID         int64
 	AccountName       string
+	AccountPriority   int
 	FailedAccountID   int64
 	FailedAccountName string
+	FailedPriority    int
 	TargetAccountID   int64
 	TargetAccountName string
+	TargetPriority    int
 	UpstreamStatus    int
 	FinalStatus       int
 	FinalError        string
@@ -234,19 +238,23 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 	writeNotificationLine(&b, "model", e.Model)
 	switch e.phase() {
 	case OpenAIAccountSwitchPhaseCompleted:
-		writeNotificationLine(&b, "from", displayNameID(e.failedAccountName(), e.failedAccountID()))
-		writeNotificationLine(&b, "to", displayNameID(e.TargetAccountName, e.TargetAccountID))
+		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
+		writeNotificationLine(&b, "to", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
 		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
 	case OpenAIAccountSwitchPhaseFailed:
-		writeNotificationLine(&b, "from", displayNameID(e.failedAccountName(), e.failedAccountID()))
+		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
 		writeNotificationLine(&b, "reason", e.FinalError)
 	case OpenAIAccountSwitchPhaseCancelled:
-		writeNotificationLine(&b, "from", displayNameID(e.failedAccountName(), e.failedAccountID()))
-		writeNotificationLine(&b, "to", displayNameID(e.TargetAccountName, e.TargetAccountID))
+		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
+		writeNotificationLine(&b, "to", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
+		writeNotificationLine(&b, "reason", e.FinalError)
+	case OpenAIAccountSwitchPhaseFailback:
+		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
+		writeNotificationLine(&b, "to", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
 		writeNotificationLine(&b, "reason", e.FinalError)
 	default:
-		writeNotificationLine(&b, "failed account", displayNameID(e.failedAccountName(), e.failedAccountID()))
+		writeNotificationLine(&b, "failed account", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "status", strconv.Itoa(e.UpstreamStatus))
 	}
 	if e.SwitchCount > 0 || e.MaxSwitches > 0 {
@@ -275,6 +283,8 @@ func (e OpenAIAccountSwitchNotification) phase() string {
 		return OpenAIAccountSwitchPhaseFailed
 	case OpenAIAccountSwitchPhaseCancelled:
 		return OpenAIAccountSwitchPhaseCancelled
+	case OpenAIAccountSwitchPhaseFailback:
+		return OpenAIAccountSwitchPhaseFailback
 	default:
 		return OpenAIAccountSwitchPhaseStarted
 	}
@@ -288,6 +298,8 @@ func (e OpenAIAccountSwitchNotification) telegramTitle() string {
 		return "sub2api OpenAI failover failed\n"
 	case OpenAIAccountSwitchPhaseCancelled:
 		return "sub2api OpenAI failover cancelled\n"
+	case OpenAIAccountSwitchPhaseFailback:
+		return "sub2api OpenAI account switched back\n"
 	default:
 		return "sub2api OpenAI failover started\n"
 	}
@@ -314,6 +326,13 @@ func (e OpenAIAccountSwitchNotification) failedAccountName() string {
 	return e.AccountName
 }
 
+func (e OpenAIAccountSwitchNotification) failedPriority() int {
+	if e.FailedPriority != 0 {
+		return e.FailedPriority
+	}
+	return e.AccountPriority
+}
+
 func displayNameID(name string, id int64) string {
 	name = strings.TrimSpace(name)
 	switch {
@@ -324,6 +343,17 @@ func displayNameID(name string, id int64) string {
 	default:
 		return name
 	}
+}
+
+func displayAccountNameIDPriority(name string, id int64, priority int) string {
+	base := displayNameID(name, id)
+	if priority <= 0 {
+		return base
+	}
+	if strings.TrimSpace(base) == "" {
+		return fmt.Sprintf("priority=%d", priority)
+	}
+	return fmt.Sprintf("%s priority=%d", base, priority)
 }
 
 func parseNotificationGroupID(groupID string) int64 {

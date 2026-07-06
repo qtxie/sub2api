@@ -2566,6 +2566,69 @@ func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accoun
 	return account, nil
 }
 
+// GetOpenAIAccountForNotification returns account metadata for user-facing switch notifications.
+func (s *OpenAIGatewayService) GetOpenAIAccountForNotification(ctx context.Context, accountID int64) (*Account, error) {
+	if s == nil || accountID <= 0 {
+		return nil, nil
+	}
+	return s.getSchedulableAccount(ctx, accountID)
+}
+
+// IsHighestPriorityOpenAIAccountForRequest reports whether selected is the best-priority eligible account.
+func (s *OpenAIGatewayService) IsHighestPriorityOpenAIAccountForRequest(
+	ctx context.Context,
+	groupID *int64,
+	selected *Account,
+	platform string,
+	requestedModel string,
+	requireCompact bool,
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
+) bool {
+	if s == nil || selected == nil {
+		return false
+	}
+	platform = normalizeOpenAICompatiblePlatform(platform)
+	selected = s.recheckSelectedOpenAIAccountFromDB(ctx, selected, platform, requestedModel, requireCompact, requiredCapability)
+	if selected == nil {
+		return false
+	}
+	if !accountSupportsOpenAICapabilities(selected, requiredCapability, requiredImageCapability) ||
+		!s.isOpenAIAccountTransportCompatible(selected, requiredTransport) {
+		return false
+	}
+	accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
+	if err != nil {
+		return false
+	}
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	for i := range accounts {
+		candidate := &accounts[i]
+		if candidate == nil || candidate.ID == selected.ID || candidate.Priority >= selected.Priority {
+			continue
+		}
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, candidate, platform, requestedModel, requireCompact, requiredCapability)
+		if fresh == nil {
+			continue
+		}
+		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, platform, requestedModel, requireCompact, requiredCapability)
+		if fresh == nil {
+			continue
+		}
+		if !accountSupportsOpenAICapabilities(fresh, requiredCapability, requiredImageCapability) ||
+			!s.isOpenAIAccountTransportCompatible(fresh, requiredTransport) {
+			continue
+		}
+		if needsUpstreamCheck && groupID != nil &&
+			s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func (s *OpenAIGatewayService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
 	if account == nil || s.schedulerSnapshot == nil {
 		return account, nil

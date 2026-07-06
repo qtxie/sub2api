@@ -234,6 +234,36 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 	require.Contains(t, text, "from: CIII (#1)")
 	require.Contains(t, text, "to: AiNX (#3)")
 	require.Contains(t, text, "reason: client disconnected")
+
+	failback := OpenAIAccountSwitchNotification{
+		EventName:         "openai.account_failback_to_highest_priority",
+		Phase:             OpenAIAccountSwitchPhaseFailback,
+		OccurredAt:        when,
+		Route:             "responses",
+		Model:             "gpt-5.5",
+		FailedAccountID:   3,
+		FailedAccountName: "Backup",
+		FailedPriority:    20,
+		TargetAccountID:   1,
+		TargetAccountName: "Main",
+		TargetPriority:    1,
+		FinalError:        "higher_priority_available",
+		UserID:            3,
+		UserName:          "alice",
+		APIKeyID:          2,
+		APIKeyName:        "codex",
+		GroupID:           "2",
+		GroupName:         "GPT subscription",
+	}
+	text = failback.telegramText()
+	require.Contains(t, text, "sub2api OpenAI account switched back")
+	require.Contains(t, text, "event: openai.account_failback_to_highest_priority")
+	require.Contains(t, text, "from: Backup (#3) priority=20")
+	require.Contains(t, text, "to: Main (#1) priority=1")
+	require.Contains(t, text, "reason: higher_priority_available")
+	require.Contains(t, text, "user: alice (#3)")
+	require.Contains(t, text, "api key: codex (#2)")
+	require.Contains(t, text, "group: GPT subscription (#2)")
 }
 
 func TestNewOpenAIAccountSwitchNotifierDisabledOrIncomplete(t *testing.T) {
