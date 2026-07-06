@@ -18,23 +18,42 @@ import (
 
 const defaultOpenAISwitchNotifierTelegramBaseURL = "https://api.telegram.org"
 
+const (
+	OpenAIAccountSwitchPhaseStarted   = "started"
+	OpenAIAccountSwitchPhaseCompleted = "completed"
+	OpenAIAccountSwitchPhaseFailed    = "failed"
+)
+
 // OpenAIAccountSwitchNotification describes an OpenAI upstream account switch.
 type OpenAIAccountSwitchNotification struct {
-	EventName       string
-	Route           string
-	RequestID       string
-	ClientRequestID string
-	Path            string
-	Method          string
-	UserID          int64
-	APIKeyID        int64
-	GroupID         string
-	Model           string
-	Stream          bool
-	AccountID       int64
-	UpstreamStatus  int
-	SwitchCount     int
-	MaxSwitches     int
+	EventName         string
+	Phase             string
+	OccurredAt        time.Time
+	Route             string
+	RequestID         string
+	ClientRequestID   string
+	Path              string
+	Method            string
+	UserID            int64
+	UserName          string
+	APIKeyID          int64
+	APIKeyName        string
+	GroupID           string
+	GroupName         string
+	Model             string
+	Stream            bool
+	AccountID         int64
+	AccountName       string
+	FailedAccountID   int64
+	FailedAccountName string
+	TargetAccountID   int64
+	TargetAccountName string
+	UpstreamStatus    int
+	FinalStatus       int
+	FinalError        string
+	LatencyMs         int64
+	SwitchCount       int
+	MaxSwitches       int
 }
 
 // OpenAIAccountSwitchNotifier sends account-switch notifications.
@@ -190,10 +209,13 @@ func telegramChatIDValue(chatID string) any {
 
 func (e OpenAIAccountSwitchNotification) dedupeKey() string {
 	return strings.Join([]string{
+		e.phase(),
 		e.EventName,
 		e.Route,
-		strconv.FormatInt(e.AccountID, 10),
+		strconv.FormatInt(e.failedAccountID(), 10),
+		strconv.FormatInt(e.TargetAccountID, 10),
 		strconv.Itoa(e.UpstreamStatus),
+		strconv.Itoa(e.FinalStatus),
 		e.Model,
 	}, "|")
 }
@@ -204,27 +226,110 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 		eventName = "openai.upstream_failover_switching"
 	}
 	var b strings.Builder
-	_, _ = b.WriteString("sub2api OpenAI account switch\n")
+	_, _ = b.WriteString(e.telegramTitle())
 	writeNotificationLine(&b, "event", eventName)
+	writeNotificationLine(&b, "time", e.eventTime().Format("2006-01-02 15:04:05 -0700"))
 	writeNotificationLine(&b, "route", e.Route)
 	writeNotificationLine(&b, "model", e.Model)
-	writeNotificationLine(&b, "account_id", strconv.FormatInt(e.AccountID, 10))
-	writeNotificationLine(&b, "upstream_status", strconv.Itoa(e.UpstreamStatus))
-	writeNotificationLine(&b, "switch_count", fmt.Sprintf("%d/%d", e.SwitchCount, e.MaxSwitches))
+	switch e.phase() {
+	case OpenAIAccountSwitchPhaseCompleted:
+		writeNotificationLine(&b, "from", displayNameID(e.failedAccountName(), e.failedAccountID()))
+		writeNotificationLine(&b, "to", displayNameID(e.TargetAccountName, e.TargetAccountID))
+		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
+	case OpenAIAccountSwitchPhaseFailed:
+		writeNotificationLine(&b, "from", displayNameID(e.failedAccountName(), e.failedAccountID()))
+		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
+		writeNotificationLine(&b, "reason", e.FinalError)
+	default:
+		writeNotificationLine(&b, "failed account", displayNameID(e.failedAccountName(), e.failedAccountID()))
+		writeNotificationLine(&b, "status", strconv.Itoa(e.UpstreamStatus))
+	}
+	if e.SwitchCount > 0 || e.MaxSwitches > 0 {
+		writeNotificationLine(&b, "switch", fmt.Sprintf("%d/%d", e.SwitchCount, e.MaxSwitches))
+	}
+	if e.LatencyMs > 0 {
+		writeNotificationLine(&b, "latency", formatDurationMs(e.LatencyMs))
+	}
+	writeNotificationLine(&b, "user", displayNameID(e.UserName, e.UserID))
+	writeNotificationLine(&b, "api key", displayNameID(e.APIKeyName, e.APIKeyID))
+	writeNotificationLine(&b, "group", displayNameID(e.GroupName, parseNotificationGroupID(e.GroupID)))
 	writeNotificationLine(&b, "request_id", e.RequestID)
 	writeNotificationLine(&b, "client_request_id", e.ClientRequestID)
-	if e.UserID != 0 {
-		writeNotificationLine(&b, "user_id", strconv.FormatInt(e.UserID, 10))
-	}
-	if e.APIKeyID != 0 {
-		writeNotificationLine(&b, "api_key_id", strconv.FormatInt(e.APIKeyID, 10))
-	}
-	writeNotificationLine(&b, "group_id", e.GroupID)
 	if strings.TrimSpace(e.Method) != "" || strings.TrimSpace(e.Path) != "" {
 		writeNotificationLine(&b, "request", strings.TrimSpace(e.Method+" "+e.Path))
 	}
 	writeNotificationLine(&b, "stream", strconv.FormatBool(e.Stream))
 	return b.String()
+}
+
+func (e OpenAIAccountSwitchNotification) phase() string {
+	switch strings.TrimSpace(e.Phase) {
+	case OpenAIAccountSwitchPhaseCompleted:
+		return OpenAIAccountSwitchPhaseCompleted
+	case OpenAIAccountSwitchPhaseFailed:
+		return OpenAIAccountSwitchPhaseFailed
+	default:
+		return OpenAIAccountSwitchPhaseStarted
+	}
+}
+
+func (e OpenAIAccountSwitchNotification) telegramTitle() string {
+	switch e.phase() {
+	case OpenAIAccountSwitchPhaseCompleted:
+		return "sub2api OpenAI failover completed\n"
+	case OpenAIAccountSwitchPhaseFailed:
+		return "sub2api OpenAI failover failed\n"
+	default:
+		return "sub2api OpenAI failover started\n"
+	}
+}
+
+func (e OpenAIAccountSwitchNotification) eventTime() time.Time {
+	if e.OccurredAt.IsZero() {
+		return time.Now()
+	}
+	return e.OccurredAt
+}
+
+func (e OpenAIAccountSwitchNotification) failedAccountID() int64 {
+	if e.FailedAccountID > 0 {
+		return e.FailedAccountID
+	}
+	return e.AccountID
+}
+
+func (e OpenAIAccountSwitchNotification) failedAccountName() string {
+	if strings.TrimSpace(e.FailedAccountName) != "" {
+		return e.FailedAccountName
+	}
+	return e.AccountName
+}
+
+func displayNameID(name string, id int64) string {
+	name = strings.TrimSpace(name)
+	switch {
+	case name != "" && id > 0:
+		return fmt.Sprintf("%s (#%d)", name, id)
+	case id > 0:
+		return fmt.Sprintf("#%d", id)
+	default:
+		return name
+	}
+}
+
+func parseNotificationGroupID(groupID string) int64 {
+	parsed, _ := strconv.ParseInt(strings.TrimSpace(groupID), 10, 64)
+	return parsed
+}
+
+func formatDurationMs(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
 }
 
 func writeNotificationLine(b *strings.Builder, key, value string) {

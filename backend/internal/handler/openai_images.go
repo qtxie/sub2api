@@ -142,6 +142,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var failoverAttempt openAIAccountSwitchAttempt
 
 	for {
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
@@ -171,8 +172,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				return
 			}
 			if lastFailoverErr != nil {
+				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(lastFailoverErr.StatusCode), err.Error(), time.Since(requestStart).Milliseconds())
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 			} else {
+				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds())
 				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
 			}
 			return
@@ -263,6 +266,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 						)
+						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
@@ -288,11 +292,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
+						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -302,10 +308,14 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
-					h.notifyOpenAIAccountSwitch(c, "openai.images.upstream_failover_switching", "images", apiKey, subject.UserID, requestModel, parsed.Stream, account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+					started := h.notifyOpenAIAccountSwitchStarted(c, "openai.images.upstream_failover_switching", "images", apiKey, subject.UserID, requestModel, parsed.Stream, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+					failoverAttempt = started
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+				if failoverAttempt.started() {
+					h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds())
+				}
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
@@ -333,6 +343,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+		}
+		if failoverAttempt.started() {
+			h.notifyOpenAIAccountSwitchCompleted(c, failoverAttempt, apiKey, subject.UserID, account, http.StatusOK, time.Since(requestStart).Milliseconds())
 		}
 
 		userAgent := c.GetHeader("User-Agent")

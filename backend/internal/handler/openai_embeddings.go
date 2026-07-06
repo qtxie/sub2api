@@ -99,6 +99,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 
 	failedAccountIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
+	var failoverAttempt openAIAccountSwitchAttempt
 	switchCount := 0
 	maxAccountSwitches := h.maxAccountSwitches
 	if maxAccountSwitches <= 0 {
@@ -132,8 +133,10 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 				return
 			}
 			if lastFailoverErr != nil {
+				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(lastFailoverErr.StatusCode), err.Error(), time.Since(requestStart).Milliseconds())
 				h.handleFailoverExhausted(c, lastFailoverErr, false)
 			} else {
+				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds())
 				h.errorResponse(c, http.StatusBadGateway, "api_error", "Upstream request failed")
 			}
 			return
@@ -183,6 +186,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				if c.Writer.Size() != writerSizeBeforeForward {
+					h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
 					h.handleFailoverExhausted(c, failoverErr, true)
 					return
 				}
@@ -191,6 +195,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {
+					h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
 					h.handleFailoverExhausted(c, failoverErr, false)
 					return
 				}
@@ -201,10 +206,14 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 					zap.Int("switch_count", switchCount),
 					zap.Int("max_switches", maxAccountSwitches),
 				)
-				h.notifyOpenAIAccountSwitch(c, "openai_embeddings.upstream_failover_switching", "embeddings", apiKey, subject.UserID, reqModel, false, account.ID, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+				started := h.notifyOpenAIAccountSwitchStarted(c, "openai_embeddings.upstream_failover_switching", "embeddings", apiKey, subject.UserID, reqModel, false, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+				failoverAttempt = started
 				continue
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+			if failoverAttempt.started() {
+				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds())
+			}
 			if c.Writer.Size() == writerSizeBeforeForward {
 				h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 			}
@@ -216,6 +225,9 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		}
 
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+		if failoverAttempt.started() {
+			h.notifyOpenAIAccountSwitchCompleted(c, failoverAttempt, apiKey, subject.UserID, account, http.StatusOK, time.Since(requestStart).Milliseconds())
+		}
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		inboundEndpoint := GetInboundEndpoint(c)
