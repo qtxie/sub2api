@@ -394,6 +394,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 
 	completedTurns := atomic.Int32{}
+	clientClosedBeforeTerminal := atomic.Bool{}
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{
 		inner: &openAIWSClientFrameConn{conn: clientConn},
 		// 注意线程安全：filter 仅在 runClientToUpstream 这一条
@@ -582,6 +583,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 				}
 			},
 			OnTrace: func(event openaiwsv2.RelayTraceEvent) {
+				if event.Stage == "relay_client_closed" {
+					clientClosedBeforeTerminal.Store(true)
+				}
 				logOpenAIWSV2Passthrough(
 					"relay_trace account_id=%d stage=%s direction=%s msg_type=%s bytes=%d graceful=%v wrote_downstream=%v err=%s",
 					account.ID,
@@ -630,6 +634,12 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			turnCount,
 		)
 		// 正常路径按 terminal 事件逐 turn 已回调；仅在零 turn 场景兜底回调一次。
+		if turnCount == 0 && clientClosedBeforeTerminal.Load() {
+			if hooks != nil && hooks.OnClientDisconnect != nil {
+				hooks.OnClientDisconnect(1, "client disconnected")
+			}
+			return nil
+		}
 		if turnCount == 0 && hooks != nil && hooks.AfterTurn != nil {
 			hooks.AfterTurn(1, result, nil)
 		}

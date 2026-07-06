@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -370,6 +371,42 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchFailed(
 		SwitchCount:       attempt.SwitchCount,
 		MaxSwitches:       attempt.MaxSwitches,
 	}, apiKey, userID)
+}
+
+func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchCancelled(
+	c *gin.Context,
+	attempt openAIAccountSwitchAttempt,
+	apiKey *service.APIKey,
+	userID int64,
+	target *service.Account,
+	reason string,
+	latencyMs int64,
+) {
+	if !attempt.started() {
+		return
+	}
+	event := service.OpenAIAccountSwitchNotification{
+		EventName:         attempt.EventName,
+		Phase:             service.OpenAIAccountSwitchPhaseCancelled,
+		OccurredAt:        time.Now(),
+		Route:             attempt.Route,
+		Model:             attempt.Model,
+		Stream:            attempt.Stream,
+		AccountID:         attempt.FailedAccountID,
+		AccountName:       attempt.FailedAccountName,
+		FailedAccountID:   attempt.FailedAccountID,
+		FailedAccountName: attempt.FailedAccountName,
+		UpstreamStatus:    attempt.UpstreamStatus,
+		FinalError:        strings.TrimSpace(reason),
+		LatencyMs:         latencyMs,
+		SwitchCount:       attempt.SwitchCount,
+		MaxSwitches:       attempt.MaxSwitches,
+	}
+	if target != nil {
+		event.TargetAccountID = target.ID
+		event.TargetAccountName = target.Name
+	}
+	h.notifyOpenAIAccountSwitchDetailed(c, event, apiKey, userID)
 }
 
 func (h *OpenAIGatewayHandler) openAIFailoverFinalStatus(upstreamStatus int) int {
@@ -1733,6 +1770,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		)
 
 		var requestPayloadHash string
+		wsSuccessfulTurns := atomic.Int32{}
+		wsClientDisconnected := atomic.Bool{}
+		wsClientDisconnectReason := atomic.Value{}
 		hooks := &service.OpenAIWSIngressHooks{
 			InitialRequestModel: reqModel,
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
@@ -1818,6 +1858,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				if result == nil {
 					return
 				}
+				wsSuccessfulTurns.Add(1)
 				// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 				if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
@@ -1851,6 +1892,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						)
 					}
 				})
+			},
+			OnClientDisconnect: func(_ int, reason string) {
+				wsClientDisconnected.Store(true)
+				wsClientDisconnectReason.Store(strings.TrimSpace(reason))
 			},
 		}
 
@@ -1920,6 +1965,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				started := h.notifyOpenAIAccountSwitchStarted(c, "openai.websocket_upstream_failover_switching", "websocket", apiKey, subject.UserID, reqModel, true, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 				failoverAttempt = started
 				if !ensureUserSlotHeld() {
+					h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusServiceUnavailable, "failed to reacquire user concurrency slot", time.Since(requestStart).Milliseconds())
 					return
 				}
 				continue
@@ -1945,7 +1991,18 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			return
 		}
 		if failoverAttempt.started() {
-			h.notifyOpenAIAccountSwitchCompleted(c, failoverAttempt, apiKey, subject.UserID, account, http.StatusSwitchingProtocols, time.Since(requestStart).Milliseconds())
+			switch {
+			case wsSuccessfulTurns.Load() > 0:
+				h.notifyOpenAIAccountSwitchCompleted(c, failoverAttempt, apiKey, subject.UserID, account, http.StatusOK, time.Since(requestStart).Milliseconds())
+			case wsClientDisconnected.Load():
+				reason, _ := wsClientDisconnectReason.Load().(string)
+				if reason == "" {
+					reason = "client disconnected"
+				}
+				h.notifyOpenAIAccountSwitchCancelled(c, failoverAttempt, apiKey, subject.UserID, account, reason, time.Since(requestStart).Milliseconds())
+			default:
+				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, "websocket proxy ended before any successful turn", time.Since(requestStart).Milliseconds())
+			}
 		}
 		reqLog.Info("openai.websocket_ingress_closed", zap.Int64("account_id", account.ID))
 		return

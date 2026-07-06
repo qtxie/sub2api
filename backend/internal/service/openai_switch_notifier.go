@@ -22,6 +22,7 @@ const (
 	OpenAIAccountSwitchPhaseStarted   = "started"
 	OpenAIAccountSwitchPhaseCompleted = "completed"
 	OpenAIAccountSwitchPhaseFailed    = "failed"
+	OpenAIAccountSwitchPhaseCancelled = "cancelled"
 )
 
 // OpenAIAccountSwitchNotification describes an OpenAI upstream account switch.
@@ -240,6 +241,10 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 		writeNotificationLine(&b, "from", displayNameID(e.failedAccountName(), e.failedAccountID()))
 		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
 		writeNotificationLine(&b, "reason", e.FinalError)
+	case OpenAIAccountSwitchPhaseCancelled:
+		writeNotificationLine(&b, "from", displayNameID(e.failedAccountName(), e.failedAccountID()))
+		writeNotificationLine(&b, "to", displayNameID(e.TargetAccountName, e.TargetAccountID))
+		writeNotificationLine(&b, "reason", e.FinalError)
 	default:
 		writeNotificationLine(&b, "failed account", displayNameID(e.failedAccountName(), e.failedAccountID()))
 		writeNotificationLine(&b, "status", strconv.Itoa(e.UpstreamStatus))
@@ -268,6 +273,8 @@ func (e OpenAIAccountSwitchNotification) phase() string {
 		return OpenAIAccountSwitchPhaseCompleted
 	case OpenAIAccountSwitchPhaseFailed:
 		return OpenAIAccountSwitchPhaseFailed
+	case OpenAIAccountSwitchPhaseCancelled:
+		return OpenAIAccountSwitchPhaseCancelled
 	default:
 		return OpenAIAccountSwitchPhaseStarted
 	}
@@ -279,6 +286,8 @@ func (e OpenAIAccountSwitchNotification) telegramTitle() string {
 		return "sub2api OpenAI failover completed\n"
 	case OpenAIAccountSwitchPhaseFailed:
 		return "sub2api OpenAI failover failed\n"
+	case OpenAIAccountSwitchPhaseCancelled:
+		return "sub2api OpenAI failover cancelled\n"
 	default:
 		return "sub2api OpenAI failover started\n"
 	}

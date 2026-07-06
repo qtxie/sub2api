@@ -225,6 +225,7 @@ type OpenAIWSIngressHooks struct {
 	BeforeTurn          func(turn int) error
 	BeforeRequest       func(turn int, payload []byte, originalModel string) error
 	AfterTurn           func(turn int, result *OpenAIForwardResult, turnErr error)
+	OnClientDisconnect  func(turn int, reason string)
 }
 
 func normalizeOpenAIWSLogValue(value string) string {
@@ -2967,6 +2968,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 						closeStatus,
 						truncateOpenAIWSLogValue(closeReason, openAIWSHeaderValueMaxLen),
 					)
+					if hooks != nil && hooks.OnClientDisconnect != nil {
+						hooks.OnClientDisconnect(turn, strings.TrimSpace(closeStatus+" "+closeReason))
+					}
 					return nil
 				}
 				return fmt.Errorf("read client websocket request: %w", readErr)
@@ -3959,6 +3963,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 					closeStatus,
 					truncateOpenAIWSLogValue(closeReason, openAIWSHeaderValueMaxLen),
 				)
+				if hooks != nil && hooks.OnClientDisconnect != nil {
+					hooks.OnClientDisconnect(turn, strings.TrimSpace(closeStatus+" "+closeReason))
+				}
 				return nil
 			}
 			return fmt.Errorf("read client websocket request: %w", readErr)

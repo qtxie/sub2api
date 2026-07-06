@@ -166,10 +166,15 @@ func TestOpenAIAccountSwitchNotifierDoesNotRateLimitDifferentPhases(t *testing.T
 	completed.Phase = OpenAIAccountSwitchPhaseCompleted
 	completed.TargetAccountID = 3
 	completed.FinalStatus = http.StatusOK
+	cancelled := base
+	cancelled.Phase = OpenAIAccountSwitchPhaseCancelled
+	cancelled.TargetAccountID = 3
+	cancelled.FinalError = "client disconnected"
 
 	require.NoError(t, notifier.Notify(context.Background(), started))
 	require.NoError(t, notifier.Notify(context.Background(), completed))
-	require.Equal(t, int32(2), count.Load())
+	require.NoError(t, notifier.Notify(context.Background(), cancelled))
+	require.Equal(t, int32(3), count.Load())
 }
 
 func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testing.T) {
@@ -214,6 +219,21 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 	require.Contains(t, text, "from: #1")
 	require.Contains(t, text, "final status: 502")
 	require.Contains(t, text, "reason: context canceled")
+
+	cancelled := OpenAIAccountSwitchNotification{
+		Phase:             OpenAIAccountSwitchPhaseCancelled,
+		OccurredAt:        when,
+		FailedAccountID:   1,
+		FailedAccountName: "CIII",
+		TargetAccountID:   3,
+		TargetAccountName: "AiNX",
+		FinalError:        "client disconnected",
+	}
+	text = cancelled.telegramText()
+	require.Contains(t, text, "sub2api OpenAI failover cancelled")
+	require.Contains(t, text, "from: CIII (#1)")
+	require.Contains(t, text, "to: AiNX (#3)")
+	require.Contains(t, text, "reason: client disconnected")
 }
 
 func TestNewOpenAIAccountSwitchNotifierDisabledOrIncomplete(t *testing.T) {
