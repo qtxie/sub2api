@@ -3504,6 +3504,10 @@ export default {
       openai: {
         baseUrlHint: 'Leave default for official OpenAI API',
         apiKeyHint: 'Your OpenAI API Key',
+        userAgent: 'Upstream User-Agent',
+        userAgentPlaceholder: 'codex-tui/0.142.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.142.5)',
+        userAgentDesc:
+          'Optional. When set, this account sends this User-Agent to OpenAI instead of the client User-Agent.',
         oauthPassthrough: 'Auto passthrough (auth only)',
         oauthPassthroughDesc:
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',

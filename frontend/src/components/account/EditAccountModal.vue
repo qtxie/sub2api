@@ -1340,6 +1340,21 @@
         <p class="input-hint">{{ t('admin.accounts.expiresAtHint') }}</p>
       </div>
 
+      <!-- OpenAI upstream User-Agent override -->
+      <div
+        v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <label class="input-label">{{ t('admin.accounts.openai.userAgent') }}</label>
+        <input
+          v-model="openAIUserAgent"
+          type="text"
+          class="input font-mono text-sm"
+          :placeholder="t('admin.accounts.openai.userAgentPlaceholder')"
+        />
+        <p class="input-hint">{{ t('admin.accounts.openai.userAgentDesc') }}</p>
+      </div>
+
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
       <div
         v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
@@ -2433,7 +2448,8 @@ import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import {
   applyAntigravityProjectID,
-  applyInterceptWarmup
+  applyInterceptWarmup,
+  applyOpenAIUserAgent
 } from '@/components/account/credentialsBuilder'
 import { formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
@@ -2620,6 +2636,7 @@ const customBaseUrl = ref('')
 
 // OpenAI 自动透传开关（OAuth/API Key）
 const openaiPassthroughEnabled = ref(false)
+const openAIUserAgent = ref('')
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
@@ -3022,6 +3039,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
+  openAIUserAgent.value =
+    newAccount.platform === 'openai' && typeof credentials?.user_agent === 'string'
+      ? credentials.user_agent
+      : ''
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
   editVertexClientEmail.value = ''
@@ -4011,6 +4032,18 @@ const handleSubmit = async () => {
         }
       }
 
+      updatePayload.credentials = newCredentials
+    }
+
+    if (
+      props.account.platform === 'openai' &&
+      (props.account.type === 'oauth' || props.account.type === 'setup-token' || props.account.type === 'apikey')
+    ) {
+      const currentCredentials =
+        (updatePayload.credentials as Record<string, unknown>) ||
+        ((props.account.credentials as Record<string, unknown>) || {})
+      const newCredentials: Record<string, unknown> = { ...currentCredentials }
+      applyOpenAIUserAgent(newCredentials, openAIUserAgent.value, 'edit')
       updatePayload.credentials = newCredentials
     }
 
