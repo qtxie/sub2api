@@ -778,6 +778,108 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	return selected, compactBlocked
 }
 
+func (s *OpenAIGatewayService) GetOpenAIAccountForNotification(ctx context.Context, accountID int64) (*Account, error) {
+	if s == nil || s.accountRepo == nil || accountID <= 0 {
+		return nil, ErrNoAvailableAccounts
+	}
+	if s.schedulerSnapshot != nil {
+		if account, err := s.schedulerSnapshot.GetAccount(ctx, accountID); err == nil && account != nil {
+			return account, nil
+		}
+	}
+	return s.accountRepo.GetByID(ctx, accountID)
+}
+
+func (s *OpenAIGatewayService) IsHighestPriorityOpenAIAccountForRequest(
+	ctx context.Context,
+	groupID *int64,
+	selected *Account,
+	platform string,
+	requestedModel string,
+	requireCompact bool,
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
+) bool {
+	if s == nil || selected == nil {
+		return false
+	}
+
+	platform = normalizeOpenAICompatiblePlatform(platform)
+	accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
+	if err != nil || len(accounts) == 0 {
+		return false
+	}
+
+	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	parentCache := make(map[int64]*Account)
+	parentLookup := func(id int64) *Account {
+		if account, ok := parentCache[id]; ok {
+			return account
+		}
+		account, _ := s.GetOpenAIAccountForNotification(ctx, id)
+		parentCache[id] = account
+		return account
+	}
+
+	candidates := make([]*Account, 0, len(accounts))
+	selectedSeen := false
+	for i := range accounts {
+		account := &accounts[i]
+		if !isOpenAICompatibleAccountEligibleForRequest(ctx, account, platform, requestedModel, requireCompact, requiredCapability) {
+			continue
+		}
+		if !accountSupportsOpenAICapabilities(account, requiredCapability, requiredImageCapability) {
+			continue
+		}
+		if !s.isOpenAIAccountTransportCompatible(account, requiredTransport) {
+			continue
+		}
+		if !parentHealthyForShadow(account, parentLookup) {
+			continue
+		}
+		if s.isOpenAIAccountRuntimeBlocked(account) {
+			continue
+		}
+		if needsUpstreamCheck && groupID != nil &&
+			s.isUpstreamModelRestrictedByChannel(ctx, *groupID, account, requestedModel, requireCompact) {
+			continue
+		}
+		candidates = append(candidates, account)
+		if account.ID == selected.ID {
+			selectedSeen = true
+		}
+	}
+	if !selectedSeen {
+		return false
+	}
+
+	candidates = s.filterCircuitOpenOpenAIAccountsIfAlternativesExist(OpenAIAccountScheduleRequest{
+		GroupID:                 groupID,
+		Platform:                platform,
+		RequestedModel:          requestedModel,
+		RequiredTransport:       requiredTransport,
+		RequiredCapability:      requiredCapability,
+		RequiredImageCapability: requiredImageCapability,
+		RequireCompact:          requireCompact,
+	}, candidates, time.Now())
+
+	selectedAllowed := false
+	for _, account := range candidates {
+		if account == nil {
+			continue
+		}
+		if account.ID == selected.ID {
+			selectedAllowed = true
+			continue
+		}
+		if account.Priority < selected.Priority {
+			return false
+		}
+	}
+	return selectedAllowed
+}
+
 // isBetterAccount 判断 candidate 是否比 current 更优。
 // 规则：优先级更高（数值更小）优先；同优先级时，未使用过的优先，其次是最久未使用的。
 //

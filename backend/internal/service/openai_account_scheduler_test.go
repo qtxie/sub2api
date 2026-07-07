@@ -3484,6 +3484,60 @@ func TestOpenAIGatewayService_LegacyLoadAwarenessSkipsSlowWhenAlternativeExists(
 	}
 }
 
+func TestOpenAIGatewayService_IsHighestPriorityForNotificationRejectsBetterHealthyAccount(t *testing.T) {
+	groupID := int64(10203)
+	accounts := []Account{
+		{ID: 2301, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 2302, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo: schedulerGroupAwareOpenAIAccountRepo{schedulerTestOpenAIAccountRepo{accounts: accounts}},
+		cfg:         &config.Config{},
+	}
+
+	require.False(t, svc.IsHighestPriorityOpenAIAccountForRequest(
+		context.Background(),
+		&groupID,
+		&accounts[1],
+		PlatformOpenAI,
+		"gpt-5.1",
+		false,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		"",
+	))
+}
+
+func TestOpenAIGatewayService_IsHighestPriorityForNotificationIgnoresSlowHigherPriorityAccount(t *testing.T) {
+	groupID := int64(10204)
+	stats := newOpenAIAccountRuntimeStats()
+	accounts := []Account{
+		{ID: 2401, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 2402, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerGroupAwareOpenAIAccountRepo{schedulerTestOpenAIAccountRepo{accounts: accounts}},
+		cfg:                &config.Config{},
+		openaiAccountStats: stats,
+	}
+	slow := 31000
+	stats.report(2401, true, &slow, svc.openAISlowAccountConfig())
+	stats.report(2401, true, &slow, svc.openAISlowAccountConfig())
+	stats.report(2401, true, &slow, svc.openAISlowAccountConfig())
+
+	require.True(t, svc.IsHighestPriorityOpenAIAccountForRequest(
+		context.Background(),
+		&groupID,
+		&accounts[1],
+		PlatformOpenAI,
+		"gpt-5.1",
+		false,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		"",
+	))
+}
+
 func TestOpenAIAccountSlowPenaltyStages(t *testing.T) {
 	cfg := openAISlowAccountConfig{
 		enabled:       true,
