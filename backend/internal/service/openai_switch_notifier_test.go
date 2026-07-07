@@ -73,7 +73,7 @@ func TestOpenAIAccountSwitchNotifierSendsTelegram(t *testing.T) {
 	require.Equal(t, "/bottest-token/sendMessage", gotPath)
 	require.Equal(t, float64(12345), gotPayload["chat_id"])
 	text, _ := gotPayload["text"].(string)
-	require.Contains(t, text, "sub2api OpenAI failover started")
+	require.Contains(t, text, "➡️ OpenAI failover started")
 	require.Contains(t, text, "event: openai.upstream_failover_switching")
 	require.Contains(t, text, "time: 2026-07-06 12:14:36 +0800")
 	require.Contains(t, text, "route: responses")
@@ -197,7 +197,7 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		GroupName:         "GPT subscription",
 	}
 	text := completed.telegramText()
-	require.Contains(t, text, "sub2api OpenAI failover completed")
+	require.Contains(t, text, "✅ OpenAI failover completed")
 	require.Contains(t, text, "time: 2026-07-06 11:38:17 +0800")
 	require.Contains(t, text, "from: CIII (#1)")
 	require.Contains(t, text, "to: AiNX (#3)")
@@ -215,7 +215,7 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		FinalError:      "context canceled",
 	}
 	text = failed.telegramText()
-	require.Contains(t, text, "sub2api OpenAI failover failed")
+	require.Contains(t, text, "❌ OpenAI failover failed")
 	require.Contains(t, text, "from: #1")
 	require.Contains(t, text, "final status: 502")
 	require.Contains(t, text, "reason: context canceled")
@@ -230,7 +230,7 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		FinalError:        "client disconnected",
 	}
 	text = cancelled.telegramText()
-	require.Contains(t, text, "sub2api OpenAI failover cancelled")
+	require.Contains(t, text, "⚠️ OpenAI failover cancelled")
 	require.Contains(t, text, "from: CIII (#1)")
 	require.Contains(t, text, "to: AiNX (#3)")
 	require.Contains(t, text, "reason: client disconnected")
@@ -256,7 +256,7 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		GroupName:         "GPT subscription",
 	}
 	text = failback.telegramText()
-	require.Contains(t, text, "sub2api OpenAI account switched back")
+	require.Contains(t, text, "❤  OpenAI switched back")
 	require.Contains(t, text, "event: openai.account_failback_to_highest_priority")
 	require.Contains(t, text, "from: Backup (#3) priority=20")
 	require.Contains(t, text, "to: Main (#1) priority=1")

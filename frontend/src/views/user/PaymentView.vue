@@ -317,7 +317,7 @@ const loading = ref(true)
 const submitting = ref(false)
 const errorMessage = ref('')
 const errorHintMessage = ref('')
-const activeTab = ref<'recharge' | 'subscription'>('recharge')
+const activeTab = ref<'recharge' | 'subscription'>('subscription')
 const amount = ref<number | null>(null)
 const selectedMethod = ref('')
 const selectedPlan = ref<SubscriptionPlan | null>(null)
@@ -1118,6 +1118,11 @@ onMounted(async () => {
       if (restored) {
         paymentState.value = restored
         paymentPhase.value = 'paying'
+        if (restored.orderType === 'balance' && !checkout.value.balance_disabled) {
+          activeTab.value = 'recharge'
+        } else if (restored.orderType === 'subscription') {
+          activeTab.value = 'subscription'
+        }
         const restoredMethod = normalizeVisibleMethod(restored.paymentType)
           || (visibleMethods.value[restored.paymentType] ? restored.paymentType : '')
         if (restoredMethod) {
@@ -1128,8 +1133,8 @@ onMounted(async () => {
       }
     }
     await resumeWechatPaymentFromQuery()
-    if (checkout.value.balance_disabled) {
-      activeTab.value = 'subscription'
+    if (route.query.tab === 'recharge' && !checkout.value.balance_disabled) {
+      activeTab.value = 'recharge'
     }
     // Handle renewal navigation: ?tab=subscription&group=123
     if (route.query.tab === 'subscription') {

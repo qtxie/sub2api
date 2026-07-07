@@ -293,15 +293,15 @@ func (e OpenAIAccountSwitchNotification) phase() string {
 func (e OpenAIAccountSwitchNotification) telegramTitle() string {
 	switch e.phase() {
 	case OpenAIAccountSwitchPhaseCompleted:
-		return "sub2api OpenAI failover completed\n"
+		return "✅ OpenAI failover completed\n"
 	case OpenAIAccountSwitchPhaseFailed:
-		return "sub2api OpenAI failover failed\n"
+		return "❌ OpenAI failover failed\n"
 	case OpenAIAccountSwitchPhaseCancelled:
-		return "sub2api OpenAI failover cancelled\n"
+		return "⚠️ OpenAI failover cancelled\n"
 	case OpenAIAccountSwitchPhaseFailback:
-		return "sub2api OpenAI account switched back\n"
+		return "❤  OpenAI switched back\n"
 	default:
-		return "sub2api OpenAI failover started\n"
+		return "➡️ OpenAI failover started\n"
 	}
 }
 

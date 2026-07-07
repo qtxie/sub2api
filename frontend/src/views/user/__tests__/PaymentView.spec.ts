@@ -199,6 +199,50 @@ function oauthOrderFixture() {
   }
 }
 
+async function mountPaymentPage(options: {
+  query?: Record<string, unknown>
+  checkout?: ReturnType<typeof checkoutInfoWithPlansFixture>
+} = {}) {
+  vi.useRealTimers()
+  routeState.path = '/purchase'
+  routeState.query = options.query ?? {}
+  routerReplace.mockReset().mockResolvedValue(undefined)
+  routerPush.mockReset().mockResolvedValue(undefined)
+  routerResolve.mockClear()
+  createOrder.mockReset()
+  refreshUser.mockReset()
+  fetchActiveSubscriptions.mockReset().mockResolvedValue(undefined)
+  showError.mockReset()
+  showInfo.mockReset()
+  showWarning.mockReset()
+  getCheckoutInfo.mockReset().mockResolvedValue(options.checkout ?? checkoutInfoWithPlansFixture())
+  bridgeInvoke.mockReset()
+  window.localStorage.clear()
+  ;(window as Window & { WeixinJSBridge?: { invoke: typeof bridgeInvoke } }).WeixinJSBridge = undefined
+
+  const wrapper = shallowMount(PaymentView, {
+    global: {
+      stubs: {
+        AppLayout: {
+          template: '<div><slot /></div>',
+        },
+        AmountInput: {
+          template: '<div data-test="amount-input" />',
+        },
+        SubscriptionPlanCard: {
+          props: ['plan'],
+          template: '<div data-test="subscription-plan">{{ plan.name }}</div>',
+        },
+        Teleport: true,
+        Transition: false,
+      },
+    },
+  })
+  await flushPromises()
+  await flushPromises()
+  return wrapper
+}
+
 async function mountSubscriptionConfirm(options: Parameters<typeof checkoutInfoWithPlansFixture>[0] = {}) {
   vi.useRealTimers()
   routeState.path = '/purchase'
@@ -235,6 +279,27 @@ async function mountSubscriptionConfirm(options: Parameters<typeof checkoutInfoW
   await flushPromises()
   return wrapper
 }
+
+describe('PaymentView default tab', () => {
+  it('shows subscription plans by default on the Recharge / Subscription page', async () => {
+    const wrapper = await mountPaymentPage()
+
+    expect(wrapper.find('[data-test="subscription-plan"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Starter')
+    expect(wrapper.find('[data-test="amount-input"]').exists()).toBe(false)
+  })
+
+  it('keeps explicit recharge navigation available when balance recharge is enabled', async () => {
+    const wrapper = await mountPaymentPage({
+      query: {
+        tab: 'recharge',
+      },
+    })
+
+    expect(wrapper.find('[data-test="amount-input"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="subscription-plan"]').exists()).toBe(false)
+  })
+})
 
 describe('PaymentView subscription confirmation amounts', () => {
   it('shows converted CNY pay amount using the subscription rate, not the balance multiplier', async () => {
