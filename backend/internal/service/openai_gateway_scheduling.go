@@ -680,6 +680,11 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	selectedCompactTier := -1
 	compactBlocked := false
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	type bestCandidate struct {
+		account     *Account
+		compactTier int
+	}
+	candidates := make([]bestCandidate, 0, len(accounts))
 
 	for i := range accounts {
 		acc := &accounts[i]
@@ -710,26 +715,63 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 			}
 		}
 
+		candidates = append(candidates, bestCandidate{
+			account:     fresh,
+			compactTier: compactTier,
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil, compactBlocked
+	}
+	filterInput := make([]*Account, 0, len(candidates))
+	for _, candidate := range candidates {
+		filterInput = append(filterInput, candidate.account)
+	}
+	filteredAccounts := s.filterCircuitOpenOpenAIAccountsIfAlternativesExist(OpenAIAccountScheduleRequest{
+		GroupID:            groupID,
+		Platform:           platform,
+		RequestedModel:     requestedModel,
+		RequiredCapability: requiredCapability,
+		RequireCompact:     requireCompact,
+		ExcludedIDs:        excludedIDs,
+	}, filterInput, time.Now())
+	allowed := make(map[int64]struct{}, len(filteredAccounts))
+	for _, account := range filteredAccounts {
+		if account != nil {
+			allowed[account.ID] = struct{}{}
+		}
+	}
+
+	for _, candidate := range candidates {
+		fresh := candidate.account
+		if fresh == nil {
+			continue
+		}
+		if _, ok := allowed[fresh.ID]; !ok {
+			continue
+		}
+
 		// 选择优先级最高且最久未使用的账号
 		// Select highest priority and least recently used
 		if selected == nil {
 			selected = fresh
-			selectedCompactTier = compactTier
+			selectedCompactTier = candidate.compactTier
 			continue
 		}
 
 		// compact 模式下高 tier 优先；同 tier 内才比较 priority/LRU。
-		if requireCompact && compactTier != selectedCompactTier {
-			if compactTier > selectedCompactTier {
+		if requireCompact && candidate.compactTier != selectedCompactTier {
+			if candidate.compactTier > selectedCompactTier {
 				selected = fresh
-				selectedCompactTier = compactTier
+				selectedCompactTier = candidate.compactTier
 			}
 			continue
 		}
 
 		if s.isBetterAccount(fresh, selected) {
 			selected = fresh
-			selectedCompactTier = compactTier
+			selectedCompactTier = candidate.compactTier
 		}
 	}
 
@@ -990,6 +1032,17 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if len(candidates) == 0 {
 		return nil, ErrNoAvailableAccounts
 	}
+	candidates = s.filterCircuitOpenOpenAIAccountsIfAlternativesExist(OpenAIAccountScheduleRequest{
+		GroupID:                 groupID,
+		Platform:                platform,
+		SessionHash:             sessionHash,
+		RequestedModel:          requestedModel,
+		RequiredTransport:       requiredTransport,
+		RequiredCapability:      requiredCapability,
+		RequiredImageCapability: requiredImageCapability,
+		RequireCompact:          requireCompact,
+		ExcludedIDs:             excludedIDs,
+	}, candidates, time.Now())
 
 	accountLoads := make([]AccountWithConcurrency, 0, len(candidates))
 	for _, acc := range candidates {

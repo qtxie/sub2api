@@ -3429,6 +3429,61 @@ func TestDefaultOpenAIAccountScheduler_FilterCircuitOpenCandidatesKeepsFallbackW
 	require.Len(t, allSlow, 2)
 }
 
+func TestOpenAIGatewayService_SelectBestAccountSkipsSlowWhenAlternativeExists(t *testing.T) {
+	groupID := int64(10201)
+	stats := newOpenAIAccountRuntimeStats()
+	svc := &OpenAIGatewayService{
+		cfg:                &config.Config{},
+		openaiAccountStats: stats,
+	}
+	slow := 31000
+	stats.report(2101, true, &slow, svc.openAISlowAccountConfig())
+	stats.report(2101, true, &slow, svc.openAISlowAccountConfig())
+	stats.report(2101, true, &slow, svc.openAISlowAccountConfig())
+
+	accounts := []Account{
+		{ID: 2101, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 2102, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+
+	selected, compactBlocked := svc.selectBestAccount(context.Background(), &groupID, PlatformOpenAI, accounts, "gpt-5.1", nil, false, "")
+	require.False(t, compactBlocked)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2102), selected.ID)
+}
+
+func TestOpenAIGatewayService_LegacyLoadAwarenessSkipsSlowWhenAlternativeExists(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	groupID := int64(10202)
+	stats := newOpenAIAccountRuntimeStats()
+	accounts := []Account{
+		{ID: 2201, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 2202, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerGroupAwareOpenAIAccountRepo{schedulerTestOpenAIAccountRepo{accounts: accounts}},
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		openaiAccountStats: stats,
+	}
+	require.False(t, svc.isOpenAIAdvancedSchedulerEnabled(context.Background()))
+
+	slow := 31000
+	stats.report(2201, true, &slow, svc.openAISlowAccountConfig())
+	stats.report(2201, true, &slow, svc.openAISlowAccountConfig())
+	stats.report(2201, true, &slow, svc.openAISlowAccountConfig())
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.1", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(2202), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIAccountSlowPenaltyStages(t *testing.T) {
 	cfg := openAISlowAccountConfig{
 		enabled:       true,
