@@ -879,8 +879,10 @@ type GatewayOpenAIHTTP2Config struct {
 // GatewayOpenAISwitchNotifyConfig controls account-switch notifications.
 type GatewayOpenAISwitchNotifyConfig struct {
 	// MinIntervalSeconds suppresses duplicate switch notifications for the same key.
-	MinIntervalSeconds int                                     `mapstructure:"min_interval_seconds"`
-	Telegram           GatewayOpenAISwitchNotifyTelegramConfig `mapstructure:"telegram"`
+	MinIntervalSeconds int `mapstructure:"min_interval_seconds"`
+	// SendStarted enables best-effort "failover started" notifications. Disabled by default.
+	SendStarted bool                                    `mapstructure:"send_started"`
+	Telegram    GatewayOpenAISwitchNotifyTelegramConfig `mapstructure:"telegram"`
 }
 
 // GatewayOpenAISwitchNotifyTelegramConfig controls Telegram delivery.
@@ -2083,6 +2085,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.slow_score_max", 10)
 	viper.SetDefault("gateway.openai_scheduler.slow_score_decay_interval_seconds", 60)
 	viper.SetDefault("gateway.openai_switch_notify.min_interval_seconds", 60)
+	viper.SetDefault("gateway.openai_switch_notify.send_started", false)
 	viper.SetDefault("gateway.openai_switch_notify.telegram.enabled", false)
 	viper.SetDefault("gateway.openai_switch_notify.telegram.bot_token", "")
 	viper.SetDefault("gateway.openai_switch_notify.telegram.chat_id", "")

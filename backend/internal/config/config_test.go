@@ -266,6 +266,7 @@ func TestLoadOpenAIResponseHeaderTimeoutFromEnv(t *testing.T) {
 func TestLoadOpenAISwitchNotifyTelegramFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_SWITCH_NOTIFY_MIN_INTERVAL_SECONDS", "17")
+	t.Setenv("GATEWAY_OPENAI_SWITCH_NOTIFY_SEND_STARTED", "true")
 	t.Setenv("GATEWAY_OPENAI_SWITCH_NOTIFY_TELEGRAM_ENABLED", "true")
 	t.Setenv("GATEWAY_OPENAI_SWITCH_NOTIFY_TELEGRAM_BOT_TOKEN", " token-value ")
 	t.Setenv("GATEWAY_OPENAI_SWITCH_NOTIFY_TELEGRAM_CHAT_ID", " 12345 ")
@@ -274,6 +275,7 @@ func TestLoadOpenAISwitchNotifyTelegramFromEnv(t *testing.T) {
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Equal(t, 17, cfg.Gateway.OpenAISwitchNotify.MinIntervalSeconds)
+	require.True(t, cfg.Gateway.OpenAISwitchNotify.SendStarted)
 	require.True(t, cfg.Gateway.OpenAISwitchNotify.Telegram.Enabled)
 	require.Equal(t, "token-value", cfg.Gateway.OpenAISwitchNotify.Telegram.BotToken)
 	require.Equal(t, "12345", cfg.Gateway.OpenAISwitchNotify.Telegram.ChatID)

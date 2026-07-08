@@ -31,6 +31,7 @@ func TestOpenAIAccountSwitchNotifierSendsTelegram(t *testing.T) {
 		Gateway: config.GatewayConfig{
 			OpenAISwitchNotify: config.GatewayOpenAISwitchNotifyConfig{
 				MinIntervalSeconds: 60,
+				SendStarted:        true,
 				Telegram: config.GatewayOpenAISwitchNotifyTelegramConfig{
 					Enabled:        true,
 					BotToken:       "test-token",
@@ -73,7 +74,7 @@ func TestOpenAIAccountSwitchNotifierSendsTelegram(t *testing.T) {
 	require.Equal(t, "/bottest-token/sendMessage", gotPath)
 	require.Equal(t, float64(12345), gotPayload["chat_id"])
 	text, _ := gotPayload["text"].(string)
-	require.Contains(t, text, "➡️ OpenAI failover started")
+	require.Contains(t, text, "➡️ 502 gpt-5.5 CIII")
 	require.Contains(t, text, "event: openai.upstream_failover_switching")
 	require.Contains(t, text, "time: 2026-07-06 12:14:36 +0800")
 	require.Contains(t, text, "route: responses")
@@ -100,6 +101,7 @@ func TestOpenAIAccountSwitchNotifierRateLimitsDuplicateEvents(t *testing.T) {
 
 	notifier := &OpenAIAccountSwitchNotifier{
 		telegramEnabled: true,
+		sendStarted:     true,
 		botToken:        "token",
 		chatID:          "chat",
 		apiBaseURL:      server.URL,
@@ -131,6 +133,37 @@ func TestOpenAIAccountSwitchNotifierRateLimitsDuplicateEvents(t *testing.T) {
 	require.Equal(t, int32(2), count.Load())
 }
 
+func TestOpenAIAccountSwitchNotifierSuppressesStartedByDefault(t *testing.T) {
+	var count atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	notifier := NewOpenAIAccountSwitchNotifier(&config.Config{
+		Gateway: config.GatewayConfig{
+			OpenAISwitchNotify: config.GatewayOpenAISwitchNotifyConfig{
+				Telegram: config.GatewayOpenAISwitchNotifyTelegramConfig{
+					Enabled:        true,
+					BotToken:       "test-token",
+					ChatID:         "12345",
+					TimeoutSeconds: 5,
+				},
+			},
+		},
+	})
+	require.NotNil(t, notifier)
+	notifier.apiBaseURL = server.URL
+
+	require.NoError(t, notifier.Notify(context.Background(), OpenAIAccountSwitchNotification{
+		Phase:           OpenAIAccountSwitchPhaseStarted,
+		FailedAccountID: 1,
+		UpstreamStatus:  http.StatusBadGateway,
+	}))
+	require.Equal(t, int32(0), count.Load())
+}
+
 func TestOpenAIAccountSwitchNotifierDoesNotRateLimitDifferentPhases(t *testing.T) {
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -141,6 +174,7 @@ func TestOpenAIAccountSwitchNotifierDoesNotRateLimitDifferentPhases(t *testing.T
 
 	notifier := &OpenAIAccountSwitchNotifier{
 		telegramEnabled: true,
+		sendStarted:     true,
 		botToken:        "token",
 		chatID:          "chat",
 		apiBaseURL:      server.URL,
@@ -197,7 +231,7 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		GroupName:         "GPT subscription",
 	}
 	text := completed.telegramText()
-	require.Contains(t, text, "✅ OpenAI failover completed")
+	require.Contains(t, text, "✅ CIII -> AiNX")
 	require.Contains(t, text, "time: 2026-07-06 11:38:17 +0800")
 	require.Contains(t, text, "from: CIII (#1)")
 	require.Contains(t, text, "to: AiNX (#3)")
@@ -215,10 +249,33 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		FinalError:      "context canceled",
 	}
 	text = failed.telegramText()
-	require.Contains(t, text, "❌ OpenAI failover failed")
+	require.Contains(t, text, "❌ 502 #1")
 	require.Contains(t, text, "from: #1")
 	require.Contains(t, text, "final status: 502")
 	require.Contains(t, text, "reason: context canceled")
+
+	streamFailed := OpenAIAccountSwitchNotification{
+		Phase:             OpenAIAccountSwitchPhaseFailed,
+		OccurredAt:        when,
+		FailedAccountID:   10,
+		FailedAccountName: "ixo-plus",
+		Model:             "gpt-5.5",
+		FinalStatus:       http.StatusBadGateway,
+		FinalError:        "upstream response failed: Upstream request failed",
+		ClientStatus:      http.StatusOK,
+		StreamStarted:     true,
+		UpstreamWritten:   true,
+	}
+	text = streamFailed.telegramText()
+	require.Contains(t, text, "⚠️ OpenAI stream failed after start")
+	require.Contains(t, text, "from: ixo-plus (#10)")
+	require.Contains(t, text, "final status: 502")
+	require.Contains(t, text, "client status: 200")
+	require.Contains(t, text, "stream started: true")
+	require.Contains(t, text, "fallback response written: false")
+	require.Contains(t, text, "upstream response already written: true")
+	require.Contains(t, text, "retry possible: false")
+	require.Contains(t, text, "reason: upstream response failed: Upstream request failed")
 
 	cancelled := OpenAIAccountSwitchNotification{
 		Phase:             OpenAIAccountSwitchPhaseCancelled,
@@ -230,7 +287,7 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		FinalError:        "client disconnected",
 	}
 	text = cancelled.telegramText()
-	require.Contains(t, text, "⚠️ OpenAI failover cancelled")
+	require.Contains(t, text, "⚠️ CIII -> AiNX")
 	require.Contains(t, text, "from: CIII (#1)")
 	require.Contains(t, text, "to: AiNX (#3)")
 	require.Contains(t, text, "reason: client disconnected")
@@ -256,7 +313,7 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		GroupName:         "GPT subscription",
 	}
 	text = failback.telegramText()
-	require.Contains(t, text, "❤  OpenAI switched back")
+	require.Contains(t, text, "❤️ Backup -> Main")
 	require.Contains(t, text, "event: openai.account_failback_to_highest_priority")
 	require.Contains(t, text, "from: Backup (#3) priority=20")
 	require.Contains(t, text, "to: Main (#1) priority=1")
@@ -294,7 +351,11 @@ func TestOpenAIAccountSwitchNotifierTelegramError(t *testing.T) {
 		now:             time.Now,
 		lastSent:        make(map[string]time.Time),
 	}
-	err := notifier.Notify(context.Background(), OpenAIAccountSwitchNotification{AccountID: 1, UpstreamStatus: http.StatusBadGateway})
+	err := notifier.Notify(context.Background(), OpenAIAccountSwitchNotification{
+		Phase:           OpenAIAccountSwitchPhaseFailed,
+		FailedAccountID: 1,
+		FinalStatus:     http.StatusBadGateway,
+	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "telegram returned status 429")
 	require.NotContains(t, err.Error(), "bottoken")
@@ -315,7 +376,11 @@ func TestOpenAIAccountSwitchNotifierRedactsTokenFromTransportError(t *testing.T)
 		lastSent: make(map[string]time.Time),
 	}
 
-	err := notifier.Notify(context.Background(), OpenAIAccountSwitchNotification{AccountID: 1, UpstreamStatus: http.StatusBadGateway})
+	err := notifier.Notify(context.Background(), OpenAIAccountSwitchNotification{
+		Phase:           OpenAIAccountSwitchPhaseFailed,
+		FailedAccountID: 1,
+		FinalStatus:     http.StatusBadGateway,
+	})
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "secret-token")
 	require.Contains(t, err.Error(), "<redacted>")

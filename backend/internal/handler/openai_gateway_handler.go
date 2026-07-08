@@ -275,6 +275,10 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchDetailed(
 		UpstreamStatus:    event.UpstreamStatus,
 		FinalStatus:       event.FinalStatus,
 		FinalError:        event.FinalError,
+		ClientStatus:      event.ClientStatus,
+		StreamStarted:     event.StreamStarted,
+		FallbackWritten:   event.FallbackWritten,
+		UpstreamWritten:   event.UpstreamWritten,
 		LatencyMs:         event.LatencyMs,
 		SwitchCount:       event.SwitchCount,
 		MaxSwitches:       event.MaxSwitches,
@@ -353,8 +357,31 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchFailed(
 	reason string,
 	latencyMs int64,
 ) {
+	h.notifyOpenAIAccountSwitchFailedWithDetails(c, attempt, apiKey, userID, finalStatus, reason, latencyMs, openAIAccountSwitchFailureDetails{})
+}
+
+type openAIAccountSwitchFailureDetails struct {
+	StreamStarted   bool
+	ClientStatus    int
+	FallbackWritten bool
+	UpstreamWritten bool
+}
+
+func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchFailedWithDetails(
+	c *gin.Context,
+	attempt openAIAccountSwitchAttempt,
+	apiKey *service.APIKey,
+	userID int64,
+	finalStatus int,
+	reason string,
+	latencyMs int64,
+	details openAIAccountSwitchFailureDetails,
+) {
 	if !attempt.started() {
 		return
+	}
+	if details.ClientStatus <= 0 {
+		details.ClientStatus = openAIClientStatusForNotification(c, finalStatus)
 	}
 	h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
 		EventName:         attempt.EventName,
@@ -370,10 +397,24 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchFailed(
 		UpstreamStatus:    attempt.UpstreamStatus,
 		FinalStatus:       finalStatus,
 		FinalError:        strings.TrimSpace(reason),
+		ClientStatus:      details.ClientStatus,
+		StreamStarted:     details.StreamStarted,
+		FallbackWritten:   details.FallbackWritten,
+		UpstreamWritten:   details.UpstreamWritten,
 		LatencyMs:         latencyMs,
 		SwitchCount:       attempt.SwitchCount,
 		MaxSwitches:       attempt.MaxSwitches,
 	}, apiKey, userID)
+}
+
+func openAIClientStatusForNotification(c *gin.Context, fallback int) int {
+	if c != nil && c.Writer != nil && c.Writer.Written() {
+		if status := c.Writer.Status(); status > 0 {
+			return status
+		}
+		return http.StatusOK
+	}
+	return fallback
 }
 
 func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchCancelled(
@@ -714,10 +755,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				return
 			}
 			if lastFailoverErr != nil {
-				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(lastFailoverErr.StatusCode), err.Error(), time.Since(requestStart).Milliseconds())
+				h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(lastFailoverErr.StatusCode), err.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+					StreamStarted: streamStarted,
+				})
 				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
 			} else {
-				h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds())
+				h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+					StreamStarted: streamStarted,
+				})
 				h.handleFailoverExhaustedSimple(c, 502, streamStarted)
 			}
 			return
@@ -794,7 +839,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					if c.Writer.Size() != writerSizeBeforeForward {
-						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
+						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+							StreamStarted:   true,
+							ClientStatus:    openAIClientStatusForNotification(c, h.openAIFailoverFinalStatus(failoverErr.StatusCode)),
+							UpstreamWritten: true,
+						})
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
@@ -825,13 +874,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
-						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
+						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+							StreamStarted: streamStarted,
+						})
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
-						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
+						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+							StreamStarted: streamStarted,
+						})
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -846,13 +899,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					continue
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-				if failoverAttempt.started() {
-					h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds())
-				}
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
+				responseWrittenBeforeFallback := c.Writer.Written() || c.Writer.Size() != writerSizeBeforeForward
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
 					wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
+				}
+				if failoverAttempt.started() {
+					h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+						StreamStarted:   streamStarted || responseWrittenBeforeFallback,
+						ClientStatus:    openAIClientStatusForNotification(c, http.StatusBadGateway),
+						FallbackWritten: wroteFallback,
+						UpstreamWritten: upstreamErrorAlreadyCommunicated || (responseWrittenBeforeFallback && !wroteFallback),
+					})
 				}
 				fields := []zap.Field{
 					zap.Int64("account_id", account.ID),
@@ -1237,7 +1296,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					if c.Writer.Size() != writerSizeBeforeForward {
-						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
+						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+							StreamStarted:   true,
+							ClientStatus:    openAIClientStatusForNotification(c, h.openAIFailoverFinalStatus(failoverErr.StatusCode)),
+							UpstreamWritten: true,
+						})
 						h.handleAnthropicFailoverExhausted(c, failoverErr, true)
 						return
 					}
@@ -1265,13 +1328,17 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
-						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
+						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+							StreamStarted: streamStarted,
+						})
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
 					switchCount++
 					if h.gatewayService.ShouldStopOpenAIOAuth429Failover(account, failoverErr.StatusCode, switchCount) {
-						h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds())
+						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+							StreamStarted: streamStarted,
+						})
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
@@ -1293,10 +1360,16 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					return
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-				if failoverAttempt.started() {
-					h.notifyOpenAIAccountSwitchFailed(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds())
-				}
+				responseWrittenBeforeFallback := c.Writer.Written() || c.Writer.Size() != writerSizeBeforeForward
 				wroteFallback := h.ensureAnthropicErrorResponse(c, streamStarted)
+				if failoverAttempt.started() {
+					h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, http.StatusBadGateway, err.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+						StreamStarted:   streamStarted || responseWrittenBeforeFallback,
+						ClientStatus:    openAIClientStatusForNotification(c, http.StatusBadGateway),
+						FallbackWritten: wroteFallback,
+						UpstreamWritten: responseWrittenBeforeFallback && !wroteFallback,
+					})
+				}
 				reqLog.Warn("openai_messages.forward_failed",
 					zap.Int64("account_id", account.ID),
 					zap.Bool("fallback_error_response_written", wroteFallback),

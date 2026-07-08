@@ -56,6 +56,10 @@ type OpenAIAccountSwitchNotification struct {
 	UpstreamStatus    int
 	FinalStatus       int
 	FinalError        string
+	ClientStatus      int
+	StreamStarted     bool
+	FallbackWritten   bool
+	UpstreamWritten   bool
 	LatencyMs         int64
 	SwitchCount       int
 	MaxSwitches       int
@@ -64,6 +68,7 @@ type OpenAIAccountSwitchNotification struct {
 // OpenAIAccountSwitchNotifier sends account-switch notifications.
 type OpenAIAccountSwitchNotifier struct {
 	telegramEnabled bool
+	sendStarted     bool
 	botToken        string
 	chatID          string
 	apiBaseURL      string
@@ -101,6 +106,7 @@ func NewOpenAIAccountSwitchNotifier(cfg *config.Config) *OpenAIAccountSwitchNoti
 
 	return &OpenAIAccountSwitchNotifier{
 		telegramEnabled: true,
+		sendStarted:     cfg.Gateway.OpenAISwitchNotify.SendStarted,
 		botToken:        strings.TrimSpace(tg.BotToken),
 		chatID:          strings.TrimSpace(tg.ChatID),
 		apiBaseURL:      defaultOpenAISwitchNotifierTelegramBaseURL,
@@ -116,6 +122,9 @@ func NewOpenAIAccountSwitchNotifier(cfg *config.Config) *OpenAIAccountSwitchNoti
 // never returned to the request path.
 func (n *OpenAIAccountSwitchNotifier) NotifyAsync(event OpenAIAccountSwitchNotification) {
 	if n == nil || !n.telegramEnabled {
+		return
+	}
+	if !n.shouldSend(event) {
 		return
 	}
 	if !n.markSend(event) {
@@ -141,10 +150,20 @@ func (n *OpenAIAccountSwitchNotifier) Notify(ctx context.Context, event OpenAIAc
 	if n == nil || !n.telegramEnabled {
 		return nil
 	}
+	if !n.shouldSend(event) {
+		return nil
+	}
 	if !n.markSend(event) {
 		return nil
 	}
 	return n.sendTelegram(ctx, event)
+}
+
+func (n *OpenAIAccountSwitchNotifier) shouldSend(event OpenAIAccountSwitchNotification) bool {
+	if event.phase() == OpenAIAccountSwitchPhaseStarted && !n.sendStarted {
+		return false
+	}
+	return true
 }
 
 func (n *OpenAIAccountSwitchNotifier) markSend(event OpenAIAccountSwitchNotification) bool {
@@ -244,6 +263,17 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 	case OpenAIAccountSwitchPhaseFailed:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
+		if e.ClientStatus > 0 {
+			writeNotificationLine(&b, "client status", strconv.Itoa(e.ClientStatus))
+		}
+		if e.StreamStarted || e.FallbackWritten || e.UpstreamWritten {
+			writeNotificationLine(&b, "stream started", strconv.FormatBool(e.StreamStarted))
+			writeNotificationLine(&b, "fallback response written", strconv.FormatBool(e.FallbackWritten))
+			writeNotificationLine(&b, "upstream response already written", strconv.FormatBool(e.UpstreamWritten))
+			if e.StreamStarted || e.UpstreamWritten {
+				writeNotificationLine(&b, "retry possible", "false")
+			}
+		}
 		writeNotificationLine(&b, "reason", e.FinalError)
 	case OpenAIAccountSwitchPhaseCancelled:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
@@ -293,16 +323,67 @@ func (e OpenAIAccountSwitchNotification) phase() string {
 func (e OpenAIAccountSwitchNotification) telegramTitle() string {
 	switch e.phase() {
 	case OpenAIAccountSwitchPhaseCompleted:
-		return "✅ OpenAI failover completed\n"
+		return compactSwitchTitle("✅", e.failedAccountName(), e.failedAccountID(), e.TargetAccountName, e.TargetAccountID, "", 0)
 	case OpenAIAccountSwitchPhaseFailed:
-		return "❌ OpenAI failover failed\n"
+		status := e.FinalStatus
+		if status <= 0 {
+			status = e.UpstreamStatus
+		}
+		if e.StreamStarted || e.UpstreamWritten || (e.ClientStatus > 0 && e.ClientStatus < http.StatusBadRequest) {
+			return "⚠️ OpenAI stream failed after start\n"
+		}
+		return compactSwitchTitle("❌", "", 0, e.failedAccountName(), e.failedAccountID(), e.Model, status)
 	case OpenAIAccountSwitchPhaseCancelled:
-		return "⚠️ OpenAI failover cancelled\n"
+		return compactSwitchTitle("⚠️", e.failedAccountName(), e.failedAccountID(), e.TargetAccountName, e.TargetAccountID, "", 0)
 	case OpenAIAccountSwitchPhaseFailback:
-		return "❤  OpenAI switched back\n"
+		return compactSwitchTitle("❤️", e.failedAccountName(), e.failedAccountID(), e.TargetAccountName, e.TargetAccountID, "", 0)
 	default:
-		return "➡️ OpenAI failover started\n"
+		status := e.UpstreamStatus
+		if status <= 0 {
+			status = e.FinalStatus
+		}
+		return compactSwitchTitle("➡️", "", 0, e.failedAccountName(), e.failedAccountID(), e.Model, status)
 	}
+}
+
+func compactSwitchTitle(icon, fromName string, fromID int64, toName string, toID int64, model string, status int) string {
+	parts := []string{strings.TrimSpace(icon)}
+	statusText := ""
+	if status > 0 {
+		statusText = strconv.Itoa(status)
+	}
+	model = strings.TrimSpace(model)
+	if statusText != "" {
+		parts = append(parts, statusText)
+	}
+	if model != "" {
+		parts = append(parts, model)
+	}
+	from := titleAccountName(fromName, fromID)
+	to := titleAccountName(toName, toID)
+	switch {
+	case from != "" && to != "":
+		parts = append(parts, from, "->", to)
+	case to != "":
+		parts = append(parts, to)
+	case from != "":
+		parts = append(parts, from)
+	}
+	if len(parts) == 1 {
+		parts = append(parts, "OpenAI")
+	}
+	return strings.Join(parts, " ") + "\n"
+}
+
+func titleAccountName(name string, id int64) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return name
+	}
+	if id > 0 {
+		return fmt.Sprintf("#%d", id)
+	}
+	return ""
 }
 
 func (e OpenAIAccountSwitchNotification) eventTime() time.Time {
