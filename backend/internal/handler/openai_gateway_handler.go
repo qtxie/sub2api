@@ -848,6 +848,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						return
 					}
 					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+					h.gatewayService.RecordOpenAITransientFailure(c.Request.Context(), account, failoverErr.StatusCode)
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
@@ -932,8 +933,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
+			h.gatewayService.ClearOpenAITransientFailures(account.ID)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 		} else {
+			h.gatewayService.ClearOpenAITransientFailures(account.ID)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
 		h.notifyOpenAIAccountFailbackToHighestPriority(c, "responses", apiKey, subject.UserID, reqModel, reqStream, account, scheduleDecision, requestPlatform, requireCompact, service.OpenAIUpstreamTransportAny, service.OpenAIEndpointCapabilityChatCompletions, "")

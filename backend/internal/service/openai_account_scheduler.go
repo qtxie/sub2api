@@ -221,6 +221,21 @@ type openAISlowAccountConfig struct {
 	decayInterval     time.Duration
 }
 
+type openAITransientFailureConfig struct {
+	enabled     bool
+	statusCodes map[int]struct{}
+	window      time.Duration
+	threshold   int
+	cooldown    time.Duration
+}
+
+type openAITransientFailureState struct {
+	mu            sync.Mutex
+	failures      []time.Time
+	cooldownUntil time.Time
+	lastStatus    int
+}
+
 type openAIAccountRuntimeReport struct {
 	errorRate     float64
 	ttft          float64
@@ -661,7 +676,36 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 		if selection != nil && selection.Account != nil {
 			failbackCfg := s.service.openAIStickyPreferHigherPriorityConfig(ctx)
-			if snapshot, marked := s.service.isOpenAIAccountMarkedSlow(selection.Account.ID, time.Now()); marked {
+			now := time.Now()
+			if cooldownUntil, lastStatus, cooling := s.service.isOpenAIAccountTransientFailureCooling(selection.Account.ID, now); cooling {
+				if failbackCfg.previousResponseEnabled && !req.HasFunctionCallOutput && req.PreviousResponseReplayable {
+					errorRate, ttft, _ := s.stats.snapshot(selection.Account.ID)
+					slog.Info("openai.sticky_escape_triggered",
+						"account_id", selection.Account.ID,
+						"reason", "transient_failure_cooldown",
+						"binding", "previous_response_id",
+						"error_rate", errorRate,
+						"ttft", ttft,
+						"last_status", lastStatus,
+						"cooldown_until", cooldownUntil,
+					)
+					slowPreviousAccountID = selection.Account.ID
+					slowPreviousReason = "transient_failure_cooldown"
+					if selection.ReleaseFunc != nil {
+						selection.ReleaseFunc()
+					}
+				} else {
+					s.service.logOpenAIStickyFailbackSkipped(req, "previous_response_id", selection.Account.ID, 0, openAIStickyRebindSkipReason(req))
+					decision.Layer = openAIAccountScheduleLayerPreviousResponse
+					decision.StickyPreviousHit = true
+					decision.SelectedAccountID = selection.Account.ID
+					decision.SelectedAccountType = selection.Account.Type
+					if req.SessionHash != "" {
+						_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, selection.Account.ID)
+					}
+					return selection, decision, nil
+				}
+			} else if snapshot, marked := s.service.isOpenAIAccountMarkedSlow(selection.Account.ID, now); marked {
 				if failbackCfg.previousResponseEnabled && !req.HasFunctionCallOutput && req.PreviousResponseReplayable {
 					errorRate, ttft, _ := s.stats.snapshot(selection.Account.ID)
 					slog.Info("openai.sticky_escape_triggered",
@@ -848,6 +892,19 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, false, 0, "", nil
 	}
+	now := time.Now()
+	if cooldownUntil, lastStatus, cooling := s.service.isOpenAIAccountTransientFailureCooling(account.ID, now); cooling {
+		errorRate, ttft, _ := s.stats.snapshot(account.ID)
+		slog.Info("openai.sticky_escape_triggered",
+			"account_id", account.ID,
+			"reason", "transient_failure_cooldown",
+			"error_rate", errorRate,
+			"ttft", ttft,
+			"last_status", lastStatus,
+			"cooldown_until", cooldownUntil,
+		)
+		return nil, true, false, 0, "", nil
+	}
 	failbackCfg := s.service.openAIStickyPreferHigherPriorityConfig(ctx)
 	if failbackCfg.stickyEnabled &&
 		s.service.allowOpenAIStickyFailbackAttempt("session_hash", req.GroupID, sessionHash, failbackCfg.minInterval) {
@@ -963,6 +1020,32 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 	return "", errorRate, ttft, false
 }
 
+func (s *OpenAIGatewayService) isOpenAIAccountTransientFailureCooling(accountID int64, now time.Time) (time.Time, int, bool) {
+	if s == nil || accountID <= 0 {
+		return time.Time{}, 0, false
+	}
+	value, ok := s.openaiTransientFailureStates.Load(accountID)
+	if !ok {
+		return time.Time{}, 0, false
+	}
+	state, ok := value.(*openAITransientFailureState)
+	if !ok || state == nil {
+		s.openaiTransientFailureStates.Delete(accountID)
+		return time.Time{}, 0, false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.cooldownUntil.IsZero() {
+		return time.Time{}, state.lastStatus, false
+	}
+	if now.After(state.cooldownUntil) {
+		state.cooldownUntil = time.Time{}
+		state.failures = nil
+		return time.Time{}, state.lastStatus, false
+	}
+	return state.cooldownUntil, state.lastStatus, true
+}
+
 func (s *OpenAIGatewayService) isOpenAIAccountMarkedSlow(accountID int64, now time.Time) (openAIAccountSlowSnapshot, bool) {
 	if s == nil || accountID <= 0 || s.openaiAccountStats == nil {
 		return openAIAccountSlowSnapshot{}, false
@@ -1053,6 +1136,53 @@ func (s *defaultOpenAIAccountScheduler) filterCircuitOpenOpenAIAccountCandidates
 	return nonSlow
 }
 
+func (s *defaultOpenAIAccountScheduler) filterTransientCoolingOpenAIAccountCandidatesIfAlternativesExist(
+	req OpenAIAccountScheduleRequest,
+	candidates []openAIAccountCandidateScore,
+	now time.Time,
+) []openAIAccountCandidateScore {
+	if s == nil || s.service == nil || len(candidates) <= 1 {
+		return candidates
+	}
+	cfg := s.service.openAITransientFailureConfig()
+	if !cfg.enabled {
+		return candidates
+	}
+	available := make([]openAIAccountCandidateScore, 0, len(candidates))
+	type coolingCandidate struct {
+		candidate     openAIAccountCandidateScore
+		cooldownUntil time.Time
+		lastStatus    int
+	}
+	cooling := make([]coolingCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.account == nil {
+			continue
+		}
+		cooldownUntil, lastStatus, coolingNow := s.service.isOpenAIAccountTransientFailureCooling(candidate.account.ID, now)
+		if coolingNow {
+			cooling = append(cooling, coolingCandidate{
+				candidate:     candidate,
+				cooldownUntil: cooldownUntil,
+				lastStatus:    lastStatus,
+			})
+			continue
+		}
+		available = append(available, candidate)
+	}
+	if len(available) == 0 || len(cooling) == 0 {
+		return candidates
+	}
+	selectedAlternativeID := int64(0)
+	if available[0].account != nil {
+		selectedAlternativeID = available[0].account.ID
+	}
+	for _, item := range cooling {
+		s.service.logOpenAITransientFailureCooldownSkipped(req, item.candidate.account, selectedAlternativeID, item.cooldownUntil, item.lastStatus)
+	}
+	return available
+}
+
 func (s *OpenAIGatewayService) filterCircuitOpenOpenAIAccountsIfAlternativesExist(
 	req OpenAIAccountScheduleRequest,
 	accounts []*Account,
@@ -1063,7 +1193,7 @@ func (s *OpenAIGatewayService) filterCircuitOpenOpenAIAccountsIfAlternativesExis
 	}
 	cfg := s.openAISlowAccountConfig()
 	if !cfg.enabled || s.openaiAccountStats == nil {
-		return accounts
+		return s.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, accounts, now)
 	}
 	nonSlow := make([]*Account, 0, len(accounts))
 	type slowAccount struct {
@@ -1083,7 +1213,7 @@ func (s *OpenAIGatewayService) filterCircuitOpenOpenAIAccountsIfAlternativesExis
 		nonSlow = append(nonSlow, account)
 	}
 	if len(nonSlow) == 0 || len(slow) == 0 {
-		return accounts
+		return s.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, accounts, now)
 	}
 	selectedAlternativeID := int64(0)
 	if nonSlow[0] != nil {
@@ -1092,7 +1222,54 @@ func (s *OpenAIGatewayService) filterCircuitOpenOpenAIAccountsIfAlternativesExis
 	for _, item := range slow {
 		s.logOpenAISlowAccountSkipped(req, item.account.ID, selectedAlternativeID, item.snapshot)
 	}
-	return nonSlow
+	return s.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, nonSlow, now)
+}
+
+func (s *OpenAIGatewayService) filterTransientCoolingOpenAIAccountsIfAlternativesExist(
+	req OpenAIAccountScheduleRequest,
+	accounts []*Account,
+	now time.Time,
+) []*Account {
+	if s == nil || len(accounts) <= 1 {
+		return accounts
+	}
+	cfg := s.openAITransientFailureConfig()
+	if !cfg.enabled {
+		return accounts
+	}
+	available := make([]*Account, 0, len(accounts))
+	type coolingAccount struct {
+		account       *Account
+		cooldownUntil time.Time
+		lastStatus    int
+	}
+	cooling := make([]coolingAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		cooldownUntil, lastStatus, coolingNow := s.isOpenAIAccountTransientFailureCooling(account.ID, now)
+		if coolingNow {
+			cooling = append(cooling, coolingAccount{
+				account:       account,
+				cooldownUntil: cooldownUntil,
+				lastStatus:    lastStatus,
+			})
+			continue
+		}
+		available = append(available, account)
+	}
+	if len(available) == 0 || len(cooling) == 0 {
+		return accounts
+	}
+	selectedAlternativeID := int64(0)
+	if available[0] != nil {
+		selectedAlternativeID = available[0].ID
+	}
+	for _, item := range cooling {
+		s.logOpenAITransientFailureCooldownSkipped(req, item.account, selectedAlternativeID, item.cooldownUntil, item.lastStatus)
+	}
+	return available
 }
 
 type openAIAccountCandidateScore struct {
@@ -1344,6 +1521,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		}
 	}
 	candidates = s.filterCircuitOpenOpenAIAccountCandidatesIfAlternativesExist(req, candidates, now)
+	candidates = s.filterTransientCoolingOpenAIAccountCandidatesIfAlternativesExist(req, candidates, now)
 
 	plan := openAIAccountLoadPlan{
 		allCandidates:             allCandidates,
@@ -2889,6 +3067,177 @@ func (s *OpenAIGatewayService) openAISlowAccountConfig() openAISlowAccountConfig
 		cfg.decayInterval = time.Duration(raw.SlowScoreDecayIntervalSeconds) * time.Second
 	}
 	return normalizeOpenAISlowAccountConfig(cfg)
+}
+
+func (s *OpenAIGatewayService) openAITransientFailureConfig() openAITransientFailureConfig {
+	cfg := openAITransientFailureConfig{
+		enabled:     true,
+		statusCodes: map[int]struct{}{502: {}, 503: {}, 504: {}},
+		window:      time.Minute,
+		threshold:   3,
+		cooldown:    time.Minute,
+	}
+	if s == nil || s.cfg == nil {
+		return cfg
+	}
+	raw := s.cfg.Gateway.OpenAIScheduler
+	if !raw.TransientFailureCooldownEnabled &&
+		strings.TrimSpace(raw.TransientFailureStatusCodes) == "" &&
+		raw.TransientFailureWindowSeconds == 0 &&
+		raw.TransientFailureThreshold == 0 &&
+		raw.TransientFailureCooldownSeconds == 0 {
+		return cfg
+	}
+	cfg.enabled = raw.TransientFailureCooldownEnabled
+	cfg.statusCodes = parseOpenAITransientFailureStatusCodes(raw.TransientFailureStatusCodes)
+	if raw.TransientFailureWindowSeconds > 0 {
+		cfg.window = time.Duration(raw.TransientFailureWindowSeconds) * time.Second
+	}
+	if raw.TransientFailureThreshold > 0 {
+		cfg.threshold = raw.TransientFailureThreshold
+	}
+	if raw.TransientFailureCooldownSeconds >= 0 {
+		cfg.cooldown = time.Duration(raw.TransientFailureCooldownSeconds) * time.Second
+	}
+	return normalizeOpenAITransientFailureConfig(cfg)
+}
+
+func normalizeOpenAITransientFailureConfig(cfg openAITransientFailureConfig) openAITransientFailureConfig {
+	if len(cfg.statusCodes) == 0 {
+		cfg.statusCodes = map[int]struct{}{502: {}, 503: {}, 504: {}}
+	}
+	if cfg.window <= 0 {
+		cfg.window = time.Minute
+	}
+	if cfg.threshold <= 0 {
+		cfg.threshold = 3
+	}
+	if cfg.cooldown < 0 {
+		cfg.cooldown = 0
+	}
+	return cfg
+}
+
+func parseOpenAITransientFailureStatusCodes(raw string) map[int]struct{} {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[int]struct{}{502: {}, 503: {}, 504: {}}
+	}
+	codes := make(map[int]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		code, err := strconv.Atoi(part)
+		if err != nil || code < 100 || code > 599 {
+			continue
+		}
+		codes[code] = struct{}{}
+	}
+	if len(codes) == 0 {
+		return map[int]struct{}{502: {}, 503: {}, 504: {}}
+	}
+	return codes
+}
+
+func (cfg openAITransientFailureConfig) includesStatus(statusCode int) bool {
+	if !cfg.enabled || statusCode <= 0 {
+		return false
+	}
+	_, ok := cfg.statusCodes[statusCode]
+	return ok
+}
+
+func (s *OpenAIGatewayService) RecordOpenAITransientFailure(_ context.Context, account *Account, statusCode int) {
+	if s == nil || account == nil || account.ID <= 0 {
+		return
+	}
+	cfg := s.openAITransientFailureConfig()
+	if !cfg.includesStatus(statusCode) {
+		return
+	}
+	now := time.Now()
+	value, _ := s.openaiTransientFailureStates.LoadOrStore(account.ID, &openAITransientFailureState{})
+	state, ok := value.(*openAITransientFailureState)
+	if !ok || state == nil {
+		state = &openAITransientFailureState{}
+		s.openaiTransientFailureStates.Store(account.ID, state)
+	}
+
+	state.mu.Lock()
+	cutoff := now.Add(-cfg.window)
+	failures := state.failures[:0]
+	for _, failureAt := range state.failures {
+		if failureAt.After(cutoff) {
+			failures = append(failures, failureAt)
+		}
+	}
+	failures = append(failures, now)
+	state.failures = failures
+	state.lastStatus = statusCode
+	count := len(state.failures)
+	alreadyCooling := !state.cooldownUntil.IsZero() && now.Before(state.cooldownUntil)
+	cooldownUntil := state.cooldownUntil
+	cooldownStarted := false
+	if cfg.cooldown > 0 && count >= cfg.threshold {
+		cooldownUntil = now.Add(cfg.cooldown)
+		state.cooldownUntil = cooldownUntil
+		cooldownStarted = !alreadyCooling
+	}
+	state.mu.Unlock()
+
+	logger := slog.With(
+		"account_id", account.ID,
+		"account_name", account.Name,
+		"upstream_status", statusCode,
+		"failure_count", count,
+		"failure_threshold", cfg.threshold,
+		"window_seconds", int(cfg.window/time.Second),
+	)
+	if cooldownStarted {
+		logger.Warn("openai.transient_failure_cooldown_started",
+			"cooldown_seconds", int(cfg.cooldown/time.Second),
+			"cooldown_until", cooldownUntil,
+		)
+		return
+	}
+	logger.Info("openai.transient_failure_recorded")
+}
+
+func (s *OpenAIGatewayService) ClearOpenAITransientFailures(accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if value, ok := s.openaiTransientFailureStates.LoadAndDelete(accountID); ok {
+		if state, ok := value.(*openAITransientFailureState); ok && state != nil {
+			state.mu.Lock()
+			wasCooling := !state.cooldownUntil.IsZero() && time.Now().Before(state.cooldownUntil)
+			lastStatus := state.lastStatus
+			state.mu.Unlock()
+			if wasCooling {
+				slog.Info("openai.transient_failure_recovered",
+					"account_id", accountID,
+					"last_status", lastStatus,
+				)
+			}
+		}
+	}
+}
+
+func (s *OpenAIGatewayService) logOpenAITransientFailureCooldownSkipped(req OpenAIAccountScheduleRequest, account *Account, selectedAlternativeID int64, cooldownUntil time.Time, lastStatus int) {
+	if s == nil || account == nil {
+		return
+	}
+	slog.Info("openai.transient_failure_cooldown_skipped",
+		"account_id", account.ID,
+		"account_name", account.Name,
+		"selected_alternative_account_id", selectedAlternativeID,
+		"group_id", derefGroupID(req.GroupID),
+		"model", req.RequestedModel,
+		"last_status", lastStatus,
+		"cooldown_until", cooldownUntil,
+	)
 }
 
 func (s *OpenAIGatewayService) logOpenAIAccountSlowStateChange(accountID int64, report openAIAccountRuntimeReport, cfg openAISlowAccountConfig) {

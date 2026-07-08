@@ -3484,6 +3484,109 @@ func TestOpenAIGatewayService_LegacyLoadAwarenessSkipsSlowWhenAlternativeExists(
 	}
 }
 
+func TestOpenAITransientFailureCooldownSkipsOnlyWhenAlternativeExists(t *testing.T) {
+	groupID := int64(10210)
+	accounts := []*Account{
+		{ID: 2501, Name: "primary", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 2502, Name: "backup", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Gateway: config.GatewayConfig{OpenAIScheduler: config.GatewayOpenAISchedulerConfig{
+			TransientFailureCooldownEnabled: true,
+			TransientFailureStatusCodes:     "502,503,504",
+			TransientFailureWindowSeconds:   60,
+			TransientFailureThreshold:       2,
+			TransientFailureCooldownSeconds: 60,
+		}}},
+	}
+
+	req := OpenAIAccountScheduleRequest{
+		GroupID:        &groupID,
+		Platform:       PlatformOpenAI,
+		RequestedModel: "gpt-5.5",
+	}
+	now := time.Now()
+	require.Len(t, svc.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, accounts, now), 2)
+
+	svc.RecordOpenAITransientFailure(context.Background(), accounts[0], 502)
+	require.Len(t, svc.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, accounts, now), 2)
+
+	svc.RecordOpenAITransientFailure(context.Background(), accounts[0], 502)
+	filtered := svc.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, accounts, now)
+	require.Len(t, filtered, 1)
+	require.Equal(t, int64(2502), filtered[0].ID)
+
+	onlyCooling := svc.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, accounts[:1], now)
+	require.Len(t, onlyCooling, 1)
+	require.Equal(t, int64(2501), onlyCooling[0].ID)
+
+	svc.ClearOpenAITransientFailures(2501)
+	filtered = svc.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, accounts, now)
+	require.Len(t, filtered, 2)
+}
+
+func TestOpenAITransientFailureCooldownIgnoresUnconfiguredStatusAndExpires(t *testing.T) {
+	groupID := int64(10211)
+	account := &Account{ID: 2601, Name: "primary", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0, GroupIDs: []int64{groupID}}
+	backup := &Account{ID: 2602, Name: "backup", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Gateway: config.GatewayConfig{OpenAIScheduler: config.GatewayOpenAISchedulerConfig{
+			TransientFailureCooldownEnabled: true,
+			TransientFailureStatusCodes:     "502",
+			TransientFailureWindowSeconds:   60,
+			TransientFailureThreshold:       1,
+			TransientFailureCooldownSeconds: 60,
+		}}},
+	}
+	req := OpenAIAccountScheduleRequest{
+		GroupID:        &groupID,
+		Platform:       PlatformOpenAI,
+		RequestedModel: "gpt-5.5",
+	}
+
+	svc.RecordOpenAITransientFailure(context.Background(), account, 503)
+	filtered := svc.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, []*Account{account, backup}, time.Now())
+	require.Len(t, filtered, 2)
+
+	svc.RecordOpenAITransientFailure(context.Background(), account, 502)
+	filtered = svc.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, []*Account{account, backup}, time.Now())
+	require.Len(t, filtered, 1)
+	require.Equal(t, int64(2602), filtered[0].ID)
+
+	value, ok := svc.openaiTransientFailureStates.Load(account.ID)
+	require.True(t, ok)
+	state := value.(*openAITransientFailureState)
+	state.mu.Lock()
+	state.cooldownUntil = time.Now().Add(-time.Second)
+	state.mu.Unlock()
+
+	filtered = svc.filterTransientCoolingOpenAIAccountsIfAlternativesExist(req, []*Account{account, backup}, time.Now())
+	require.Len(t, filtered, 2)
+}
+
+func TestOpenAIGatewayService_SelectBestAccountSkipsTransientCoolingWhenAlternativeExists(t *testing.T) {
+	groupID := int64(10212)
+	accounts := []Account{
+		{ID: 2701, Name: "primary", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0, GroupIDs: []int64{groupID}},
+		{ID: 2702, Name: "backup", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 5, GroupIDs: []int64{groupID}},
+	}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Gateway: config.GatewayConfig{OpenAIScheduler: config.GatewayOpenAISchedulerConfig{
+			TransientFailureCooldownEnabled: true,
+			TransientFailureStatusCodes:     "502",
+			TransientFailureWindowSeconds:   60,
+			TransientFailureThreshold:       1,
+			TransientFailureCooldownSeconds: 60,
+		}}},
+	}
+	svc.RecordOpenAITransientFailure(context.Background(), &accounts[0], 502)
+
+	selected, compactBlocked := svc.selectBestAccount(context.Background(), &groupID, PlatformOpenAI, accounts, "gpt-5.5", nil, false, "")
+	require.False(t, compactBlocked)
+	require.NotNil(t, selected)
+	require.Equal(t, int64(2702), selected.ID)
+}
+
 func TestOpenAIGatewayService_IsHighestPriorityForNotificationRejectsBetterHealthyAccount(t *testing.T) {
 	groupID := int64(10203)
 	accounts := []Account{

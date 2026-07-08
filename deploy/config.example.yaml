@@ -338,6 +338,16 @@ gateway:
     sticky_escape_ttft_ms: 15000
     # 错误率 EWMA 超过该阈值时跳过 sticky，默认 0.5，仅在明显降级时触发
     sticky_escape_error_rate: 0.5
+    # 重复 502/503/504 等瞬时上游失败时，对账号做进程内临时冷却；有替代账号时跳过
+    transient_failure_cooldown_enabled: true
+    # 参与瞬时失败冷却计数的状态码，逗号分隔
+    transient_failure_status_codes: "502,503,504"
+    # 统计瞬时失败次数的滑动窗口（秒）
+    transient_failure_window_seconds: 60
+    # 窗口内达到该失败次数后进入冷却
+    transient_failure_threshold: 3
+    # 冷却时长（秒）；不写入 DB，也不会修改账号 Temp Unschedulable
+    transient_failure_cooldown_seconds: 60
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:

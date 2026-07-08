@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -1096,6 +1097,16 @@ type GatewayOpenAISchedulerConfig struct {
 	SlowScoreMax int `mapstructure:"slow_score_max"`
 	// SlowScoreDecayIntervalSeconds: 距离上次 TTFT 样本每经过该时间，慢分自动衰减 1 分
 	SlowScoreDecayIntervalSeconds int `mapstructure:"slow_score_decay_interval_seconds"`
+	// TransientFailureCooldownEnabled: 是否对重复 502/503/504 等瞬时上游失败开启账号级临时冷却
+	TransientFailureCooldownEnabled bool `mapstructure:"transient_failure_cooldown_enabled"`
+	// TransientFailureStatusCodes: 参与瞬时失败冷却计数的 HTTP 状态码，逗号分隔
+	TransientFailureStatusCodes string `mapstructure:"transient_failure_status_codes"`
+	// TransientFailureWindowSeconds: 统计瞬时失败次数的滑动窗口
+	TransientFailureWindowSeconds int `mapstructure:"transient_failure_window_seconds"`
+	// TransientFailureThreshold: 窗口内达到该失败次数后进入临时冷却
+	TransientFailureThreshold int `mapstructure:"transient_failure_threshold"`
+	// TransientFailureCooldownSeconds: 触发后的账号临时冷却时长
+	TransientFailureCooldownSeconds int `mapstructure:"transient_failure_cooldown_seconds"`
 }
 
 // GatewayUsageRecordConfig 使用量记录异步队列配置
@@ -1542,6 +1553,9 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	}
 	if !cfg.Gateway.OpenAIScheduler.SlowAccountEscapeEnabled && !viper.IsSet("gateway.openai_scheduler.slow_account_escape_enabled") {
 		cfg.Gateway.OpenAIScheduler.SlowAccountEscapeEnabled = true
+	}
+	if !cfg.Gateway.OpenAIScheduler.TransientFailureCooldownEnabled && !viper.IsSet("gateway.openai_scheduler.transient_failure_cooldown_enabled") {
+		cfg.Gateway.OpenAIScheduler.TransientFailureCooldownEnabled = true
 	}
 
 	cfg.RunMode = NormalizeRunMode(cfg.RunMode)
@@ -2084,6 +2098,11 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.slow_score_skip_threshold", 8)
 	viper.SetDefault("gateway.openai_scheduler.slow_score_max", 10)
 	viper.SetDefault("gateway.openai_scheduler.slow_score_decay_interval_seconds", 60)
+	viper.SetDefault("gateway.openai_scheduler.transient_failure_cooldown_enabled", true)
+	viper.SetDefault("gateway.openai_scheduler.transient_failure_status_codes", "502,503,504")
+	viper.SetDefault("gateway.openai_scheduler.transient_failure_window_seconds", 60)
+	viper.SetDefault("gateway.openai_scheduler.transient_failure_threshold", 3)
+	viper.SetDefault("gateway.openai_scheduler.transient_failure_cooldown_seconds", 60)
 	viper.SetDefault("gateway.openai_switch_notify.min_interval_seconds", 60)
 	viper.SetDefault("gateway.openai_switch_notify.send_started", false)
 	viper.SetDefault("gateway.openai_switch_notify.telegram.enabled", false)
@@ -3005,6 +3024,20 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIScheduler.SlowScoreDecayIntervalSeconds <= 0 {
 		return fmt.Errorf("gateway.openai_scheduler.slow_score_decay_interval_seconds must be positive")
 	}
+	if c.Gateway.OpenAIScheduler.TransientFailureCooldownEnabled {
+		if _, err := parseOpenAITransientFailureStatusCodesConfig(c.Gateway.OpenAIScheduler.TransientFailureStatusCodes); err != nil {
+			return err
+		}
+		if c.Gateway.OpenAIScheduler.TransientFailureWindowSeconds <= 0 {
+			return fmt.Errorf("gateway.openai_scheduler.transient_failure_window_seconds must be positive")
+		}
+		if c.Gateway.OpenAIScheduler.TransientFailureThreshold <= 0 {
+			return fmt.Errorf("gateway.openai_scheduler.transient_failure_threshold must be positive")
+		}
+		if c.Gateway.OpenAIScheduler.TransientFailureCooldownSeconds < 0 {
+			return fmt.Errorf("gateway.openai_scheduler.transient_failure_cooldown_seconds must be non-negative")
+		}
+	}
 	if c.Gateway.OpenAISwitchNotify.MinIntervalSeconds < 0 {
 		return fmt.Errorf("gateway.openai_switch_notify.min_interval_seconds must be non-negative")
 	}
@@ -3171,6 +3204,29 @@ func normalizeStringSlice(values []string) []string {
 		normalized = append(normalized, trimmed)
 	}
 	return normalized
+}
+
+func parseOpenAITransientFailureStatusCodesConfig(raw string) (map[int]struct{}, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = "502,503,504"
+	}
+	codes := make(map[int]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		code, err := strconv.Atoi(part)
+		if err != nil || code < 100 || code > 599 {
+			return nil, fmt.Errorf("gateway.openai_scheduler.transient_failure_status_codes contains invalid HTTP status code %q", part)
+		}
+		codes[code] = struct{}{}
+	}
+	if len(codes) == 0 {
+		return nil, fmt.Errorf("gateway.openai_scheduler.transient_failure_status_codes must contain at least one status code")
+	}
+	return codes, nil
 }
 
 func isWeakJWTSecret(secret string) bool {

@@ -146,6 +146,21 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIScheduler.SlowScoreSkipThreshold != 8 {
 		t.Fatalf("Gateway.OpenAIScheduler.SlowScoreSkipThreshold = %d, want 8", cfg.Gateway.OpenAIScheduler.SlowScoreSkipThreshold)
 	}
+	if !cfg.Gateway.OpenAIScheduler.TransientFailureCooldownEnabled {
+		t.Fatalf("Gateway.OpenAIScheduler.TransientFailureCooldownEnabled = false, want true")
+	}
+	if cfg.Gateway.OpenAIScheduler.TransientFailureStatusCodes != "502,503,504" {
+		t.Fatalf("Gateway.OpenAIScheduler.TransientFailureStatusCodes = %q, want 502,503,504", cfg.Gateway.OpenAIScheduler.TransientFailureStatusCodes)
+	}
+	if cfg.Gateway.OpenAIScheduler.TransientFailureWindowSeconds != 60 {
+		t.Fatalf("Gateway.OpenAIScheduler.TransientFailureWindowSeconds = %d, want 60", cfg.Gateway.OpenAIScheduler.TransientFailureWindowSeconds)
+	}
+	if cfg.Gateway.OpenAIScheduler.TransientFailureThreshold != 3 {
+		t.Fatalf("Gateway.OpenAIScheduler.TransientFailureThreshold = %d, want 3", cfg.Gateway.OpenAIScheduler.TransientFailureThreshold)
+	}
+	if cfg.Gateway.OpenAIScheduler.TransientFailureCooldownSeconds != 60 {
+		t.Fatalf("Gateway.OpenAIScheduler.TransientFailureCooldownSeconds = %d, want 60", cfg.Gateway.OpenAIScheduler.TransientFailureCooldownSeconds)
+	}
 	if !cfg.Gateway.OpenAIWS.SessionHashReadOldFallback {
 		t.Fatalf("Gateway.OpenAIWS.SessionHashReadOldFallback = false, want true")
 	}
@@ -1899,6 +1914,26 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			name:    "slow_score_decay_interval_seconds 必须为正数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.SlowScoreDecayIntervalSeconds = 0 },
 			wantErr: "gateway.openai_scheduler.slow_score_decay_interval_seconds",
+		},
+		{
+			name:    "transient_failure_status_codes 必须有效",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.TransientFailureStatusCodes = "502,nope" },
+			wantErr: "gateway.openai_scheduler.transient_failure_status_codes",
+		},
+		{
+			name:    "transient_failure_window_seconds 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.TransientFailureWindowSeconds = 0 },
+			wantErr: "gateway.openai_scheduler.transient_failure_window_seconds",
+		},
+		{
+			name:    "transient_failure_threshold 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.TransientFailureThreshold = 0 },
+			wantErr: "gateway.openai_scheduler.transient_failure_threshold",
+		},
+		{
+			name:    "transient_failure_cooldown_seconds 不能小于 0",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.TransientFailureCooldownSeconds = -1 },
+			wantErr: "gateway.openai_scheduler.transient_failure_cooldown_seconds",
 		},
 	}
 
