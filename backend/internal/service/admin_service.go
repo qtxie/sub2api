@@ -147,6 +147,7 @@ type CreateUserInput struct {
 	Notes         string
 	Balance       *float64
 	Concurrency   int
+	ChatEnabled   bool
 	RPMLimit      int
 	AllowedGroups []int64
 }
@@ -158,6 +159,7 @@ type UpdateUserInput struct {
 	Notes         *string
 	Balance       *float64 // 使用指针区分"未提供"和"设置为0"
 	Concurrency   *int     // 使用指针区分"未提供"和"设置为0"
+	ChatEnabled   *bool    // 使用指针区分"未提供"和"设置为false"
 	RPMLimit      *int     // 使用指针区分"未提供"和"设置为0"
 	Status        string
 	AllowedGroups *[]int64 // 使用指针区分"未提供"和"设置为空数组"
@@ -743,6 +745,7 @@ func (s *adminServiceImpl) CreateUser(ctx context.Context, input *CreateUserInpu
 		Role:          RoleUser, // Always create as regular user, never admin
 		Balance:       balance,
 		Concurrency:   input.Concurrency,
+		ChatEnabled:   input.ChatEnabled,
 		RPMLimit:      input.RPMLimit,
 		Status:        StatusActive,
 		AllowedGroups: input.AllowedGroups,
@@ -822,6 +825,10 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 
 	if input.Concurrency != nil {
 		user.Concurrency = *input.Concurrency
+	}
+
+	if input.ChatEnabled != nil {
+		user.ChatEnabled = *input.ChatEnabled
 	}
 
 	if input.RPMLimit != nil {

@@ -56,6 +56,12 @@ declare module 'vue-router' {
     requiresRiskControl?: boolean
 
     /**
+     * Whether this route requires the current user's chat_enabled grant.
+     * @default false
+     */
+    requiresChatEnabled?: boolean
+
+    /**
      * i18n key for the page title
      */
     titleKey?: string

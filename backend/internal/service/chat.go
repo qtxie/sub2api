@@ -27,6 +27,7 @@ var (
 	ErrChatConversationNotFound = infraerrors.NotFound("CHAT_CONVERSATION_NOT_FOUND", "chat conversation not found")
 	ErrChatMessageNotFound      = infraerrors.NotFound("CHAT_MESSAGE_NOT_FOUND", "chat message not found")
 	ErrChatInvalidInput         = infraerrors.BadRequest("CHAT_INVALID_INPUT", "invalid chat input")
+	ErrChatDisabled             = infraerrors.Forbidden("CHAT_DISABLED", "chat is not enabled for this user")
 )
 
 type ChatConversation struct {

@@ -1985,7 +1985,9 @@ export default {
       form: {
         rpmLimit: 'Requests Per Minute (RPM)',
         rpmLimitPlaceholder: '0 = unlimited',
-        rpmLimitHint: 'Max requests per minute for this user; 0 = unlimited. Acts as a fallback only when the group has no rpm_limit set.'
+        rpmLimitHint: 'Max requests per minute for this user; 0 = unlimited. Acts as a fallback only when the group has no rpm_limit set.',
+        chatEnabled: 'Enable Chat',
+        chatEnabledHint: 'Allow this user to access the built-in Chat page and chat history.'
       },
       columns: {
         user: 'User',

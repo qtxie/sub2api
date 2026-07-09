@@ -143,6 +143,9 @@ func (h *ChatHandler) ListModels(c *gin.Context) {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
+	if !h.requireChatAccess(c, subject.UserID) {
+		return
+	}
 
 	apiKeyID, err := strconv.ParseInt(c.Query("api_key_id"), 10, 64)
 	if err != nil || apiKeyID <= 0 {
@@ -173,6 +176,9 @@ func (h *ChatHandler) ExportConversations(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if !h.requireChatAccess(c, subject.UserID) {
 		return
 	}
 
@@ -226,6 +232,9 @@ func (h *ChatHandler) ListConversations(c *gin.Context) {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
+	if !h.requireChatAccess(c, subject.UserID) {
+		return
+	}
 
 	page, pageSize := response.ParsePagination(c)
 	params := pagination.PaginationParams{Page: page, PageSize: pageSize}
@@ -245,6 +254,9 @@ func (h *ChatHandler) CreateConversation(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if !h.requireChatAccess(c, subject.UserID) {
 		return
 	}
 
@@ -495,12 +507,27 @@ func (h *ChatHandler) authAndConversationID(c *gin.Context) (middleware2.AuthSub
 		response.Unauthorized(c, "User not authenticated")
 		return middleware2.AuthSubject{}, 0, false
 	}
+	if !h.requireChatAccess(c, subject.UserID) {
+		return middleware2.AuthSubject{}, 0, false
+	}
 	conversationID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || conversationID <= 0 {
 		response.BadRequest(c, "Invalid conversation ID")
 		return middleware2.AuthSubject{}, 0, false
 	}
 	return subject, conversationID, true
+}
+
+func (h *ChatHandler) requireChatAccess(c *gin.Context, userID int64) bool {
+	if h.chatService == nil {
+		response.InternalError(c, "Chat service is not configured")
+		return false
+	}
+	if err := h.chatService.EnsureUserCanUseChat(c.Request.Context(), userID); err != nil {
+		response.ErrorFrom(c, err)
+		return false
+	}
+	return true
 }
 
 func (h *ChatHandler) buildGatewayChatRequest(conversation *service.ChatConversation, attachments []chatStreamAttachmentRequest) (map[string]any, error) {

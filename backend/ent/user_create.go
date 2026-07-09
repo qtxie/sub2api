@@ -356,6 +356,20 @@ func (_c *UserCreate) SetNillableRpmLimit(v *int) *UserCreate {
 	return _c
 }
 
+// SetChatEnabled sets the "chat_enabled" field.
+func (_c *UserCreate) SetChatEnabled(v bool) *UserCreate {
+	_c.mutation.SetChatEnabled(v)
+	return _c
+}
+
+// SetNillableChatEnabled sets the "chat_enabled" field if the given value is not nil.
+func (_c *UserCreate) SetNillableChatEnabled(v *bool) *UserCreate {
+	if v != nil {
+		_c.SetChatEnabled(*v)
+	}
+	return _c
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_c *UserCreate) AddAPIKeyIDs(ids ...int64) *UserCreate {
 	_c.mutation.AddAPIKeyIDs(ids...)
@@ -688,6 +702,10 @@ func (_c *UserCreate) defaults() error {
 		v := user.DefaultRpmLimit
 		_c.mutation.SetRpmLimit(v)
 	}
+	if _, ok := _c.mutation.ChatEnabled(); !ok {
+		v := user.DefaultChatEnabled
+		_c.mutation.SetChatEnabled(v)
+	}
 	return nil
 }
 
@@ -776,6 +794,9 @@ func (_c *UserCreate) check() error {
 	}
 	if _, ok := _c.mutation.RpmLimit(); !ok {
 		return &ValidationError{Name: "rpm_limit", err: errors.New(`ent: missing required field "User.rpm_limit"`)}
+	}
+	if _, ok := _c.mutation.ChatEnabled(); !ok {
+		return &ValidationError{Name: "chat_enabled", err: errors.New(`ent: missing required field "User.chat_enabled"`)}
 	}
 	return nil
 }
@@ -899,6 +920,10 @@ func (_c *UserCreate) createSpec() (*User, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.RpmLimit(); ok {
 		_spec.SetField(user.FieldRpmLimit, field.TypeInt, value)
 		_node.RpmLimit = value
+	}
+	if value, ok := _c.mutation.ChatEnabled(); ok {
+		_spec.SetField(user.FieldChatEnabled, field.TypeBool, value)
+		_node.ChatEnabled = value
 	}
 	if nodes := _c.mutation.APIKeysIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -1544,6 +1569,18 @@ func (u *UserUpsert) AddRpmLimit(v int) *UserUpsert {
 	return u
 }
 
+// SetChatEnabled sets the "chat_enabled" field.
+func (u *UserUpsert) SetChatEnabled(v bool) *UserUpsert {
+	u.Set(user.FieldChatEnabled, v)
+	return u
+}
+
+// UpdateChatEnabled sets the "chat_enabled" field to the value that was provided on create.
+func (u *UserUpsert) UpdateChatEnabled() *UserUpsert {
+	u.SetExcluded(user.FieldChatEnabled)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -1992,6 +2029,20 @@ func (u *UserUpsertOne) AddRpmLimit(v int) *UserUpsertOne {
 func (u *UserUpsertOne) UpdateRpmLimit() *UserUpsertOne {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateRpmLimit()
+	})
+}
+
+// SetChatEnabled sets the "chat_enabled" field.
+func (u *UserUpsertOne) SetChatEnabled(v bool) *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.SetChatEnabled(v)
+	})
+}
+
+// UpdateChatEnabled sets the "chat_enabled" field to the value that was provided on create.
+func (u *UserUpsertOne) UpdateChatEnabled() *UserUpsertOne {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdateChatEnabled()
 	})
 }
 
@@ -2609,6 +2660,20 @@ func (u *UserUpsertBulk) AddRpmLimit(v int) *UserUpsertBulk {
 func (u *UserUpsertBulk) UpdateRpmLimit() *UserUpsertBulk {
 	return u.Update(func(s *UserUpsert) {
 		s.UpdateRpmLimit()
+	})
+}
+
+// SetChatEnabled sets the "chat_enabled" field.
+func (u *UserUpsertBulk) SetChatEnabled(v bool) *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.SetChatEnabled(v)
+	})
+}
+
+// UpdateChatEnabled sets the "chat_enabled" field to the value that was provided on create.
+func (u *UserUpsertBulk) UpdateChatEnabled() *UserUpsertBulk {
+	return u.Update(func(s *UserUpsert) {
+		s.UpdateChatEnabled()
 	})
 }
 

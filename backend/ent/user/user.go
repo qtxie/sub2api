@@ -63,6 +63,8 @@ const (
 	FieldTotalRecharged = "total_recharged"
 	// FieldRpmLimit holds the string denoting the rpm_limit field in the database.
 	FieldRpmLimit = "rpm_limit"
+	// FieldChatEnabled holds the string denoting the chat_enabled field in the database.
+	FieldChatEnabled = "chat_enabled"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
 	EdgeAPIKeys = "api_keys"
 	// EdgeRedeemCodes holds the string denoting the redeem_codes edge name in mutations.
@@ -236,6 +238,7 @@ var Columns = []string{
 	FieldBalanceNotifyExtraEmails,
 	FieldTotalRecharged,
 	FieldRpmLimit,
+	FieldChatEnabled,
 }
 
 var (
@@ -308,6 +311,8 @@ var (
 	DefaultTotalRecharged float64
 	// DefaultRpmLimit holds the default value on creation for the "rpm_limit" field.
 	DefaultRpmLimit int
+	// DefaultChatEnabled holds the default value on creation for the "chat_enabled" field.
+	DefaultChatEnabled bool
 )
 
 // OrderOption defines the ordering options for the User queries.
@@ -436,6 +441,11 @@ func ByTotalRecharged(opts ...sql.OrderTermOption) OrderOption {
 // ByRpmLimit orders the results by the rpm_limit field.
 func ByRpmLimit(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldRpmLimit, opts...).ToFunc()
+}
+
+// ByChatEnabled orders the results by the chat_enabled field.
+func ByChatEnabled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldChatEnabled, opts...).ToFunc()
 }
 
 // ByAPIKeysCount orders the results by api_keys count.

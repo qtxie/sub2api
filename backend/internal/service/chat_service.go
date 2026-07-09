@@ -14,10 +14,28 @@ const chatExportBatchSize = 100
 type ChatService struct {
 	repo       ChatConversationRepository
 	apiKeyRepo APIKeyRepository
+	userRepo   UserRepository
 }
 
-func NewChatService(repo ChatConversationRepository, apiKeyRepo APIKeyRepository) *ChatService {
-	return &ChatService{repo: repo, apiKeyRepo: apiKeyRepo}
+func NewChatService(repo ChatConversationRepository, apiKeyRepo APIKeyRepository, userRepo UserRepository) *ChatService {
+	return &ChatService{repo: repo, apiKeyRepo: apiKeyRepo, userRepo: userRepo}
+}
+
+func (s *ChatService) EnsureUserCanUseChat(ctx context.Context, userID int64) error {
+	if s.userRepo == nil {
+		return nil
+	}
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return ErrUserNotFound
+	}
+	if !user.ChatEnabled {
+		return ErrChatDisabled
+	}
+	return nil
 }
 
 func (s *ChatService) ListConversations(ctx context.Context, userID int64, params pagination.PaginationParams) ([]ChatConversation, *pagination.PaginationResult, error) {

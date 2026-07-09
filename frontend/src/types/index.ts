@@ -88,6 +88,7 @@ export interface User {
   balance: number // User balance for API usage
   frozen_balance?: number // Balance currently held by async batch jobs
   concurrency: number // Allowed concurrent requests
+  chat_enabled: boolean // Whether the user may access the built-in Chat page
   rpm_limit?: number // User-level RPM cap (0 = unlimited); effective as fallback when group has no rpm_limit
   status: 'active' | 'disabled' // Account status
   allowed_groups: number[] | null // Allowed group IDs (null = all non-exclusive groups)
@@ -1630,6 +1631,7 @@ export interface UpdateUserRequest {
   role?: 'admin' | 'user'
   balance?: number
   concurrency?: number
+  chat_enabled?: boolean
   status?: 'active' | 'disabled'
   allowed_groups?: number[] | null
   // 用户专属分组倍率配置 (group_id -> rate_multiplier | null)

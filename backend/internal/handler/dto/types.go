@@ -16,6 +16,7 @@ type User struct {
 	Balance       float64    `json:"balance"`
 	FrozenBalance float64    `json:"frozen_balance"`
 	Concurrency   int        `json:"concurrency"`
+	ChatEnabled   bool       `json:"chat_enabled"`
 	Status        string     `json:"status"`
 	AllowedGroups []int64    `json:"allowed_groups"`
 	LastActiveAt  *time.Time `json:"last_active_at,omitempty"`

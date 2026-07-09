@@ -34,7 +34,7 @@ func TestChatServiceStreamExportUsesStablePageCursor(t *testing.T) {
 	expectedNextCursor := repo.firstPage[len(repo.firstPage)-1].Cursor
 
 	var visited int
-	svc := NewChatService(repo, nil)
+	svc := NewChatService(repo, nil, nil)
 	err := svc.StreamExportConversations(context.Background(), 10, func(conversation ChatConversation) error {
 		visited++
 		require.Equal(t, hydratedUpdatedAt, conversation.UpdatedAt)

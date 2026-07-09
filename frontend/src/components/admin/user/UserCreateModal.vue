@@ -47,6 +47,13 @@
         />
         <p class="input-hint">{{ t('admin.users.form.rpmLimitHint') }}</p>
       </div>
+      <label class="flex items-start gap-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+        <input v-model="form.chat_enabled" type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" />
+        <span>
+          <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.users.form.chatEnabled') }}</span>
+          <span class="block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.users.form.chatEnabledHint') }}</span>
+        </span>
+      </label>
     </form>
     <template #footer>
       <div class="flex justify-end gap-3">
@@ -69,7 +76,7 @@ import Icon from '@/components/icons/Icon.vue'
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits(['close', 'success']); const { t } = useI18n()
 
-const form = reactive({ email: '', password: '', username: '', notes: '', balance: '', concurrency: 1, rpm_limit: 0 })
+const form = reactive({ email: '', password: '', username: '', notes: '', balance: '', concurrency: 1, chat_enabled: false, rpm_limit: 0 })
 
 const { loading, submit } = useForm({
   form,
@@ -86,7 +93,7 @@ const { loading, submit } = useForm({
   successMsg: t('admin.users.userCreated')
 })
 
-watch(() => props.show, (v) => { if(v) Object.assign(form, { email: '', password: '', username: '', notes: '', balance: '', concurrency: 1, rpm_limit: 0 }) })
+watch(() => props.show, (v) => { if(v) Object.assign(form, { email: '', password: '', username: '', notes: '', balance: '', concurrency: 1, chat_enabled: false, rpm_limit: 0 }) })
 
 const generateRandomPassword = () => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*'

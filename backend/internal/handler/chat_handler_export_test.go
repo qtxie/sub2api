@@ -42,7 +42,7 @@ func TestChatExportStreamsOnlyAuthenticatedUsersActiveConversations(t *testing.T
 	mustCreateChatExportMessage(t, client, otherUser.ID, other.ID, service.ChatRoleUser, "not yours")
 
 	chatRepo := repository.NewChatConversationRepository(client, nil)
-	chatService := service.NewChatService(chatRepo, nil)
+	chatService := service.NewChatService(chatRepo, nil, nil)
 	handler := NewChatHandler(chatService, nil, nil, nil)
 
 	w := httptest.NewRecorder()

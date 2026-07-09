@@ -79,6 +79,7 @@ export const useAuthStore = defineStore('auth', () => {
   const pendingAuthSession = ref<PendingAuthSessionSummary | null>(null)
   let refreshIntervalId: ReturnType<typeof setInterval> | null = null
   let tokenRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
+  let initialUserRefreshPromise: Promise<User | null> | null = null
 
   // ==================== Computed ====================
 
@@ -114,9 +115,13 @@ export const useAuthStore = defineStore('auth', () => {
         refreshTokenValue.value = savedRefreshToken
         tokenExpiresAt.value = savedExpiresAt ? parseInt(savedExpiresAt, 10) : null
 
-        // Immediately refresh user data from backend (async, don't block)
-        refreshUser().catch((error) => {
+        // Immediately refresh user data from backend. The router can await this
+        // before evaluating permission flags that may be stale in localStorage.
+        initialUserRefreshPromise = refreshUser().catch((error) => {
           console.error('Failed to refresh user on init:', error)
+          return null
+        }).finally(() => {
+          initialUserRefreshPromise = null
         })
 
         // Start auto-refresh interval for user data
@@ -436,6 +441,12 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function waitForInitialUserRefresh(): Promise<void> {
+    if (initialUserRefreshPromise) {
+      await initialUserRefreshPromise
+    }
+  }
+
   /**
    * Clear all authentication state
    * Internal helper function
@@ -450,6 +461,7 @@ export const useAuthStore = defineStore('auth', () => {
     refreshTokenValue.value = null
     tokenExpiresAt.value = null
     user.value = null
+    initialUserRefreshPromise = null
     localStorage.removeItem(AUTH_TOKEN_KEY)
     localStorage.removeItem(AUTH_USER_KEY)
     localStorage.removeItem(REFRESH_TOKEN_KEY)
@@ -486,6 +498,7 @@ export const useAuthStore = defineStore('auth', () => {
     setToken,
     logout,
     checkAuth,
+    waitForInitialUserRefresh,
     refreshUser,
     setPendingAuthSession,
     clearPendingAuthSession

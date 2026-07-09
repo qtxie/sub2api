@@ -175,6 +175,11 @@ func RpmLimit(v int) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldRpmLimit, v))
 }
 
+// ChatEnabled applies equality check predicate on the "chat_enabled" field. It's identical to ChatEnabledEQ.
+func ChatEnabled(v bool) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldChatEnabled, v))
+}
+
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.
 func CreatedAtEQ(v time.Time) predicate.User {
 	return predicate.User(sql.FieldEQ(FieldCreatedAt, v))
@@ -1383,6 +1388,16 @@ func RpmLimitLT(v int) predicate.User {
 // RpmLimitLTE applies the LTE predicate on the "rpm_limit" field.
 func RpmLimitLTE(v int) predicate.User {
 	return predicate.User(sql.FieldLTE(FieldRpmLimit, v))
+}
+
+// ChatEnabledEQ applies the EQ predicate on the "chat_enabled" field.
+func ChatEnabledEQ(v bool) predicate.User {
+	return predicate.User(sql.FieldEQ(FieldChatEnabled, v))
+}
+
+// ChatEnabledNEQ applies the NEQ predicate on the "chat_enabled" field.
+func ChatEnabledNEQ(v bool) predicate.User {
+	return predicate.User(sql.FieldNEQ(FieldChatEnabled, v))
 }
 
 // HasAPIKeys applies the HasEdge predicate on the "api_keys" edge.

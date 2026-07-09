@@ -49,6 +49,13 @@
         />
         <p class="input-hint">{{ t('admin.users.form.rpmLimitHint') }}</p>
       </div>
+      <label class="flex items-start gap-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+        <input v-model="form.chat_enabled" type="checkbox" class="mt-1 h-4 w-4 rounded border-gray-300" />
+        <span>
+          <span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.users.form.chatEnabled') }}</span>
+          <span class="block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.users.form.chatEnabledHint') }}</span>
+        </span>
+      </label>
       <UserAttributeForm v-model="form.customAttributes" :user-id="user?.id" />
     </form>
     <template #footer>
@@ -78,11 +85,11 @@ const emit = defineEmits(['close', 'success'])
 const { t } = useI18n(); const appStore = useAppStore(); const { copyToClipboard } = useClipboard()
 
 const submitting = ref(false); const passwordCopied = ref(false)
-const form = reactive({ email: '', password: '', username: '', notes: '', concurrency: 1, rpm_limit: 0, customAttributes: {} as UserAttributeValuesMap })
+const form = reactive({ email: '', password: '', username: '', notes: '', concurrency: 1, chat_enabled: false, rpm_limit: 0, customAttributes: {} as UserAttributeValuesMap })
 
 watch(() => props.user, (u) => {
   if (u) {
-    Object.assign(form, { email: u.email, password: '', username: u.username || '', notes: u.notes || '', concurrency: u.concurrency, rpm_limit: u.rpm_limit ?? 0, customAttributes: {} })
+    Object.assign(form, { email: u.email, password: '', username: u.username || '', notes: u.notes || '', concurrency: u.concurrency, chat_enabled: u.chat_enabled === true, rpm_limit: u.rpm_limit ?? 0, customAttributes: {} })
     passwordCopied.value = false
   }
 }, { immediate: true })
@@ -109,7 +116,7 @@ const handleUpdateUser = async () => {
   }
   submitting.value = true
   try {
-    const data: any = { email: form.email, username: form.username, notes: form.notes, concurrency: form.concurrency, rpm_limit: form.rpm_limit }
+    const data: any = { email: form.email, username: form.username, notes: form.notes, concurrency: form.concurrency, chat_enabled: form.chat_enabled, rpm_limit: form.rpm_limit }
     if (form.password.trim()) data.password = form.password.trim()
     await adminAPI.users.update(props.user.id, data)
     if (Object.keys(form.customAttributes).length > 0) await adminAPI.userAttributes.updateUserAttributeValues(props.user.id, form.customAttributes)

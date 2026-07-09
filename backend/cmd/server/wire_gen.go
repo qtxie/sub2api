@@ -94,7 +94,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	userHandler := handler.NewUserHandler(userService, authService, emailService, emailCache, affiliateService, serviceUserPlatformQuotaRepository)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	chatConversationRepository := repository.NewChatConversationRepository(client, db)
-	chatService := service.NewChatService(chatConversationRepository, apiKeyRepository)
+	chatService := service.NewChatService(chatConversationRepository, apiKeyRepository, userRepository)
 	usageLogRepository := repository.NewUsageLogRepository(client, db)
 	usageBillingRepository := repository.NewUsageBillingRepository(client, db)
 	gatewayCache := repository.NewGatewayCache(redisClient)

@@ -123,6 +123,7 @@ export async function create(userData: {
   notes?: string
   balance?: number
   concurrency?: number
+  chat_enabled?: boolean
   rpm_limit?: number
   allowed_groups?: number[] | null
 }): Promise<AdminUser> {

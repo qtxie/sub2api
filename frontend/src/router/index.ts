@@ -200,6 +200,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: false,
+      requiresChatEnabled: true,
       title: 'Chat',
       titleKey: 'chat.title',
       descriptionKey: 'chat.description'
@@ -753,6 +754,9 @@ router.beforeEach(async (to, _from, next) => {
   if (!authInitialized) {
     authStore.checkAuth()
     authInitialized = true
+    if (authStore.isAuthenticated) {
+      await authStore.waitForInitialUserRefresh()
+    }
   }
 
   // Set page title
@@ -820,6 +824,11 @@ router.beforeEach(async (to, _from, next) => {
   if (requiresAdmin && !authStore.isAdmin) {
     // User is authenticated but not admin, redirect to user dashboard
     next('/dashboard')
+    return
+  }
+
+  if (to.meta.requiresChatEnabled && authStore.user?.chat_enabled !== true) {
+    next(authStore.isAdmin ? '/admin/dashboard' : '/dashboard')
     return
   }
 

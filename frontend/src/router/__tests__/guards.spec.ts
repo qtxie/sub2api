@@ -54,6 +54,7 @@ interface MockAuthState {
   isSimpleMode: boolean
   backendModeEnabled: boolean
   hasPendingAuthSession: boolean
+  hasChatEnabled?: boolean
   setupNeedsSetup?: boolean
 }
 
@@ -112,6 +113,10 @@ function simulateGuard(
   // 需要管理员但不是管理员
   if (requiresAdmin && !authState.isAdmin) {
     return '/dashboard'
+  }
+
+  if (toMeta.requiresChatEnabled && authState.hasChatEnabled !== true) {
+    return authState.isAdmin ? '/admin/dashboard' : '/dashboard'
   }
 
   // 简易模式限制
@@ -217,6 +222,16 @@ describe('路由守卫逻辑', () => {
       expect(redirect).toBeNull()
     })
 
+    it('未启用聊天时访问 /chat 重定向到 /dashboard', () => {
+      const redirect = simulateGuard('/chat', { requiresChatEnabled: true }, authState)
+      expect(redirect).toBe('/dashboard')
+    })
+
+    it('启用聊天后访问 /chat 允许通过', () => {
+      const redirect = simulateGuard('/chat', { requiresChatEnabled: true }, { ...authState, hasChatEnabled: true })
+      expect(redirect).toBeNull()
+    })
+
     it('访问管理页面被拒绝，重定向到 /dashboard', () => {
       const redirect = simulateGuard('/admin/dashboard', { requiresAdmin: true }, authState)
       expect(redirect).toBe('/dashboard')
@@ -252,6 +267,11 @@ describe('路由守卫逻辑', () => {
     it('访问用户页面允许通过', () => {
       const redirect = simulateGuard('/dashboard', {}, authState)
       expect(redirect).toBeNull()
+    })
+
+    it('管理员未启用聊天时访问 /chat 重定向到 /admin/dashboard', () => {
+      const redirect = simulateGuard('/chat', { requiresChatEnabled: true }, authState)
+      expect(redirect).toBe('/admin/dashboard')
     })
   })
 
