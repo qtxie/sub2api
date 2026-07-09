@@ -222,6 +222,7 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 		FailedAccountName: "CIII",
 		TargetAccountID:   3,
 		TargetAccountName: "AiNX",
+		UpstreamStatus:    http.StatusBadGateway,
 		FinalStatus:       http.StatusOK,
 		LatencyMs:         194772,
 		UserID:            3,
@@ -235,7 +236,8 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 	require.Contains(t, text, "time: 2026-07-06 11:38:17 +0800")
 	require.Contains(t, text, "from: CIII (#1)")
 	require.Contains(t, text, "to: AiNX (#3)")
-	require.Contains(t, text, "final status: 200")
+	require.Contains(t, text, "error status: 502")
+	require.NotContains(t, text, "final status: 200")
 	require.Contains(t, text, "latency: 194.8s")
 	require.Contains(t, text, "user: #3")
 	require.Contains(t, text, "api key: gpt (#2)")

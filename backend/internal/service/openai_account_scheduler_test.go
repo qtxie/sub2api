@@ -3555,7 +3555,8 @@ func TestOpenAITransientFailureCooldownIgnoresUnconfiguredStatusAndExpires(t *te
 
 	value, ok := svc.openaiTransientFailureStates.Load(account.ID)
 	require.True(t, ok)
-	state := value.(*openAITransientFailureState)
+	state, ok := value.(*openAITransientFailureState)
+	require.True(t, ok)
 	state.mu.Lock()
 	state.cooldownUntil = time.Now().Add(-time.Second)
 	state.mu.Unlock()

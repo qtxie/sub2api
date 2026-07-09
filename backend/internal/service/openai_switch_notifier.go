@@ -259,7 +259,11 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 	case OpenAIAccountSwitchPhaseCompleted:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "to", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
-		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
+		status := e.UpstreamStatus
+		if status <= 0 {
+			status = e.FinalStatus
+		}
+		writeNotificationLine(&b, "error status", strconv.Itoa(status))
 	case OpenAIAccountSwitchPhaseFailed:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
