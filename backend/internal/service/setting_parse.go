@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -811,6 +812,12 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.OpenAIAdvancedSchedulerEffectiveWeightQuotaHeadroom = formatOpenAIAdvancedSchedulerFloat(effectiveWeights.QuotaHeadroom)
 	result.OpenAIAdvancedSchedulerEffectiveWeightPreviousResponse = formatOpenAIAdvancedSchedulerFloat(effectiveWeights.PreviousResponse)
 	result.OpenAIAdvancedSchedulerEffectiveWeightSessionSticky = formatOpenAIAdvancedSchedulerFloat(effectiveWeights.SessionSticky)
+	stickyFailbackDefaults := s.openAIStickyFailbackConfigDefaults()
+	result.OpenAIStickyPreferHigherPriorityEnabled = parseOpenAIBoolSetting(settings[openAIStickyPreferHigherPrioritySettingKey], stickyFailbackDefaults.stickyEnabled)
+	result.OpenAIStickyPreferHigherPriorityMinIntervalSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyPreferHigherPriorityMinIntervalSettingKey], int(stickyFailbackDefaults.minInterval/time.Second))
+	result.OpenAIStickyFailbackFailureCooldownSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyFailbackFailureCooldownSettingKey], int(stickyFailbackDefaults.failureCooldown/time.Second))
+	result.OpenAIPreviousResponseRebindEnabled = parseOpenAIBoolSetting(settings[openAIPreviousResponseRebindSettingKey], stickyFailbackDefaults.previousResponseEnabled)
+	result.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy = parseOpenAIBoolSetting(settings[openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey], stickyFailbackDefaults.previousResponseOnlyWhenUnhealthy)
 
 	// 余额、订阅到期与账号限额通知
 	result.BalanceLowNotifyEnabled = settings[SettingKeyBalanceLowNotifyEnabled] == "true"

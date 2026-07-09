@@ -242,19 +242,24 @@ type UpdateSettingsRequest struct {
 	PaymentVisibleMethodWxpayEnabled  *bool   `json:"payment_visible_method_wxpay_enabled"`
 
 	// OpenAI account scheduling
-	OpenAIAdvancedSchedulerEnabled                     *bool   `json:"openai_advanced_scheduler_enabled"`
-	OpenAIAdvancedSchedulerStickyWeightedEnabled       *bool   `json:"openai_advanced_scheduler_sticky_weighted_enabled"`
-	OpenAIAdvancedSchedulerSubscriptionPriorityEnabled *bool   `json:"openai_advanced_scheduler_subscription_priority_enabled"`
-	OpenAIAdvancedSchedulerLBTopK                      *string `json:"openai_advanced_scheduler_lb_top_k"`
-	OpenAIAdvancedSchedulerWeightPriority              *string `json:"openai_advanced_scheduler_weight_priority"`
-	OpenAIAdvancedSchedulerWeightLoad                  *string `json:"openai_advanced_scheduler_weight_load"`
-	OpenAIAdvancedSchedulerWeightQueue                 *string `json:"openai_advanced_scheduler_weight_queue"`
-	OpenAIAdvancedSchedulerWeightErrorRate             *string `json:"openai_advanced_scheduler_weight_error_rate"`
-	OpenAIAdvancedSchedulerWeightTTFT                  *string `json:"openai_advanced_scheduler_weight_ttft"`
-	OpenAIAdvancedSchedulerWeightReset                 *string `json:"openai_advanced_scheduler_weight_reset"`
-	OpenAIAdvancedSchedulerWeightQuotaHeadroom         *string `json:"openai_advanced_scheduler_weight_quota_headroom"`
-	OpenAIAdvancedSchedulerWeightPreviousResponse      *string `json:"openai_advanced_scheduler_weight_previous_response"`
-	OpenAIAdvancedSchedulerWeightSessionSticky         *string `json:"openai_advanced_scheduler_weight_session_sticky"`
+	OpenAIAdvancedSchedulerEnabled                       *bool   `json:"openai_advanced_scheduler_enabled"`
+	OpenAIAdvancedSchedulerStickyWeightedEnabled         *bool   `json:"openai_advanced_scheduler_sticky_weighted_enabled"`
+	OpenAIAdvancedSchedulerSubscriptionPriorityEnabled   *bool   `json:"openai_advanced_scheduler_subscription_priority_enabled"`
+	OpenAIAdvancedSchedulerLBTopK                        *string `json:"openai_advanced_scheduler_lb_top_k"`
+	OpenAIAdvancedSchedulerWeightPriority                *string `json:"openai_advanced_scheduler_weight_priority"`
+	OpenAIAdvancedSchedulerWeightLoad                    *string `json:"openai_advanced_scheduler_weight_load"`
+	OpenAIAdvancedSchedulerWeightQueue                   *string `json:"openai_advanced_scheduler_weight_queue"`
+	OpenAIAdvancedSchedulerWeightErrorRate               *string `json:"openai_advanced_scheduler_weight_error_rate"`
+	OpenAIAdvancedSchedulerWeightTTFT                    *string `json:"openai_advanced_scheduler_weight_ttft"`
+	OpenAIAdvancedSchedulerWeightReset                   *string `json:"openai_advanced_scheduler_weight_reset"`
+	OpenAIAdvancedSchedulerWeightQuotaHeadroom           *string `json:"openai_advanced_scheduler_weight_quota_headroom"`
+	OpenAIAdvancedSchedulerWeightPreviousResponse        *string `json:"openai_advanced_scheduler_weight_previous_response"`
+	OpenAIAdvancedSchedulerWeightSessionSticky           *string `json:"openai_advanced_scheduler_weight_session_sticky"`
+	OpenAIStickyPreferHigherPriorityEnabled              *bool   `json:"openai_sticky_prefer_higher_priority_enabled"`
+	OpenAIStickyPreferHigherPriorityMinIntervalSeconds   *int    `json:"openai_sticky_prefer_higher_priority_min_interval_seconds"`
+	OpenAIStickyFailbackFailureCooldownSeconds           *int    `json:"openai_sticky_failback_failure_cooldown_seconds"`
+	OpenAIPreviousResponseRebindEnabled                  *bool   `json:"openai_previous_response_rebind_enabled"`
+	OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy *bool   `json:"openai_previous_response_rebind_only_when_current_unhealthy"`
 
 	// 余额不足提醒
 	BalanceLowNotifyEnabled         *bool                   `json:"balance_low_notify_enabled"`
@@ -1451,6 +1456,36 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAIAdvancedSchedulerWeightQuotaHeadroom:    stringSetting(req.OpenAIAdvancedSchedulerWeightQuotaHeadroom, previousSettings.OpenAIAdvancedSchedulerWeightQuotaHeadroom),
 		OpenAIAdvancedSchedulerWeightPreviousResponse: stringSetting(req.OpenAIAdvancedSchedulerWeightPreviousResponse, previousSettings.OpenAIAdvancedSchedulerWeightPreviousResponse),
 		OpenAIAdvancedSchedulerWeightSessionSticky:    stringSetting(req.OpenAIAdvancedSchedulerWeightSessionSticky, previousSettings.OpenAIAdvancedSchedulerWeightSessionSticky),
+		OpenAIStickyPreferHigherPriorityEnabled: func() bool {
+			if req.OpenAIStickyPreferHigherPriorityEnabled != nil {
+				return *req.OpenAIStickyPreferHigherPriorityEnabled
+			}
+			return previousSettings.OpenAIStickyPreferHigherPriorityEnabled
+		}(),
+		OpenAIStickyPreferHigherPriorityMinIntervalSeconds: func() int {
+			if req.OpenAIStickyPreferHigherPriorityMinIntervalSeconds != nil {
+				return *req.OpenAIStickyPreferHigherPriorityMinIntervalSeconds
+			}
+			return previousSettings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds
+		}(),
+		OpenAIStickyFailbackFailureCooldownSeconds: func() int {
+			if req.OpenAIStickyFailbackFailureCooldownSeconds != nil {
+				return *req.OpenAIStickyFailbackFailureCooldownSeconds
+			}
+			return previousSettings.OpenAIStickyFailbackFailureCooldownSeconds
+		}(),
+		OpenAIPreviousResponseRebindEnabled: func() bool {
+			if req.OpenAIPreviousResponseRebindEnabled != nil {
+				return *req.OpenAIPreviousResponseRebindEnabled
+			}
+			return previousSettings.OpenAIPreviousResponseRebindEnabled
+		}(),
+		OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy: func() bool {
+			if req.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy != nil {
+				return *req.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy
+			}
+			return previousSettings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy
+		}(),
 		BalanceLowNotifyEnabled: func() bool {
 			if req.BalanceLowNotifyEnabled != nil {
 				return *req.BalanceLowNotifyEnabled
@@ -1847,6 +1882,11 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAIAdvancedSchedulerEffectiveWeightQuotaHeadroom:    updatedSettings.OpenAIAdvancedSchedulerEffectiveWeightQuotaHeadroom,
 		OpenAIAdvancedSchedulerEffectiveWeightPreviousResponse: updatedSettings.OpenAIAdvancedSchedulerEffectiveWeightPreviousResponse,
 		OpenAIAdvancedSchedulerEffectiveWeightSessionSticky:    updatedSettings.OpenAIAdvancedSchedulerEffectiveWeightSessionSticky,
+		OpenAIStickyPreferHigherPriorityEnabled:                updatedSettings.OpenAIStickyPreferHigherPriorityEnabled,
+		OpenAIStickyPreferHigherPriorityMinIntervalSeconds:     updatedSettings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds,
+		OpenAIStickyFailbackFailureCooldownSeconds:             updatedSettings.OpenAIStickyFailbackFailureCooldownSeconds,
+		OpenAIPreviousResponseRebindEnabled:                    updatedSettings.OpenAIPreviousResponseRebindEnabled,
+		OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy:   updatedSettings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy,
 		BalanceLowNotifyEnabled:                                updatedSettings.BalanceLowNotifyEnabled,
 		BalanceLowNotifyThreshold:                              updatedSettings.BalanceLowNotifyThreshold,
 		BalanceLowNotifyRechargeURL:                            updatedSettings.BalanceLowNotifyRechargeURL,
