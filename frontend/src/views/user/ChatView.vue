@@ -273,11 +273,14 @@
               </div>
             </div>
             <textarea
+              ref="composerInput"
               v-model="draft"
               class="composer-input"
               rows="1"
               :placeholder="t('chat.composerPlaceholder')"
               :disabled="sending || activeApiKeys.length === 0"
+              @input="resizeComposerInput"
+              @paste="resizeComposerInput"
               @keydown.enter.exact.prevent="sendMessage"
             ></textarea>
             <button
@@ -408,6 +411,7 @@ const exportingChats = ref(false)
 const settingsOpen = ref(false)
 const sidebarCollapsed = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
+const composerInput = ref<HTMLTextAreaElement | null>(null)
 const abortController = ref<AbortController | null>(null)
 const deleteTarget = ref<ChatConversation | null>(null)
 const renamingId = ref<number | null>(null)
@@ -496,6 +500,29 @@ watch(selectedModel, (model) => {
 watch(selectedReasoningEffort, (effort) => {
   localStorage.setItem('chat_last_reasoning_effort', effort)
 })
+
+watch(draft, () => {
+  void resizeComposerInput()
+})
+
+async function resizeComposerInput() {
+  await nextTick()
+  const input = composerInput.value
+  if (!input) return
+
+  const style = window.getComputedStyle(input)
+  const lineHeight = Number.parseFloat(style.lineHeight) || 24
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0
+  const paddingBottom = Number.parseFloat(style.paddingBottom) || 0
+  const borderTop = Number.parseFloat(style.borderTopWidth) || 0
+  const borderBottom = Number.parseFloat(style.borderBottomWidth) || 0
+  const maxHeight = lineHeight * 6 + paddingTop + paddingBottom + borderTop + borderBottom
+
+  input.style.height = 'auto'
+  const nextHeight = Math.min(input.scrollHeight, maxHeight)
+  input.style.height = `${nextHeight}px`
+  input.style.overflowY = input.scrollHeight > maxHeight ? 'auto' : 'hidden'
+}
 
 async function loadInitialData() {
   loadingInitial.value = true
@@ -604,6 +631,7 @@ function startNewChat() {
   messages.value = []
   systemPrompt.value = ''
   draft.value = ''
+  void resizeComposerInput()
   clearAttachments()
 }
 
@@ -835,6 +863,7 @@ async function sendMessage() {
   const attachments = pendingAttachments.value.slice()
   const persistedContent = content || t('chat.attachmentOnlyMessage')
   draft.value = ''
+  void resizeComposerInput()
   clearAttachments()
   sending.value = true
   abortController.value = new AbortController()
@@ -1626,9 +1655,9 @@ onUnmounted(() => {
 
 .composer .composer-input {
   min-height: 2.5rem;
-  max-height: 11rem;
   border: 0;
   background: transparent;
+  overflow-y: hidden;
   padding: 0.55rem 0.65rem;
   line-height: 1.5;
   outline: 0;
