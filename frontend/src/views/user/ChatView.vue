@@ -197,7 +197,16 @@
                   <span></span>
                   <span></span>
                 </div>
-                <div v-else class="message-content assistant-content" v-html="renderMarkdown(message.content)"></div>
+                <div v-if="message.content" class="message-content assistant-content" v-html="renderMarkdown(message.content)"></div>
+                <div
+                  v-if="isStreamingAssistant(message)"
+                  class="typing-indicator typing-indicator-inline"
+                  :aria-label="t('chat.waiting')"
+                >
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
                 <div v-if="message.error_message" class="message-error">{{ message.error_message }}</div>
                 <div class="message-tools assistant-tools">
                   <button type="button" class="text-button" @click="copyMessage(message.content)">
@@ -1038,6 +1047,10 @@ function isWaitingAssistant(message: ChatMessage): boolean {
   return message.id < 0 && message.role === 'assistant' && message.content === ''
 }
 
+function isStreamingAssistant(message: ChatMessage): boolean {
+  return message.id < 0 && message.role === 'assistant' && message.content !== ''
+}
+
 async function copyMessage(content: string) {
   await navigator.clipboard.writeText(content)
   appStore.showSuccess(t('chat.copied'))
@@ -1485,6 +1498,11 @@ onUnmounted(() => {
   gap: 0.3rem;
   min-height: 1.25rem;
   padding: 0.2rem 0;
+}
+
+.typing-indicator-inline {
+  margin-top: 0.25rem;
+  padding-top: 0;
 }
 
 .typing-indicator span {

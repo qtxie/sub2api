@@ -26,9 +26,14 @@ func TestExtractGatewayStreamDeltaSupportsProviderShapes(t *testing.T) {
 			want: "output",
 		},
 		{
-			name: "chat completions reasoning content",
+			name: "chat completions reasoning content ignored",
 			body: `{"choices":[{"delta":{"reasoning_content":"reasoning"}}]}`,
-			want: "reasoning",
+			want: "",
+		},
+		{
+			name: "responses reasoning delta ignored",
+			body: `{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`,
+			want: "",
 		},
 		{
 			name: "responses",

@@ -831,6 +831,9 @@ func extractGatewayStreamDelta(data []byte, hasOutput bool) (string, error) {
 	if errText := extractGatewayStreamError(payload); errText != "" {
 		return "", fmt.Errorf("%s", errText)
 	}
+	if isReasoningPayload(payload) {
+		return "", nil
+	}
 
 	if choices, ok := payload["choices"].([]any); ok && len(choices) > 0 {
 		if choice, ok := choices[0].(map[string]any); ok {
@@ -842,12 +845,6 @@ func extractGatewayStreamDelta(data []byte, hasOutput bool) (string, error) {
 					return text, nil
 				}
 				if text := extractGatewayText(delta["output_text"]); text != "" {
-					return text, nil
-				}
-				if text := extractGatewayText(delta["reasoning_content"]); text != "" {
-					return text, nil
-				}
-				if text := extractGatewayText(delta["reasoning_text"]); text != "" {
 					return text, nil
 				}
 			}
@@ -966,7 +963,10 @@ func extractGatewayText(value any) string {
 		}
 		return b.String()
 	case map[string]any:
-		for _, key := range []string{"text", "content", "output_text", "reasoning_content", "reasoning_text", "parts"} {
+		if isReasoningPayload(v) {
+			return ""
+		}
+		for _, key := range []string{"text", "content", "output_text", "parts"} {
 			if text := extractGatewayText(v[key]); text != "" {
 				return text
 			}
@@ -976,6 +976,19 @@ func extractGatewayText(value any) string {
 		}
 	}
 	return ""
+}
+
+func isReasoningPayload(payload map[string]any) bool {
+	if typ, _ := payload["type"].(string); strings.Contains(strings.ToLower(typ), "reasoning") {
+		return true
+	}
+	if _, ok := payload["reasoning_content"]; ok {
+		return true
+	}
+	if _, ok := payload["reasoning_text"]; ok {
+		return true
+	}
+	return false
 }
 
 func chatModelIDsForGroup(ctx context.Context, gatewayService *service.GatewayService, group *service.Group) []string {
