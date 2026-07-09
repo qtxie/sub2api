@@ -89,6 +89,10 @@ const (
 	EdgePendingAuthSessions = "pending_auth_sessions"
 	// EdgePlatformQuotas holds the string denoting the platform_quotas edge name in mutations.
 	EdgePlatformQuotas = "platform_quotas"
+	// EdgeChatConversations holds the string denoting the chat_conversations edge name in mutations.
+	EdgeChatConversations = "chat_conversations"
+	// EdgeChatMessages holds the string denoting the chat_messages edge name in mutations.
+	EdgeChatMessages = "chat_messages"
 	// EdgeUserAllowedGroups holds the string denoting the user_allowed_groups edge name in mutations.
 	EdgeUserAllowedGroups = "user_allowed_groups"
 	// Table holds the table name of the user in the database.
@@ -182,6 +186,20 @@ const (
 	PlatformQuotasInverseTable = "user_platform_quotas"
 	// PlatformQuotasColumn is the table column denoting the platform_quotas relation/edge.
 	PlatformQuotasColumn = "user_id"
+	// ChatConversationsTable is the table that holds the chat_conversations relation/edge.
+	ChatConversationsTable = "chat_conversations"
+	// ChatConversationsInverseTable is the table name for the ChatConversation entity.
+	// It exists in this package in order to avoid circular dependency with the "chatconversation" package.
+	ChatConversationsInverseTable = "chat_conversations"
+	// ChatConversationsColumn is the table column denoting the chat_conversations relation/edge.
+	ChatConversationsColumn = "user_id"
+	// ChatMessagesTable is the table that holds the chat_messages relation/edge.
+	ChatMessagesTable = "chat_messages"
+	// ChatMessagesInverseTable is the table name for the ChatMessage entity.
+	// It exists in this package in order to avoid circular dependency with the "chatmessage" package.
+	ChatMessagesInverseTable = "chat_messages"
+	// ChatMessagesColumn is the table column denoting the chat_messages relation/edge.
+	ChatMessagesColumn = "user_id"
 	// UserAllowedGroupsTable is the table that holds the user_allowed_groups relation/edge.
 	UserAllowedGroupsTable = "user_allowed_groups"
 	// UserAllowedGroupsInverseTable is the table name for the UserAllowedGroup entity.
@@ -602,6 +620,34 @@ func ByPlatformQuotas(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 	}
 }
 
+// ByChatConversationsCount orders the results by chat_conversations count.
+func ByChatConversationsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newChatConversationsStep(), opts...)
+	}
+}
+
+// ByChatConversations orders the results by chat_conversations terms.
+func ByChatConversations(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newChatConversationsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
+// ByChatMessagesCount orders the results by chat_messages count.
+func ByChatMessagesCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newChatMessagesStep(), opts...)
+	}
+}
+
+// ByChatMessages orders the results by chat_messages terms.
+func ByChatMessages(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newChatMessagesStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
+
 // ByUserAllowedGroupsCount orders the results by user_allowed_groups count.
 func ByUserAllowedGroupsCount(opts ...sql.OrderTermOption) OrderOption {
 	return func(s *sql.Selector) {
@@ -704,6 +750,20 @@ func newPlatformQuotasStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(PlatformQuotasInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, PlatformQuotasTable, PlatformQuotasColumn),
+	)
+}
+func newChatConversationsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(ChatConversationsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, ChatConversationsTable, ChatConversationsColumn),
+	)
+}
+func newChatMessagesStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(ChatMessagesInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, ChatMessagesTable, ChatMessagesColumn),
 	)
 }
 func newUserAllowedGroupsStep() *sqlgraph.Step {

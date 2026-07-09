@@ -793,6 +793,116 @@ var (
 			},
 		},
 	}
+	// ChatConversationsColumns holds the columns for the "chat_conversations" table.
+	ChatConversationsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "title", Type: field.TypeString, Size: 120, Default: "New chat"},
+		{Name: "model", Type: field.TypeString, Size: 128, Default: ""},
+		{Name: "system_prompt", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "reasoning_effort", Type: field.TypeString, Size: 32, Default: ""},
+		{Name: "api_key_id", Type: field.TypeInt64, Nullable: true},
+		{Name: "user_id", Type: field.TypeInt64},
+	}
+	// ChatConversationsTable holds the schema information for the "chat_conversations" table.
+	ChatConversationsTable = &schema.Table{
+		Name:       "chat_conversations",
+		Columns:    ChatConversationsColumns,
+		PrimaryKey: []*schema.Column{ChatConversationsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "chat_conversations_api_keys_chat_conversations",
+				Columns:    []*schema.Column{ChatConversationsColumns[8]},
+				RefColumns: []*schema.Column{APIKeysColumns[0]},
+				OnDelete:   schema.SetNull,
+			},
+			{
+				Symbol:     "chat_conversations_users_chat_conversations",
+				Columns:    []*schema.Column{ChatConversationsColumns[9]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "chatconversation_user_id",
+				Unique:  false,
+				Columns: []*schema.Column{ChatConversationsColumns[9]},
+			},
+			{
+				Name:    "chatconversation_api_key_id",
+				Unique:  false,
+				Columns: []*schema.Column{ChatConversationsColumns[8]},
+			},
+			{
+				Name:    "chatconversation_updated_at",
+				Unique:  false,
+				Columns: []*schema.Column{ChatConversationsColumns[2]},
+			},
+			{
+				Name:    "chatconversation_deleted_at",
+				Unique:  false,
+				Columns: []*schema.Column{ChatConversationsColumns[3]},
+			},
+		},
+	}
+	// ChatMessagesColumns holds the columns for the "chat_messages" table.
+	ChatMessagesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "role", Type: field.TypeString, Size: 16},
+		{Name: "content", Type: field.TypeString, SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "status", Type: field.TypeString, Size: 16, Default: "complete"},
+		{Name: "error_message", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "metadata", Type: field.TypeJSON, Nullable: true},
+		{Name: "conversation_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+	}
+	// ChatMessagesTable holds the schema information for the "chat_messages" table.
+	ChatMessagesTable = &schema.Table{
+		Name:       "chat_messages",
+		Columns:    ChatMessagesColumns,
+		PrimaryKey: []*schema.Column{ChatMessagesColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "chat_messages_chat_conversations_messages",
+				Columns:    []*schema.Column{ChatMessagesColumns[8]},
+				RefColumns: []*schema.Column{ChatConversationsColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+			{
+				Symbol:     "chat_messages_users_chat_messages",
+				Columns:    []*schema.Column{ChatMessagesColumns[9]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "chatmessage_conversation_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{ChatMessagesColumns[8], ChatMessagesColumns[1]},
+			},
+			{
+				Name:    "chatmessage_user_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{ChatMessagesColumns[9], ChatMessagesColumns[1]},
+			},
+			{
+				Name:    "chatmessage_role",
+				Unique:  false,
+				Columns: []*schema.Column{ChatMessagesColumns[3]},
+			},
+			{
+				Name:    "chatmessage_status",
+				Unique:  false,
+				Columns: []*schema.Column{ChatMessagesColumns[5]},
+			},
+		},
+	}
 	// ErrorPassthroughRulesColumns holds the columns for the "error_passthrough_rules" table.
 	ErrorPassthroughRulesColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -1992,6 +2102,8 @@ var (
 		ChannelMonitorDailyRollupsTable,
 		ChannelMonitorHistoriesTable,
 		ChannelMonitorRequestTemplatesTable,
+		ChatConversationsTable,
+		ChatMessagesTable,
 		ErrorPassthroughRulesTable,
 		GroupsTable,
 		IdempotencyRecordsTable,
@@ -2074,6 +2186,16 @@ func init() {
 	}
 	ChannelMonitorRequestTemplatesTable.Annotation = &entsql.Annotation{
 		Table: "channel_monitor_request_templates",
+	}
+	ChatConversationsTable.ForeignKeys[0].RefTable = APIKeysTable
+	ChatConversationsTable.ForeignKeys[1].RefTable = UsersTable
+	ChatConversationsTable.Annotation = &entsql.Annotation{
+		Table: "chat_conversations",
+	}
+	ChatMessagesTable.ForeignKeys[0].RefTable = ChatConversationsTable
+	ChatMessagesTable.ForeignKeys[1].RefTable = UsersTable
+	ChatMessagesTable.Annotation = &entsql.Annotation{
+		Table: "chat_messages",
 	}
 	ErrorPassthroughRulesTable.Annotation = &entsql.Annotation{
 		Table: "error_passthrough_rules",

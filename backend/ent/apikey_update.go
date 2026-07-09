@@ -13,6 +13,7 @@ import (
 	"entgo.io/ent/dialect/sql/sqljson"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
+	"github.com/Wei-Shaw/sub2api/ent/chatconversation"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
@@ -463,6 +464,21 @@ func (_u *APIKeyUpdate) AddUsageLogs(v ...*UsageLog) *APIKeyUpdate {
 	return _u.AddUsageLogIDs(ids...)
 }
 
+// AddChatConversationIDs adds the "chat_conversations" edge to the ChatConversation entity by IDs.
+func (_u *APIKeyUpdate) AddChatConversationIDs(ids ...int64) *APIKeyUpdate {
+	_u.mutation.AddChatConversationIDs(ids...)
+	return _u
+}
+
+// AddChatConversations adds the "chat_conversations" edges to the ChatConversation entity.
+func (_u *APIKeyUpdate) AddChatConversations(v ...*ChatConversation) *APIKeyUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddChatConversationIDs(ids...)
+}
+
 // Mutation returns the APIKeyMutation object of the builder.
 func (_u *APIKeyUpdate) Mutation() *APIKeyMutation {
 	return _u.mutation
@@ -499,6 +515,27 @@ func (_u *APIKeyUpdate) RemoveUsageLogs(v ...*UsageLog) *APIKeyUpdate {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveUsageLogIDs(ids...)
+}
+
+// ClearChatConversations clears all "chat_conversations" edges to the ChatConversation entity.
+func (_u *APIKeyUpdate) ClearChatConversations() *APIKeyUpdate {
+	_u.mutation.ClearChatConversations()
+	return _u
+}
+
+// RemoveChatConversationIDs removes the "chat_conversations" edge to ChatConversation entities by IDs.
+func (_u *APIKeyUpdate) RemoveChatConversationIDs(ids ...int64) *APIKeyUpdate {
+	_u.mutation.RemoveChatConversationIDs(ids...)
+	return _u
+}
+
+// RemoveChatConversations removes "chat_conversations" edges to ChatConversation entities.
+func (_u *APIKeyUpdate) RemoveChatConversations(v ...*ChatConversation) *APIKeyUpdate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveChatConversationIDs(ids...)
 }
 
 // Save executes the query and returns the number of nodes affected by the update operation.
@@ -792,6 +829,51 @@ func (_u *APIKeyUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.ChatConversationsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   apikey.ChatConversationsTable,
+			Columns: []string{apikey.ChatConversationsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(chatconversation.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedChatConversationsIDs(); len(nodes) > 0 && !_u.mutation.ChatConversationsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   apikey.ChatConversationsTable,
+			Columns: []string{apikey.ChatConversationsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(chatconversation.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.ChatConversationsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   apikey.ChatConversationsTable,
+			Columns: []string{apikey.ChatConversationsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(chatconversation.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
@@ -1250,6 +1332,21 @@ func (_u *APIKeyUpdateOne) AddUsageLogs(v ...*UsageLog) *APIKeyUpdateOne {
 	return _u.AddUsageLogIDs(ids...)
 }
 
+// AddChatConversationIDs adds the "chat_conversations" edge to the ChatConversation entity by IDs.
+func (_u *APIKeyUpdateOne) AddChatConversationIDs(ids ...int64) *APIKeyUpdateOne {
+	_u.mutation.AddChatConversationIDs(ids...)
+	return _u
+}
+
+// AddChatConversations adds the "chat_conversations" edges to the ChatConversation entity.
+func (_u *APIKeyUpdateOne) AddChatConversations(v ...*ChatConversation) *APIKeyUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.AddChatConversationIDs(ids...)
+}
+
 // Mutation returns the APIKeyMutation object of the builder.
 func (_u *APIKeyUpdateOne) Mutation() *APIKeyMutation {
 	return _u.mutation
@@ -1286,6 +1383,27 @@ func (_u *APIKeyUpdateOne) RemoveUsageLogs(v ...*UsageLog) *APIKeyUpdateOne {
 		ids[i] = v[i].ID
 	}
 	return _u.RemoveUsageLogIDs(ids...)
+}
+
+// ClearChatConversations clears all "chat_conversations" edges to the ChatConversation entity.
+func (_u *APIKeyUpdateOne) ClearChatConversations() *APIKeyUpdateOne {
+	_u.mutation.ClearChatConversations()
+	return _u
+}
+
+// RemoveChatConversationIDs removes the "chat_conversations" edge to ChatConversation entities by IDs.
+func (_u *APIKeyUpdateOne) RemoveChatConversationIDs(ids ...int64) *APIKeyUpdateOne {
+	_u.mutation.RemoveChatConversationIDs(ids...)
+	return _u
+}
+
+// RemoveChatConversations removes "chat_conversations" edges to ChatConversation entities.
+func (_u *APIKeyUpdateOne) RemoveChatConversations(v ...*ChatConversation) *APIKeyUpdateOne {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _u.RemoveChatConversationIDs(ids...)
 }
 
 // Where appends a list predicates to the APIKeyUpdate builder.
@@ -1609,6 +1727,51 @@ func (_u *APIKeyUpdateOne) sqlSave(ctx context.Context) (_node *APIKey, err erro
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Add = append(_spec.Edges.Add, edge)
+	}
+	if _u.mutation.ChatConversationsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   apikey.ChatConversationsTable,
+			Columns: []string{apikey.ChatConversationsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(chatconversation.FieldID, field.TypeInt64),
+			},
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.RemovedChatConversationsIDs(); len(nodes) > 0 && !_u.mutation.ChatConversationsCleared() {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   apikey.ChatConversationsTable,
+			Columns: []string{apikey.ChatConversationsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(chatconversation.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges.Clear = append(_spec.Edges.Clear, edge)
+	}
+	if nodes := _u.mutation.ChatConversationsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   apikey.ChatConversationsTable,
+			Columns: []string{apikey.ChatConversationsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(chatconversation.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {

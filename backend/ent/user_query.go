@@ -16,6 +16,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/announcementread"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
 	"github.com/Wei-Shaw/sub2api/ent/authidentity"
+	"github.com/Wei-Shaw/sub2api/ent/chatconversation"
+	"github.com/Wei-Shaw/sub2api/ent/chatmessage"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
@@ -50,6 +52,8 @@ type UserQuery struct {
 	withAuthIdentities        *AuthIdentityQuery
 	withPendingAuthSessions   *PendingAuthSessionQuery
 	withPlatformQuotas        *UserPlatformQuotaQuery
+	withChatConversations     *ChatConversationQuery
+	withChatMessages          *ChatMessageQuery
 	withUserAllowedGroups     *UserAllowedGroupQuery
 	modifiers                 []func(*sql.Selector)
 	// intermediate query (i.e. traversal path).
@@ -374,6 +378,50 @@ func (_q *UserQuery) QueryPlatformQuotas() *UserPlatformQuotaQuery {
 	return query
 }
 
+// QueryChatConversations chains the current query on the "chat_conversations" edge.
+func (_q *UserQuery) QueryChatConversations() *ChatConversationQuery {
+	query := (&ChatConversationClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, selector),
+			sqlgraph.To(chatconversation.Table, chatconversation.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.ChatConversationsTable, user.ChatConversationsColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
+// QueryChatMessages chains the current query on the "chat_messages" edge.
+func (_q *UserQuery) QueryChatMessages() *ChatMessageQuery {
+	query := (&ChatMessageClient{config: _q.config}).Query()
+	query.path = func(ctx context.Context) (fromU *sql.Selector, err error) {
+		if err := _q.prepareQuery(ctx); err != nil {
+			return nil, err
+		}
+		selector := _q.sqlQuery(ctx)
+		if err := selector.Err(); err != nil {
+			return nil, err
+		}
+		step := sqlgraph.NewStep(
+			sqlgraph.From(user.Table, user.FieldID, selector),
+			sqlgraph.To(chatmessage.Table, chatmessage.FieldID),
+			sqlgraph.Edge(sqlgraph.O2M, false, user.ChatMessagesTable, user.ChatMessagesColumn),
+		)
+		fromU = sqlgraph.SetNeighbors(_q.driver.Dialect(), step)
+		return fromU, nil
+	}
+	return query
+}
+
 // QueryUserAllowedGroups chains the current query on the "user_allowed_groups" edge.
 func (_q *UserQuery) QueryUserAllowedGroups() *UserAllowedGroupQuery {
 	query := (&UserAllowedGroupClient{config: _q.config}).Query()
@@ -601,6 +649,8 @@ func (_q *UserQuery) Clone() *UserQuery {
 		withAuthIdentities:        _q.withAuthIdentities.Clone(),
 		withPendingAuthSessions:   _q.withPendingAuthSessions.Clone(),
 		withPlatformQuotas:        _q.withPlatformQuotas.Clone(),
+		withChatConversations:     _q.withChatConversations.Clone(),
+		withChatMessages:          _q.withChatMessages.Clone(),
 		withUserAllowedGroups:     _q.withUserAllowedGroups.Clone(),
 		// clone intermediate query.
 		sql:  _q.sql.Clone(),
@@ -751,6 +801,28 @@ func (_q *UserQuery) WithPlatformQuotas(opts ...func(*UserPlatformQuotaQuery)) *
 	return _q
 }
 
+// WithChatConversations tells the query-builder to eager-load the nodes that are connected to
+// the "chat_conversations" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *UserQuery) WithChatConversations(opts ...func(*ChatConversationQuery)) *UserQuery {
+	query := (&ChatConversationClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withChatConversations = query
+	return _q
+}
+
+// WithChatMessages tells the query-builder to eager-load the nodes that are connected to
+// the "chat_messages" edge. The optional arguments are used to configure the query builder of the edge.
+func (_q *UserQuery) WithChatMessages(opts ...func(*ChatMessageQuery)) *UserQuery {
+	query := (&ChatMessageClient{config: _q.config}).Query()
+	for _, opt := range opts {
+		opt(query)
+	}
+	_q.withChatMessages = query
+	return _q
+}
+
 // WithUserAllowedGroups tells the query-builder to eager-load the nodes that are connected to
 // the "user_allowed_groups" edge. The optional arguments are used to configure the query builder of the edge.
 func (_q *UserQuery) WithUserAllowedGroups(opts ...func(*UserAllowedGroupQuery)) *UserQuery {
@@ -840,7 +912,7 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 	var (
 		nodes       = []*User{}
 		_spec       = _q.querySpec()
-		loadedTypes = [14]bool{
+		loadedTypes = [16]bool{
 			_q.withAPIKeys != nil,
 			_q.withRedeemCodes != nil,
 			_q.withSubscriptions != nil,
@@ -854,6 +926,8 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 			_q.withAuthIdentities != nil,
 			_q.withPendingAuthSessions != nil,
 			_q.withPlatformQuotas != nil,
+			_q.withChatConversations != nil,
+			_q.withChatMessages != nil,
 			_q.withUserAllowedGroups != nil,
 		}
 	)
@@ -970,6 +1044,20 @@ func (_q *UserQuery) sqlAll(ctx context.Context, hooks ...queryHook) ([]*User, e
 		if err := _q.loadPlatformQuotas(ctx, query, nodes,
 			func(n *User) { n.Edges.PlatformQuotas = []*UserPlatformQuota{} },
 			func(n *User, e *UserPlatformQuota) { n.Edges.PlatformQuotas = append(n.Edges.PlatformQuotas, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withChatConversations; query != nil {
+		if err := _q.loadChatConversations(ctx, query, nodes,
+			func(n *User) { n.Edges.ChatConversations = []*ChatConversation{} },
+			func(n *User, e *ChatConversation) { n.Edges.ChatConversations = append(n.Edges.ChatConversations, e) }); err != nil {
+			return nil, err
+		}
+	}
+	if query := _q.withChatMessages; query != nil {
+		if err := _q.loadChatMessages(ctx, query, nodes,
+			func(n *User) { n.Edges.ChatMessages = []*ChatMessage{} },
+			func(n *User, e *ChatMessage) { n.Edges.ChatMessages = append(n.Edges.ChatMessages, e) }); err != nil {
 			return nil, err
 		}
 	}
@@ -1398,6 +1486,66 @@ func (_q *UserQuery) loadPlatformQuotas(ctx context.Context, query *UserPlatform
 	}
 	query.Where(predicate.UserPlatformQuota(func(s *sql.Selector) {
 		s.Where(sql.InValues(s.C(user.PlatformQuotasColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.UserID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "user_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *UserQuery) loadChatConversations(ctx context.Context, query *ChatConversationQuery, nodes []*User, init func(*User), assign func(*User, *ChatConversation)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*User)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(chatconversation.FieldUserID)
+	}
+	query.Where(predicate.ChatConversation(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(user.ChatConversationsColumn), fks...))
+	}))
+	neighbors, err := query.All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range neighbors {
+		fk := n.UserID
+		node, ok := nodeids[fk]
+		if !ok {
+			return fmt.Errorf(`unexpected referenced foreign-key "user_id" returned %v for node %v`, fk, n.ID)
+		}
+		assign(node, n)
+	}
+	return nil
+}
+func (_q *UserQuery) loadChatMessages(ctx context.Context, query *ChatMessageQuery, nodes []*User, init func(*User), assign func(*User, *ChatMessage)) error {
+	fks := make([]driver.Value, 0, len(nodes))
+	nodeids := make(map[int64]*User)
+	for i := range nodes {
+		fks = append(fks, nodes[i].ID)
+		nodeids[nodes[i].ID] = nodes[i]
+		if init != nil {
+			init(nodes[i])
+		}
+	}
+	if len(query.ctx.Fields) > 0 {
+		query.ctx.AppendFieldOnce(chatmessage.FieldUserID)
+	}
+	query.Where(predicate.ChatMessage(func(s *sql.Selector) {
+		s.Where(sql.InValues(s.C(user.ChatMessagesColumn), fks...))
 	}))
 	neighbors, err := query.All(ctx)
 	if err != nil {

@@ -22,6 +22,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
+	"github.com/Wei-Shaw/sub2api/ent/chatconversation"
+	"github.com/Wei-Shaw/sub2api/ent/chatmessage"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -481,6 +483,60 @@ func (f TraverseChannelMonitorRequestTemplate) Traverse(ctx context.Context, q e
 		return f(ctx, q)
 	}
 	return fmt.Errorf("unexpected query type %T. expect *ent.ChannelMonitorRequestTemplateQuery", q)
+}
+
+// The ChatConversationFunc type is an adapter to allow the use of ordinary function as a Querier.
+type ChatConversationFunc func(context.Context, *ent.ChatConversationQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f ChatConversationFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.ChatConversationQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.ChatConversationQuery", q)
+}
+
+// The TraverseChatConversation type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseChatConversation func(context.Context, *ent.ChatConversationQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseChatConversation) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseChatConversation) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.ChatConversationQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.ChatConversationQuery", q)
+}
+
+// The ChatMessageFunc type is an adapter to allow the use of ordinary function as a Querier.
+type ChatMessageFunc func(context.Context, *ent.ChatMessageQuery) (ent.Value, error)
+
+// Query calls f(ctx, q).
+func (f ChatMessageFunc) Query(ctx context.Context, q ent.Query) (ent.Value, error) {
+	if q, ok := q.(*ent.ChatMessageQuery); ok {
+		return f(ctx, q)
+	}
+	return nil, fmt.Errorf("unexpected query type %T. expect *ent.ChatMessageQuery", q)
+}
+
+// The TraverseChatMessage type is an adapter to allow the use of ordinary function as Traverser.
+type TraverseChatMessage func(context.Context, *ent.ChatMessageQuery) error
+
+// Intercept is a dummy implementation of Intercept that returns the next Querier in the pipeline.
+func (f TraverseChatMessage) Intercept(next ent.Querier) ent.Querier {
+	return next
+}
+
+// Traverse calls f(ctx, q).
+func (f TraverseChatMessage) Traverse(ctx context.Context, q ent.Query) error {
+	if q, ok := q.(*ent.ChatMessageQuery); ok {
+		return f(ctx, q)
+	}
+	return fmt.Errorf("unexpected query type %T. expect *ent.ChatMessageQuery", q)
 }
 
 // The ErrorPassthroughRuleFunc type is an adapter to allow the use of ordinary function as a Querier.
@@ -1162,6 +1218,10 @@ func NewQuery(q ent.Query) (Query, error) {
 		return &query[*ent.ChannelMonitorHistoryQuery, predicate.ChannelMonitorHistory, channelmonitorhistory.OrderOption]{typ: ent.TypeChannelMonitorHistory, tq: q}, nil
 	case *ent.ChannelMonitorRequestTemplateQuery:
 		return &query[*ent.ChannelMonitorRequestTemplateQuery, predicate.ChannelMonitorRequestTemplate, channelmonitorrequesttemplate.OrderOption]{typ: ent.TypeChannelMonitorRequestTemplate, tq: q}, nil
+	case *ent.ChatConversationQuery:
+		return &query[*ent.ChatConversationQuery, predicate.ChatConversation, chatconversation.OrderOption]{typ: ent.TypeChatConversation, tq: q}, nil
+	case *ent.ChatMessageQuery:
+		return &query[*ent.ChatMessageQuery, predicate.ChatMessage, chatmessage.OrderOption]{typ: ent.TypeChatMessage, tq: q}, nil
 	case *ent.ErrorPassthroughRuleQuery:
 		return &query[*ent.ErrorPassthroughRuleQuery, predicate.ErrorPassthroughRule, errorpassthroughrule.OrderOption]{typ: ent.TypeErrorPassthroughRule, tq: q}, nil
 	case *ent.GroupQuery:

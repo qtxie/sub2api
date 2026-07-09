@@ -65,6 +65,24 @@ func RegisterUserRoutes(
 			keys.DELETE("/:id", h.APIKey.Delete)
 		}
 
+		// Chat history
+		chat := authenticated.Group("/chat")
+		{
+			chat.GET("/models", h.Chat.ListModels)
+			chat.GET("/export", h.Chat.ExportConversations)
+			conversations := chat.Group("/conversations")
+			{
+				conversations.GET("", h.Chat.ListConversations)
+				conversations.POST("", h.Chat.CreateConversation)
+				conversations.GET("/:id", h.Chat.GetConversation)
+				conversations.PUT("/:id", h.Chat.UpdateConversation)
+				conversations.DELETE("/:id", h.Chat.DeleteConversation)
+				conversations.POST("/:id/messages", h.Chat.AppendMessage)
+				conversations.POST("/:id/stream", h.Chat.StreamConversation)
+				conversations.DELETE("/:id/messages/:message_id", h.Chat.DeleteMessage)
+			}
+		}
+
 		// 用户可用分组（非管理员接口）
 		groups := authenticated.Group("/groups")
 		{

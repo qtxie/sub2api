@@ -19,6 +19,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitordailyrollup"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorhistory"
 	"github.com/Wei-Shaw/sub2api/ent/channelmonitorrequesttemplate"
+	"github.com/Wei-Shaw/sub2api/ent/chatconversation"
+	"github.com/Wei-Shaw/sub2api/ent/chatmessage"
 	"github.com/Wei-Shaw/sub2api/ent/errorpassthroughrule"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/idempotencyrecord"
@@ -865,6 +867,76 @@ func init() {
 	channelmonitorrequesttemplate.DefaultBodyOverrideMode = channelmonitorrequesttemplateDescBodyOverrideMode.Default.(string)
 	// channelmonitorrequesttemplate.BodyOverrideModeValidator is a validator for the "body_override_mode" field. It is called by the builders before save.
 	channelmonitorrequesttemplate.BodyOverrideModeValidator = channelmonitorrequesttemplateDescBodyOverrideMode.Validators[0].(func(string) error)
+	chatconversationMixin := schema.ChatConversation{}.Mixin()
+	chatconversationMixinHooks1 := chatconversationMixin[1].Hooks()
+	chatconversation.Hooks[0] = chatconversationMixinHooks1[0]
+	chatconversationMixinInters1 := chatconversationMixin[1].Interceptors()
+	chatconversation.Interceptors[0] = chatconversationMixinInters1[0]
+	chatconversationMixinFields0 := chatconversationMixin[0].Fields()
+	_ = chatconversationMixinFields0
+	chatconversationFields := schema.ChatConversation{}.Fields()
+	_ = chatconversationFields
+	// chatconversationDescCreatedAt is the schema descriptor for created_at field.
+	chatconversationDescCreatedAt := chatconversationMixinFields0[0].Descriptor()
+	// chatconversation.DefaultCreatedAt holds the default value on creation for the created_at field.
+	chatconversation.DefaultCreatedAt = chatconversationDescCreatedAt.Default.(func() time.Time)
+	// chatconversationDescUpdatedAt is the schema descriptor for updated_at field.
+	chatconversationDescUpdatedAt := chatconversationMixinFields0[1].Descriptor()
+	// chatconversation.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	chatconversation.DefaultUpdatedAt = chatconversationDescUpdatedAt.Default.(func() time.Time)
+	// chatconversation.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	chatconversation.UpdateDefaultUpdatedAt = chatconversationDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// chatconversationDescTitle is the schema descriptor for title field.
+	chatconversationDescTitle := chatconversationFields[1].Descriptor()
+	// chatconversation.DefaultTitle holds the default value on creation for the title field.
+	chatconversation.DefaultTitle = chatconversationDescTitle.Default.(string)
+	// chatconversation.TitleValidator is a validator for the "title" field. It is called by the builders before save.
+	chatconversation.TitleValidator = chatconversationDescTitle.Validators[0].(func(string) error)
+	// chatconversationDescModel is the schema descriptor for model field.
+	chatconversationDescModel := chatconversationFields[3].Descriptor()
+	// chatconversation.DefaultModel holds the default value on creation for the model field.
+	chatconversation.DefaultModel = chatconversationDescModel.Default.(string)
+	// chatconversation.ModelValidator is a validator for the "model" field. It is called by the builders before save.
+	chatconversation.ModelValidator = chatconversationDescModel.Validators[0].(func(string) error)
+	// chatconversationDescSystemPrompt is the schema descriptor for system_prompt field.
+	chatconversationDescSystemPrompt := chatconversationFields[4].Descriptor()
+	// chatconversation.DefaultSystemPrompt holds the default value on creation for the system_prompt field.
+	chatconversation.DefaultSystemPrompt = chatconversationDescSystemPrompt.Default.(string)
+	// chatconversationDescReasoningEffort is the schema descriptor for reasoning_effort field.
+	chatconversationDescReasoningEffort := chatconversationFields[5].Descriptor()
+	// chatconversation.DefaultReasoningEffort holds the default value on creation for the reasoning_effort field.
+	chatconversation.DefaultReasoningEffort = chatconversationDescReasoningEffort.Default.(string)
+	// chatconversation.ReasoningEffortValidator is a validator for the "reasoning_effort" field. It is called by the builders before save.
+	chatconversation.ReasoningEffortValidator = chatconversationDescReasoningEffort.Validators[0].(func(string) error)
+	chatmessageMixin := schema.ChatMessage{}.Mixin()
+	chatmessageMixinFields0 := chatmessageMixin[0].Fields()
+	_ = chatmessageMixinFields0
+	chatmessageFields := schema.ChatMessage{}.Fields()
+	_ = chatmessageFields
+	// chatmessageDescCreatedAt is the schema descriptor for created_at field.
+	chatmessageDescCreatedAt := chatmessageMixinFields0[0].Descriptor()
+	// chatmessage.DefaultCreatedAt holds the default value on creation for the created_at field.
+	chatmessage.DefaultCreatedAt = chatmessageDescCreatedAt.Default.(func() time.Time)
+	// chatmessageDescUpdatedAt is the schema descriptor for updated_at field.
+	chatmessageDescUpdatedAt := chatmessageMixinFields0[1].Descriptor()
+	// chatmessage.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	chatmessage.DefaultUpdatedAt = chatmessageDescUpdatedAt.Default.(func() time.Time)
+	// chatmessage.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	chatmessage.UpdateDefaultUpdatedAt = chatmessageDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// chatmessageDescRole is the schema descriptor for role field.
+	chatmessageDescRole := chatmessageFields[2].Descriptor()
+	// chatmessage.RoleValidator is a validator for the "role" field. It is called by the builders before save.
+	chatmessage.RoleValidator = chatmessageDescRole.Validators[0].(func(string) error)
+	// chatmessageDescStatus is the schema descriptor for status field.
+	chatmessageDescStatus := chatmessageFields[4].Descriptor()
+	// chatmessage.DefaultStatus holds the default value on creation for the status field.
+	chatmessage.DefaultStatus = chatmessageDescStatus.Default.(string)
+	// chatmessage.StatusValidator is a validator for the "status" field. It is called by the builders before save.
+	chatmessage.StatusValidator = chatmessageDescStatus.Validators[0].(func(string) error)
+	// chatmessageDescErrorMessage is the schema descriptor for error_message field.
+	chatmessageDescErrorMessage := chatmessageFields[5].Descriptor()
+	// chatmessage.DefaultErrorMessage holds the default value on creation for the error_message field.
+	chatmessage.DefaultErrorMessage = chatmessageDescErrorMessage.Default.(string)
 	errorpassthroughruleMixin := schema.ErrorPassthroughRule{}.Mixin()
 	errorpassthroughruleMixinFields0 := errorpassthroughruleMixin[0].Fields()
 	_ = errorpassthroughruleMixinFields0

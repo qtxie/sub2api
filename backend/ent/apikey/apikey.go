@@ -67,6 +67,8 @@ const (
 	EdgeGroup = "group"
 	// EdgeUsageLogs holds the string denoting the usage_logs edge name in mutations.
 	EdgeUsageLogs = "usage_logs"
+	// EdgeChatConversations holds the string denoting the chat_conversations edge name in mutations.
+	EdgeChatConversations = "chat_conversations"
 	// Table holds the table name of the apikey in the database.
 	Table = "api_keys"
 	// UserTable is the table that holds the user relation/edge.
@@ -90,6 +92,13 @@ const (
 	UsageLogsInverseTable = "usage_logs"
 	// UsageLogsColumn is the table column denoting the usage_logs relation/edge.
 	UsageLogsColumn = "api_key_id"
+	// ChatConversationsTable is the table that holds the chat_conversations relation/edge.
+	ChatConversationsTable = "chat_conversations"
+	// ChatConversationsInverseTable is the table name for the ChatConversation entity.
+	// It exists in this package in order to avoid circular dependency with the "chatconversation" package.
+	ChatConversationsInverseTable = "chat_conversations"
+	// ChatConversationsColumn is the table column denoting the chat_conversations relation/edge.
+	ChatConversationsColumn = "api_key_id"
 )
 
 // Columns holds all SQL columns for apikey fields.
@@ -310,6 +319,20 @@ func ByUsageLogs(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
 		sqlgraph.OrderByNeighborTerms(s, newUsageLogsStep(), append([]sql.OrderTerm{term}, terms...)...)
 	}
 }
+
+// ByChatConversationsCount orders the results by chat_conversations count.
+func ByChatConversationsCount(opts ...sql.OrderTermOption) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborsCount(s, newChatConversationsStep(), opts...)
+	}
+}
+
+// ByChatConversations orders the results by chat_conversations terms.
+func ByChatConversations(term sql.OrderTerm, terms ...sql.OrderTerm) OrderOption {
+	return func(s *sql.Selector) {
+		sqlgraph.OrderByNeighborTerms(s, newChatConversationsStep(), append([]sql.OrderTerm{term}, terms...)...)
+	}
+}
 func newUserStep() *sqlgraph.Step {
 	return sqlgraph.NewStep(
 		sqlgraph.From(Table, FieldID),
@@ -329,5 +352,12 @@ func newUsageLogsStep() *sqlgraph.Step {
 		sqlgraph.From(Table, FieldID),
 		sqlgraph.To(UsageLogsInverseTable, FieldID),
 		sqlgraph.Edge(sqlgraph.O2M, false, UsageLogsTable, UsageLogsColumn),
+	)
+}
+func newChatConversationsStep() *sqlgraph.Step {
+	return sqlgraph.NewStep(
+		sqlgraph.From(Table, FieldID),
+		sqlgraph.To(ChatConversationsInverseTable, FieldID),
+		sqlgraph.Edge(sqlgraph.O2M, false, ChatConversationsTable, ChatConversationsColumn),
 	)
 }

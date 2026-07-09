@@ -99,11 +99,15 @@ type UserEdges struct {
 	PendingAuthSessions []*PendingAuthSession `json:"pending_auth_sessions,omitempty"`
 	// PlatformQuotas holds the value of the platform_quotas edge.
 	PlatformQuotas []*UserPlatformQuota `json:"platform_quotas,omitempty"`
+	// ChatConversations holds the value of the chat_conversations edge.
+	ChatConversations []*ChatConversation `json:"chat_conversations,omitempty"`
+	// ChatMessages holds the value of the chat_messages edge.
+	ChatMessages []*ChatMessage `json:"chat_messages,omitempty"`
 	// UserAllowedGroups holds the value of the user_allowed_groups edge.
 	UserAllowedGroups []*UserAllowedGroup `json:"user_allowed_groups,omitempty"`
 	// loadedTypes holds the information for reporting if a
 	// type was loaded (or requested) in eager-loading or not.
-	loadedTypes [14]bool
+	loadedTypes [16]bool
 }
 
 // APIKeysOrErr returns the APIKeys value or an error if the edge
@@ -223,10 +227,28 @@ func (e UserEdges) PlatformQuotasOrErr() ([]*UserPlatformQuota, error) {
 	return nil, &NotLoadedError{edge: "platform_quotas"}
 }
 
+// ChatConversationsOrErr returns the ChatConversations value or an error if the edge
+// was not loaded in eager-loading.
+func (e UserEdges) ChatConversationsOrErr() ([]*ChatConversation, error) {
+	if e.loadedTypes[13] {
+		return e.ChatConversations, nil
+	}
+	return nil, &NotLoadedError{edge: "chat_conversations"}
+}
+
+// ChatMessagesOrErr returns the ChatMessages value or an error if the edge
+// was not loaded in eager-loading.
+func (e UserEdges) ChatMessagesOrErr() ([]*ChatMessage, error) {
+	if e.loadedTypes[14] {
+		return e.ChatMessages, nil
+	}
+	return nil, &NotLoadedError{edge: "chat_messages"}
+}
+
 // UserAllowedGroupsOrErr returns the UserAllowedGroups value or an error if the edge
 // was not loaded in eager-loading.
 func (e UserEdges) UserAllowedGroupsOrErr() ([]*UserAllowedGroup, error) {
-	if e.loadedTypes[13] {
+	if e.loadedTypes[15] {
 		return e.UserAllowedGroups, nil
 	}
 	return nil, &NotLoadedError{edge: "user_allowed_groups"}
@@ -494,6 +516,16 @@ func (_m *User) QueryPendingAuthSessions() *PendingAuthSessionQuery {
 // QueryPlatformQuotas queries the "platform_quotas" edge of the User entity.
 func (_m *User) QueryPlatformQuotas() *UserPlatformQuotaQuery {
 	return NewUserClient(_m.config).QueryPlatformQuotas(_m)
+}
+
+// QueryChatConversations queries the "chat_conversations" edge of the User entity.
+func (_m *User) QueryChatConversations() *ChatConversationQuery {
+	return NewUserClient(_m.config).QueryChatConversations(_m)
+}
+
+// QueryChatMessages queries the "chat_messages" edge of the User entity.
+func (_m *User) QueryChatMessages() *ChatMessageQuery {
+	return NewUserClient(_m.config).QueryChatMessages(_m)
 }
 
 // QueryUserAllowedGroups queries the "user_allowed_groups" edge of the User entity.

@@ -12,6 +12,7 @@ import (
 	"entgo.io/ent/dialect/sql/sqlgraph"
 	"entgo.io/ent/schema/field"
 	"github.com/Wei-Shaw/sub2api/ent/apikey"
+	"github.com/Wei-Shaw/sub2api/ent/chatconversation"
 	"github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/usagelog"
 	"github.com/Wei-Shaw/sub2api/ent/user"
@@ -332,6 +333,21 @@ func (_c *APIKeyCreate) AddUsageLogs(v ...*UsageLog) *APIKeyCreate {
 	return _c.AddUsageLogIDs(ids...)
 }
 
+// AddChatConversationIDs adds the "chat_conversations" edge to the ChatConversation entity by IDs.
+func (_c *APIKeyCreate) AddChatConversationIDs(ids ...int64) *APIKeyCreate {
+	_c.mutation.AddChatConversationIDs(ids...)
+	return _c
+}
+
+// AddChatConversations adds the "chat_conversations" edges to the ChatConversation entity.
+func (_c *APIKeyCreate) AddChatConversations(v ...*ChatConversation) *APIKeyCreate {
+	ids := make([]int64, len(v))
+	for i := range v {
+		ids[i] = v[i].ID
+	}
+	return _c.AddChatConversationIDs(ids...)
+}
+
 // Mutation returns the APIKeyMutation object of the builder.
 func (_c *APIKeyCreate) Mutation() *APIKeyMutation {
 	return _c.mutation
@@ -638,6 +654,22 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 			Bidi:    false,
 			Target: &sqlgraph.EdgeTarget{
 				IDSpec: sqlgraph.NewFieldSpec(usagelog.FieldID, field.TypeInt64),
+			},
+		}
+		for _, k := range nodes {
+			edge.Target.Nodes = append(edge.Target.Nodes, k)
+		}
+		_spec.Edges = append(_spec.Edges, edge)
+	}
+	if nodes := _c.mutation.ChatConversationsIDs(); len(nodes) > 0 {
+		edge := &sqlgraph.EdgeSpec{
+			Rel:     sqlgraph.O2M,
+			Inverse: false,
+			Table:   apikey.ChatConversationsTable,
+			Columns: []string{apikey.ChatConversationsColumn},
+			Bidi:    false,
+			Target: &sqlgraph.EdgeTarget{
+				IDSpec: sqlgraph.NewFieldSpec(chatconversation.FieldID, field.TypeInt64),
 			},
 		}
 		for _, k := range nodes {
