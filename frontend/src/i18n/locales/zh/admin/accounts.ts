@@ -502,6 +502,15 @@ export default {
       openai: {
         baseUrlHint: '留空使用官方 OpenAI API',
         apiKeyHint: '您的 OpenAI API Key',
+        smartUserAgent: '智能上游 User-Agent',
+        smartUserAgentDesc:
+          '为该账号将 Codex 上游 User-Agent 归一化为少量固定的 Codex TUI/Desktop 配置。',
+        userAgent: '上游 User-Agent',
+        userAgentPlaceholder: 'codex-tui/0.142.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.142.5)',
+        userAgentDesc:
+          '可选。填写后，该账号转发到 OpenAI 时使用此 User-Agent，而不是客户端传入的 User-Agent。',
+        userAgentDisabledBySmart:
+          '开启智能上游 User-Agent 时会忽略此手动值。关闭智能模式后可使用该手动值。',
         oauthPassthrough: '自动透传（仅替换认证）',
         oauthPassthroughDesc:
           '开启后，该 OpenAI 账号将自动透传请求与响应，仅替换认证并保留计费/并发/审计及必要安全过滤；如遇兼容性问题可随时关闭回滚。',
@@ -786,9 +795,14 @@ export default {
       allowOverages: '允许超量请求 (AI Credits)',
       allowOveragesTooltip:
         '仅在免费配额被明确判定为耗尽后才会使用 AI Credits。普通并发 429 限流不会切换到超量请求。',
+      fromModel: '源模型',
+      toModel: '目标模型',
       creating: '创建中...',
       updating: '更新中...',
       accountCreated: '账号创建成功',
+      messages: {
+        accountCreated: '账号创建成功'
+      },
       accountUpdated: '账号更新成功',
       failedToCreate: '创建账号失败',
       failedToUpdate: '更新账号失败',
@@ -899,6 +913,8 @@ export default {
               '未设置代理，当前服务器无法直连 OpenAI，导致 OpenAI OAuth 请求失败。请先选择可访问 OpenAI 的代理后重试；如果授权码已失效，请重新生成授权链接。'
           },
           // Refresh Token auth
+          mobileRefreshTokenAuth: '移动端 Refresh Token 认证',
+          accessTokenAuth: 'Access Token 认证',
           refreshTokenAuth: '手动输入 RT',
           refreshTokenDesc: '输入您已有的 OpenAI Refresh Token，支持批量输入（每行一个），系统将自动验证并创建账号。',
           refreshTokenPlaceholder: '粘贴您的 OpenAI Refresh Token...\n支持多个，每行一个',
