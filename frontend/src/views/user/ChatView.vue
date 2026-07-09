@@ -1115,7 +1115,7 @@ onUnmounted(() => {
 
 <style scoped>
 .chat-shell {
-  --chat-content-gutter: clamp(1rem, 3vw, 2rem);
+  --chat-content-gutter: clamp(1.5rem, 5vw, 4rem);
   --chat-composer-width: 52rem;
 
   display: grid;
@@ -1939,6 +1939,10 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
+  .chat-shell {
+    --chat-content-gutter: clamp(1.25rem, 4vw, 2rem);
+  }
+
   .chat-shell,
   .chat-shell.sidebar-collapsed {
     grid-template-columns: 1fr;
