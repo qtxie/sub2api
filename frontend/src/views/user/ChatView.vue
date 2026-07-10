@@ -373,8 +373,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import DOMPurify from 'dompurify'
-import { marked } from 'marked'
+import 'katex/dist/katex.min.css'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -388,6 +387,11 @@ import keysAPI from '@/api/keys'
 import type { ApiKey } from '@/types'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
+import { renderChatMarkdown } from '@/utils/chatMarkdown'
+import {
+  chatReasoningEffortOptionsForModel,
+  normalizeChatReasoningEffort
+} from '@/utils/chatReasoning'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -429,33 +433,7 @@ let assistantDeltaText = ''
 let assistantDeltaFrame: number | null = null
 let assistantDeltaDrainResolve: (() => void) | null = null
 
-type ReasoningEffortOption = { value: ChatReasoningEffort; label: string }
 type PendingChatAttachment = ChatStreamAttachment & { id: string }
-
-const defaultReasoningEffortOptions: ReasoningEffortOption[] = [
-  { value: '', label: 'chat.reasoningDefault' },
-  { value: 'none', label: 'chat.reasoningNone' },
-  { value: 'minimal', label: 'chat.reasoningMinimal' },
-  { value: 'low', label: 'chat.reasoningLow' },
-  { value: 'medium', label: 'chat.reasoningMedium' },
-  { value: 'high', label: 'chat.reasoningHigh' },
-  { value: 'max', label: 'chat.reasoningMax' },
-  { value: 'xhigh', label: 'chat.reasoningXHigh' },
-]
-
-const gpt54And55ReasoningEffortOptions: ReasoningEffortOption[] = [
-  { value: 'none', label: 'chat.reasoningNone' },
-  { value: 'low', label: 'chat.reasoningLow' },
-  { value: 'medium', label: 'chat.reasoningMedium' },
-  { value: 'high', label: 'chat.reasoningHigh' },
-  { value: 'xhigh', label: 'chat.reasoningXHigh' },
-]
-
-const gpt56ReasoningEffortOptions: ReasoningEffortOption[] = [
-  { value: 'auto', label: 'chat.reasoningAuto' },
-  { value: 'max', label: 'chat.reasoningMax' },
-  { value: 'ultra', label: 'chat.reasoningUltra' },
-]
 
 const maxChatAttachments = 8
 const maxChatImageBytes = 10 * 1024 * 1024
@@ -477,7 +455,7 @@ const modelSelectPlaceholder = computed(() => {
   if (loadingModels.value) return t('chat.loadingModels')
   return modelOptions.value.length === 0 ? t('chat.noModels') : t('chat.selectModel')
 })
-const availableReasoningEffortOptions = computed(() => reasoningEffortOptionsForModel(selectedModel.value))
+const availableReasoningEffortOptions = computed(() => chatReasoningEffortOptionsForModel(selectedModel.value))
 const canSend = computed(() => Boolean(
   (draft.value.trim() || pendingAttachments.value.length > 0) &&
   selectedApiKeyId.value &&
@@ -1041,24 +1019,11 @@ function makeTitle(content: string): string {
 }
 
 function renderMarkdown(content: string): string {
-  const html = marked.parse(content || '', { async: false }) as string
-  return DOMPurify.sanitize(html)
+  return renderChatMarkdown(content)
 }
 
 function normalizeReasoningEffort(value: string): ChatReasoningEffort {
-  const normalized = value.trim().toLowerCase().replace(/_/g, '-')
-  if (normalized === 'x-high') return 'xhigh'
-  return defaultReasoningEffortOptions.some((option) => option.value === normalized) ||
-    gpt56ReasoningEffortOptions.some((option) => option.value === normalized)
-    ? normalized as ChatReasoningEffort
-    : ''
-}
-
-function reasoningEffortOptionsForModel(model: string): ReasoningEffortOption[] {
-  const normalized = model.trim().toLowerCase()
-  if (normalized.startsWith('gpt-5.6')) return gpt56ReasoningEffortOptions
-  if (normalized.startsWith('gpt-5.4') || normalized.startsWith('gpt-5.5')) return gpt54And55ReasoningEffortOptions
-  return defaultReasoningEffortOptions
+  return normalizeChatReasoningEffort(value)
 }
 
 function coerceSelectedReasoningEffort() {
@@ -1578,6 +1543,12 @@ onUnmounted(() => {
 
 .message-content :deep(code) {
   font-size: 0.875em;
+}
+
+.message-content :deep(.katex-display) {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0;
 }
 
 .message-error {

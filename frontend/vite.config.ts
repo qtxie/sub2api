@@ -96,6 +96,11 @@ export default defineConfig(({ mode }) => {
               return 'vendor-i18n'
             }
 
+            // KaTeX is only used by the lazy-loaded chat route.
+            if (id.includes('/katex/')) {
+              return 'vendor-katex'
+            }
+
             // 其他小型第三方库合并
             return 'vendor-misc'
           }
