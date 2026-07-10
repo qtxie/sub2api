@@ -31,7 +31,7 @@ func TestNormalizeOpenAISmartUserAgent(t *testing.T) {
 		{
 			name: "other client forced to codex tui",
 			in:   "curl/8.0",
-			want: "codex-tui/0.142.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.142.5)",
+			want: codexCLIUserAgent,
 		},
 	}
 
