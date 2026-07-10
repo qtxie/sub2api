@@ -534,8 +534,8 @@ function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
 
   // config.toml content
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
+model = "gpt-5.6-sol"
+review_model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 disable_response_storage = true
 network_access = "enabled"
@@ -574,8 +574,8 @@ function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
 
   // config.toml content with WebSocket v2
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
+model = "gpt-5.6-sol"
+review_model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 disable_response_storage = true
 network_access = "enabled"
@@ -623,7 +623,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.6-sol': {
       name: 'GPT-5.6 Sol',
       limit: {
-        context: 512000,
+        context: 352000,
         output: 128000
       },
       options: {
@@ -633,13 +633,15 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         low: {},
         medium: {},
         high: {},
-        xhigh: {}
+        xhigh: {},
+        max: {},
+        ultra: {},
       }
     },
     'gpt-5.6-terra': {
       name: 'GPT-5.6 Terra',
       limit: {
-        context: 512000,
+        context: 352000,
         output: 128000
       },
       options: {
@@ -649,13 +651,14 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         low: {},
         medium: {},
         high: {},
-        xhigh: {}
+        xhigh: {},
+        max: {}
       }
     },
     'gpt-5.6-luna': {
       name: 'GPT-5.6 Luna',
       limit: {
-        context: 512000,
+        context: 352000,
         output: 128000
       },
       options: {
