@@ -59,5 +59,5 @@ jobs:
             ${{ steps.image.outputs.name }}:${{ steps.image.outputs.short_sha }}
             ${{ steps.image.outputs.name }}:${{ github.sha }}
           build-args: |
-            VERSION=patched
+            VERSION=patched-${{ steps.image.outputs.short_sha }}
             COMMIT=${{ github.sha }}
