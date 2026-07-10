@@ -83,6 +83,11 @@ func RegisterUserRoutes(
 			}
 		}
 
+		imagePlayground := authenticated.Group("/image-playground")
+		{
+			imagePlayground.POST("/generations", h.ImagePlayground.Generate)
+		}
+
 		// 用户可用分组（非管理员接口）
 		groups := authenticated.Group("/groups")
 		{

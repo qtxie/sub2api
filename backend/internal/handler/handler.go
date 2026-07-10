@@ -46,6 +46,7 @@ type Handlers struct {
 	User             *UserHandler
 	APIKey           *APIKeyHandler
 	Chat             *ChatHandler
+	ImagePlayground  *ImagePlaygroundHandler
 	Usage            *UsageHandler
 	Redeem           *RedeemHandler
 	Subscription     *SubscriptionHandler
