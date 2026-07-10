@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <main class="mx-auto w-full max-w-7xl space-y-6 px-4 py-6 sm:px-6">
+    <div class="w-full space-y-6">
       <header class="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('imageStudio.title') }}</h1>
@@ -105,7 +105,7 @@
           </div>
         </section>
       </section>
-    </main>
+    </div>
 
     <div v-if="previewItem" class="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4" @click.self="previewItem = null">
       <section class="max-h-full max-w-5xl overflow-auto rounded-lg bg-white p-4 shadow-xl dark:bg-dark-900">

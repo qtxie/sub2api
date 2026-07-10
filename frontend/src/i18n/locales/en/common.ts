@@ -202,6 +202,7 @@ export default {
 
   chat: {
     title: 'Chat',
+    description: 'Chat with supported AI models using your API keys',
     newChat: 'New chat',
     recentChats: 'Recent chats',
     noHistory: 'No chat history',

@@ -67,6 +67,13 @@ describe('ImageStudioView', () => {
     vi.stubGlobal('crypto', { randomUUID: () => 'generated-image' })
   })
 
+  it('uses the shared app layout spacing without an extra page inset', () => {
+    const wrapper = mountView()
+    const page = wrapper.get('.w-full.space-y-6')
+
+    expect(page.classes()).not.toEqual(expect.arrayContaining(['px-4', 'py-6', 'sm:px-6', 'max-w-7xl']))
+  })
+
   it('only presents OpenAI image-enabled keys', async () => {
     const wrapper = mountView()
     await flushPromises()

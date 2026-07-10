@@ -202,6 +202,7 @@ export default {
 
   chat: {
     title: '聊天',
+    description: '使用您的 API 密钥与支持的 AI 模型对话',
     newChat: '新聊天',
     recentChats: '最近聊天',
     noHistory: '暂无聊天记录',
