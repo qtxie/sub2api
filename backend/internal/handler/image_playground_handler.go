@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -78,6 +80,10 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 		response.BadRequest(c, "Image count must be between 1 and 4")
 		return
 	}
+	if message := validateImagePlaygroundOptions(input); message != "" {
+		response.BadRequest(c, message)
+		return
+	}
 
 	apiKey, err := h.apiKeyService.GetByID(c.Request.Context(), input.APIKeyID)
 	if err != nil {
@@ -114,7 +120,7 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey.Key)
 	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Accept", "application/json")
+	upstreamReq.Header.Set("Accept", "text/event-stream, application/json")
 	if lang := c.GetHeader("Accept-Language"); lang != "" {
 		upstreamReq.Header.Set("Accept-Language", lang)
 	}
@@ -128,6 +134,14 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 		return
 	}
 	defer upstreamResp.Body.Close()
+	if upstreamResp.StatusCode < http.StatusBadRequest && isImagePlaygroundEventStream(upstreamResp.Header.Get("Content-Type")) {
+		if err := relayImagePlaygroundStream(c, upstreamResp.Body, upstreamResp.StatusCode, imagePlaygroundMaxResponseBytes); err != nil {
+			if !c.Writer.Written() {
+				response.InternalError(c, "Failed to relay image gateway stream")
+			}
+		}
+		return
+	}
 	upstreamBody, err := readImagePlaygroundResponse(upstreamResp.Body, imagePlaygroundMaxResponseBytes)
 	if err != nil {
 		if errors.Is(err, errImagePlaygroundResponseTooLarge) {
@@ -145,7 +159,6 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 		response.Error(c, upstreamResp.StatusCode, message)
 		return
 	}
-
 	var output any
 	if err := json.Unmarshal(upstreamBody, &output); err != nil {
 		response.InternalError(c, "Image gateway returned an invalid response")
@@ -156,10 +169,10 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 
 func buildImagePlaygroundGatewayBody(input imagePlaygroundGenerationRequest) ([]byte, error) {
 	payload := map[string]any{
-		"model":           imagePlaygroundModel,
-		"prompt":          strings.TrimSpace(input.Prompt),
-		"n":               input.OutputCount,
-		"response_format": "b64_json",
+		"model":  imagePlaygroundModel,
+		"prompt": strings.TrimSpace(input.Prompt),
+		"n":      input.OutputCount,
+		"stream": true,
 	}
 	for field, value := range map[string]string{
 		"size":          input.Size,
@@ -172,6 +185,92 @@ func buildImagePlaygroundGatewayBody(input imagePlaygroundGenerationRequest) ([]
 		}
 	}
 	return json.Marshal(payload)
+}
+
+func isImagePlaygroundEventStream(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return strings.EqualFold(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]), "text/event-stream")
+	}
+	return strings.EqualFold(mediaType, "text/event-stream")
+}
+
+func relayImagePlaygroundStream(c *gin.Context, body io.Reader, statusCode int, maxBytes int64) error {
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		return errors.New("streaming is not supported by response writer")
+	}
+
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(statusCode)
+
+	limited := &io.LimitedReader{R: body, N: maxBytes + 1}
+	buffer := make([]byte, 32*1024)
+	var written int64
+	for {
+		n, readErr := limited.Read(buffer)
+		if n > 0 {
+			remaining := maxBytes - written
+			if int64(n) > remaining {
+				if remaining > 0 {
+					if _, err := c.Writer.Write(buffer[:remaining]); err != nil {
+						return err
+					}
+					flusher.Flush()
+				}
+				message, _ := json.Marshal(map[string]any{
+					"type":  "error",
+					"error": map[string]string{"message": "Image gateway response is too large"},
+				})
+				_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", message)
+				flusher.Flush()
+				return errImagePlaygroundResponseTooLarge
+			}
+			if _, err := c.Writer.Write(buffer[:n]); err != nil {
+				return err
+			}
+			written += int64(n)
+			flusher.Flush()
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+func validateImagePlaygroundOptions(input imagePlaygroundGenerationRequest) string {
+	allowed := func(value string, values ...string) bool {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return true
+		}
+		for _, candidate := range values {
+			if value == candidate {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !allowed(input.Size, "1024x1024", "1536x1024", "1024x1536") {
+		return "Unsupported image size"
+	}
+	if !allowed(input.Quality, "low", "medium", "high") {
+		return "Unsupported image quality"
+	}
+	if !allowed(input.Background, "auto", "opaque") {
+		return "Unsupported image background"
+	}
+	if !allowed(input.OutputFormat, "png", "jpeg", "webp") {
+		return "Unsupported image output format"
+	}
+	return ""
 }
 
 func (h *ImagePlaygroundHandler) localGatewayURL(c *gin.Context, path string) string {

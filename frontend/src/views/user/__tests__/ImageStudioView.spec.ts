@@ -72,6 +72,8 @@ describe('ImageStudioView', () => {
     const page = wrapper.get('.w-full.space-y-6')
 
     expect(page.classes()).not.toEqual(expect.arrayContaining(['px-4', 'py-6', 'sm:px-6', 'max-w-7xl']))
+    expect(wrapper.find('h1').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('imageStudio.description')
   })
 
   it('only presents OpenAI image-enabled keys', async () => {
@@ -81,6 +83,35 @@ describe('ImageStudioView', () => {
     const options = wrapper.find('#image-studio-key').findAll('option').map((option) => option.text())
     expect(options).toContain('OpenAI image key')
     expect(options).not.toContain('Grok image key')
+  })
+
+  it('only presents backgrounds supported by GPT Image 2', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const options = wrapper.get('#image-studio-background').findAll('option').map((option) => option.attributes('value'))
+    expect(options).toEqual(['auto', 'opaque'])
+    expect(options).not.toContain('transparent')
+  })
+
+  it('reports an error when generation returns no usable image', async () => {
+    generateImage.mockResolvedValueOnce({ data: [] })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.find('#image-studio-prompt').setValue('paper kite')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('imageStudio.noImagesReturned')
+    expect(showSuccess).not.toHaveBeenCalled()
+  })
+
+  it('surfaces gallery loading failures', async () => {
+    listImageStudioGallery.mockRejectedValueOnce(new Error('storage unavailable'))
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('storage unavailable')
   })
 
   it('keeps a completed generation visible when local history persistence fails', async () => {

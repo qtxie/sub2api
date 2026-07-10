@@ -40,7 +40,7 @@ func TestBuildImagePlaygroundGatewayBodyPinsGPTImage2(t *testing.T) {
 		Prompt:       "  an orange bicycle  ",
 		Size:         "1024x1024",
 		Quality:      "high",
-		Background:   "transparent",
+		Background:   "auto",
 		OutputFormat: "png",
 		OutputCount:  2,
 	})
@@ -49,12 +49,13 @@ func TestBuildImagePlaygroundGatewayBodyPinsGPTImage2(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(body, &payload))
 	require.Equal(t, imagePlaygroundModel, payload["model"])
-	require.Equal(t, "b64_json", payload["response_format"])
+	require.Equal(t, true, payload["stream"])
+	require.NotContains(t, payload, "response_format")
 	require.Equal(t, "an orange bicycle", payload["prompt"])
 	require.EqualValues(t, 2, payload["n"])
 	require.Equal(t, "1024x1024", payload["size"])
 	require.Equal(t, "high", payload["quality"])
-	require.Equal(t, "transparent", payload["background"])
+	require.Equal(t, "auto", payload["background"])
 	require.Equal(t, "png", payload["output_format"])
 }
 
@@ -65,7 +66,8 @@ func TestBuildImagePlaygroundGatewayBodyOmitsBlankOptions(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(body, &payload))
 	require.Equal(t, imagePlaygroundModel, payload["model"])
-	require.Equal(t, "b64_json", payload["response_format"])
+	require.Equal(t, true, payload["stream"])
+	require.NotContains(t, payload, "response_format")
 	require.NotContains(t, payload, "size")
 	require.NotContains(t, payload, "quality")
 	require.NotContains(t, payload, "background")
@@ -135,16 +137,36 @@ func TestImagePlaygroundGenerateRejectsMoreThanFourImages(t *testing.T) {
 	require.Contains(t, w.Body.String(), "between 1 and 4")
 }
 
+func TestImagePlaygroundGenerateRejectsTransparentBackground(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newImagePlaygroundTestHandler(imagePlaygroundTestKey(1, service.StatusActive, service.PlatformOpenAI, true), func(_ *http.Request) (*http.Response, error) {
+		t.Fatal("gateway must not be called")
+		return nil, nil
+	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/generations", bytes.NewBufferString(`{"api_key_id":1,"prompt":"cat","background":"transparent","output_format":"png","n":1}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1})
+
+	h.Generate(c)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Contains(t, w.Body.String(), "Unsupported image background")
+}
+
 func TestImagePlaygroundGenerateForwardsPinnedRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := newImagePlaygroundTestHandler(imagePlaygroundTestKey(1, service.StatusActive, service.PlatformOpenAI, true), func(req *http.Request) (*http.Response, error) {
 		require.Equal(t, http.MethodPost, req.Method)
 		require.Equal(t, "/v1/images/generations", req.URL.Path)
 		require.Equal(t, "Bearer playground-secret", req.Header.Get("Authorization"))
+		require.Equal(t, "text/event-stream, application/json", req.Header.Get("Accept"))
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
 		require.Equal(t, imagePlaygroundModel, body["model"])
-		require.Equal(t, "b64_json", body["response_format"])
+		require.Equal(t, true, body["stream"])
+		require.NotContains(t, body, "response_format")
 		require.Equal(t, "cat", body["prompt"])
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -170,6 +192,50 @@ func TestImagePlaygroundGenerateForwardsPinnedRequest(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, 0, body.Code)
 	require.Equal(t, "abc", body.Data.Data[0].B64JSON)
+}
+
+func TestImagePlaygroundGenerateRelaysGatewayStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stream := "event: image_generation.partial_image\n" +
+		"data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"partial\"}\n\n" +
+		":\n\n" +
+		"event: image_generation.completed\n" +
+		"data: {\"type\":\"image_generation.completed\",\"b64_json\":\"final\"}\n\n" +
+		"data: [DONE]\n\n"
+	h := newImagePlaygroundTestHandler(imagePlaygroundTestKey(1, service.StatusActive, service.PlatformOpenAI, true), func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(bytes.NewBufferString(stream)),
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/generations", bytes.NewBufferString(`{"api_key_id":1,"prompt":"cat","n":1}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1})
+
+	h.Generate(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "text/event-stream; charset=utf-8", w.Header().Get("Content-Type"))
+	require.Equal(t, "no", w.Header().Get("X-Accel-Buffering"))
+	require.True(t, w.Flushed)
+	require.Equal(t, stream, w.Body.String())
+}
+
+func TestRelayImagePlaygroundStreamReportsOverflowInBand(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	err := relayImagePlaygroundStream(c, bytes.NewBufferString("12345"), http.StatusOK, 4)
+
+	require.ErrorIs(t, err, errImagePlaygroundResponseTooLarge)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "1234")
+	require.Contains(t, w.Body.String(), "event: error")
+	require.Contains(t, w.Body.String(), "response is too large")
 }
 
 func TestImagePlaygroundGeneratePassesGatewayErrors(t *testing.T) {

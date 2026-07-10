@@ -1,16 +1,12 @@
 <template>
   <AppLayout>
     <div class="w-full space-y-6">
-      <header class="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('imageStudio.title') }}</h1>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('imageStudio.description') }}</p>
-        </div>
-        <button v-if="gallery.length" class="btn btn-secondary" type="button" @click="clearGallery">
+      <div v-if="gallery.length" class="flex justify-end">
+        <button class="btn btn-secondary" type="button" @click="clearGallery">
           <Icon name="trash" size="sm" />
           <span>{{ t('imageStudio.clearGallery') }}</span>
         </button>
-      </header>
+      </div>
 
       <section class="grid gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)]">
         <form class="space-y-5 rounded-lg border border-gray-200 bg-white p-5 shadow-sm dark:border-dark-700 dark:bg-dark-900" @submit.prevent="generate">
@@ -46,14 +42,14 @@
             </label>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-200">
               {{ t('imageStudio.background') }}
-              <select v-model="form.background" class="input mt-1.5" :disabled="generating">
+              <select id="image-studio-background" v-model="form.background" class="input mt-1.5" :disabled="generating">
+                <option value="auto">{{ t('imageStudio.backgroundAuto') }}</option>
                 <option value="opaque">{{ t('imageStudio.backgroundOpaque') }}</option>
-                <option value="transparent">{{ t('imageStudio.backgroundTransparent') }}</option>
               </select>
             </label>
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-200">
               {{ t('imageStudio.format') }}
-              <select v-model="form.outputFormat" class="input mt-1.5" :disabled="generating">
+              <select id="image-studio-format" v-model="form.outputFormat" class="input mt-1.5" :disabled="generating">
                 <option value="png">PNG</option>
                 <option value="jpeg">JPEG</option>
                 <option value="webp">WebP</option>
@@ -184,6 +180,8 @@ async function loadGallery() {
   loadingGallery.value = true
   try {
     gallery.value = await listImageStudioGallery(authStore.user?.id || 0)
+  } catch (err) {
+    error.value = extractApiErrorMessage(err, t('imageStudio.galleryLoadFailed'))
   } finally {
     loadingGallery.value = false
   }
@@ -223,6 +221,7 @@ async function generate() {
       outputFormat: form.outputFormat,
       imageSrc: resultSource(result)
     })).filter((item) => item.imageSrc)
+    if (items.length === 0) throw new Error(t('imageStudio.noImagesReturned'))
     gallery.value = [...items, ...gallery.value]
     appStore.showSuccess(t('imageStudio.generated', { count: items.length }))
     try {

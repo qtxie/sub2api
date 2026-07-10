@@ -6,7 +6,7 @@ vi.mock('../client', () => ({
   apiClient: { post }
 }))
 
-import { generateImage } from '../imagePlayground'
+import { generateImage, parseImagePlaygroundResponse } from '../imagePlayground'
 
 describe('image playground API', () => {
   beforeEach(() => post.mockReset())
@@ -31,5 +31,70 @@ describe('image playground API', () => {
       n: 1
     }), { signal, timeout: 300000 })
     expect(result.data[0].b64_json).toBe('abc')
+  })
+})
+
+describe('parseImagePlaygroundResponse', () => {
+  it('keeps ordinary JSON responses compatible', () => {
+    expect(parseImagePlaygroundResponse({
+      created: 1710000000,
+      data: [{ b64_json: 'final', revised_prompt: 'a revised prompt' }],
+    })).toEqual({
+      created: 1710000000,
+      data: [{ b64_json: 'final', revised_prompt: 'a revised prompt' }],
+    })
+  })
+
+  it('collects completed images and ignores partial images', () => {
+    const response = parseImagePlaygroundResponse(
+      'event: image_generation.partial_image\n' +
+      'data: {"type":"image_generation.partial_image","b64_json":"partial"}\n\n' +
+      ':\n\n' +
+      'event: image_generation.completed\n' +
+      'data: {"type":"image_generation.completed","created_at":1710000001,"b64_json":"final-a","revised_prompt":"first"}\n\n' +
+      'event: image_generation.completed\n' +
+      'data: {"type":"image_generation.completed","created_at":1710000001,"url":"https://example.com/final-b.png"}\n\n' +
+      'data: [DONE]\n\n'
+    )
+
+    expect(response).toEqual({
+      created: 1710000001,
+      data: [
+        { b64_json: 'final-a', revised_prompt: 'first' },
+        { url: 'https://example.com/final-b.png' },
+      ],
+    })
+  })
+
+  it('parses multiline completion events', () => {
+    const response = parseImagePlaygroundResponse(
+      'event: image_generation.completed\n' +
+      'data: {"type":"image_generation.completed",\n' +
+      'data: "created_at":1710000002,"b64_json":"multiline"}\n\n'
+    )
+
+    expect(response).toEqual({ created: 1710000002, data: [{ b64_json: 'multiline' }] })
+  })
+
+  it('normalizes Responses API completion events', () => {
+    const response = parseImagePlaygroundResponse(
+      'data: {"type":"response.completed","response":{"created_at":1710000003,"output":[{"type":"image_generation_call","result":"final"}]}}\n\n'
+    )
+
+    expect(response).toEqual({ created: 1710000003, data: [{ b64_json: 'final' }] })
+  })
+
+  it('surfaces errors delivered after a stream has started', () => {
+    expect(() => parseImagePlaygroundResponse(
+      'event: error\n' +
+      'data: {"type":"error","error":{"message":"upstream timed out"}}\n\n'
+    )).toThrow('upstream timed out')
+  })
+
+  it('rejects streams that end without a completed image', () => {
+    expect(() => parseImagePlaygroundResponse(
+      'data: {"type":"image_generation.partial_image","b64_json":"partial"}\n\n' +
+      'data: [DONE]\n\n'
+    )).toThrow('completed without an image')
   })
 })
