@@ -134,6 +134,24 @@ func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 	c.Writer.Flush()
 }
 
+func writeOpenAICompactAwareJSONError(c *gin.Context, statusCode int, errType, message string, extra gin.H) {
+	if c == nil {
+		return
+	}
+	if StopOpenAICompactSSEKeepaliveCommitted(c) {
+		writeOpenAICompactSSEFailureMessage(c, statusCode, errType, message)
+		return
+	}
+	errObj := gin.H{
+		"type":    errType,
+		"message": message,
+	}
+	for key, value := range extra {
+		errObj[key] = value
+	}
+	c.JSON(statusCode, gin.H{"error": errObj})
+}
+
 // buildOpenAICompactSSEPayload 把 compact 的 Response JSON 转成 SSE 事件序列：
 // 每个 output[] item 一条 response.output_item.done，最后一条 response.completed
 // 携带完整 response 对象。Codex 的 SSE 解析只从 output_item.done 收集 item，

@@ -2515,7 +2515,11 @@ func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, stream
 	}
 	// 先停 compact 心跳再读 Writer 状态，避免与心跳 goroutine 竞争。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
-		streamStarted = true
+		service.MarkOpsStreamError(c, "upstream_error", "Upstream request failed", http.StatusBadGateway)
+		if writeResponsesFailedSSE(c, "upstream_error", "Upstream request failed") {
+			return true
+		}
+		return false
 	}
 	if service.IsResponseCommitted(c) {
 		return false

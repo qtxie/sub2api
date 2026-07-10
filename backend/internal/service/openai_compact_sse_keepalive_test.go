@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -189,4 +190,33 @@ func TestWriteOpenAIFastPolicyBlockedResponse_BeforeKeepaliveCommit(t *testing.T
 
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.Equal(t, "permission_error", gjson.Get(rec.Body.String(), "error.type").String())
+}
+
+func TestWriteOpenAICompactAwareJSONError_AfterKeepaliveCommitEmitsFailedEvent(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, true)
+	stop := StartOpenAICompactSSEKeepalive(c, keepaliveTestInterval)
+	defer stop()
+	waitForKeepaliveBeats()
+
+	writeOpenAICompactAwareJSONError(c, http.StatusForbidden, "forbidden_error", "local reject", nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	events := parseCompactBridgeSSE(t, stripKeepaliveComments(rec.Body.String()))
+	require.Len(t, events, 1)
+	require.Equal(t, "response.failed", events[0][0])
+	require.Equal(t, "forbidden_error", gjson.Get(events[0][1], "response.error.code").String())
+	require.Contains(t, gjson.Get(events[0][1], "response.error.message").String(), "local reject")
+	require.False(t, strings.HasPrefix(strings.TrimSpace(stripKeepaliveComments(rec.Body.String())), `{"error":`))
+}
+
+func TestWriteOpenAICompactAwareJSONError_BeforeKeepaliveCommitKeepsJSON(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, true)
+	stop := StartOpenAICompactSSEKeepalive(c, time.Hour)
+	defer stop()
+
+	writeOpenAICompactAwareJSONError(c, http.StatusBadRequest, "invalid_request_error", "bad input", gin.H{"param": "input"})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Equal(t, "input", gjson.Get(rec.Body.String(), "error.param").String())
 }
