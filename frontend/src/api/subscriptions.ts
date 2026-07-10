@@ -67,10 +67,19 @@ export async function getSubscriptionProgress(
   return response.data
 }
 
+export async function activateQuotaBoost(subscriptionId: number): Promise<UserSubscription> {
+  const response = await apiClient.post<UserSubscription>(
+    `/subscriptions/${subscriptionId}/quota-boost`,
+    {}
+  )
+  return response.data
+}
+
 export default {
   getMySubscriptions,
   getActiveSubscriptions,
   getSubscriptionsProgress,
   getSubscriptionSummary,
-  getSubscriptionProgress
+  getSubscriptionProgress,
+  activateQuotaBoost
 }

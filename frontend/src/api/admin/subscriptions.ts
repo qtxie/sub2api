@@ -148,6 +148,17 @@ export async function resetQuota(
   return data
 }
 
+export async function setQuotaBoostPolicy(
+  id: number,
+  monthlyLimit: number
+): Promise<UserSubscription> {
+  const { data } = await apiClient.put<UserSubscription>(
+    `/admin/subscriptions/${id}/quota-boost`,
+    { monthly_limit: monthlyLimit }
+  )
+  return data
+}
+
 /**
  * List subscriptions by group
  * @param groupId - Group ID
@@ -200,6 +211,7 @@ export const subscriptionsAPI = {
   revoke,
   restore,
   resetQuota,
+  setQuotaBoostPolicy,
   listByGroup,
   listByUser
 }

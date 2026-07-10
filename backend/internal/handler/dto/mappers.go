@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
@@ -756,24 +757,53 @@ func UserSubscriptionFromServiceAdmin(sub *service.UserSubscription) *AdminUserS
 }
 
 func userSubscriptionFromServiceBase(sub *service.UserSubscription) UserSubscription {
+	now := timezone.Now()
+	dayStart := timezone.StartOfDay(now)
+	monthStart := timezone.StartOfMonth(now)
+	usedThisMonth := sub.QuotaBoostMonthlyUsedAt(now)
+	remainingThisMonth := sub.QuotaBoostRemainingAt(now)
+	activeToday := sub.IsQuotaBoostActiveAt(now)
+	var dayResetsAt, monthResetsAt *time.Time
+	if sub.QuotaBoostMonthlyLimit > 0 || activeToday {
+		dayReset := dayStart.AddDate(0, 0, 1)
+		monthReset := monthStart.AddDate(0, 1, 0)
+		dayResetsAt = &dayReset
+		monthResetsAt = &monthReset
+	}
+	availableToday := sub.Status == service.SubscriptionStatusActive &&
+		sub.ExpiresAt.After(now) &&
+		sub.Group != nil && sub.Group.HasDailyLimit() &&
+		sub.QuotaBoostMonthlyLimit > 0 && remainingThisMonth > 0 && !activeToday
+
 	return UserSubscription{
-		ID:                 sub.ID,
-		UserID:             sub.UserID,
-		GroupID:            sub.GroupID,
-		StartsAt:           sub.StartsAt,
-		ExpiresAt:          sub.ExpiresAt,
-		Status:             sub.Status,
-		DailyWindowStart:   sub.DailyWindowStart,
-		WeeklyWindowStart:  sub.WeeklyWindowStart,
-		MonthlyWindowStart: sub.MonthlyWindowStart,
-		DailyUsageUSD:      sub.DailyUsageUSD,
-		WeeklyUsageUSD:     sub.WeeklyUsageUSD,
-		MonthlyUsageUSD:    sub.MonthlyUsageUSD,
-		CreatedAt:          sub.CreatedAt,
-		UpdatedAt:          sub.UpdatedAt,
-		RevokedAt:          sub.DeletedAt,
-		User:               UserFromServiceShallow(sub.User),
-		Group:              GroupFromServiceShallow(sub.Group),
+		ID:                     sub.ID,
+		UserID:                 sub.UserID,
+		GroupID:                sub.GroupID,
+		StartsAt:               sub.StartsAt,
+		ExpiresAt:              sub.ExpiresAt,
+		Status:                 sub.Status,
+		DailyWindowStart:       sub.DailyWindowStart,
+		WeeklyWindowStart:      sub.WeeklyWindowStart,
+		MonthlyWindowStart:     sub.MonthlyWindowStart,
+		DailyUsageUSD:          sub.DailyUsageUSD,
+		WeeklyUsageUSD:         sub.WeeklyUsageUSD,
+		MonthlyUsageUSD:        sub.MonthlyUsageUSD,
+		EffectiveDailyLimitUSD: sub.EffectiveDailyLimitUSDAt(sub.Group, now),
+		QuotaBoost: SubscriptionQuotaBoost{
+			MonthlyLimit:       sub.QuotaBoostMonthlyLimit,
+			UsedThisMonth:      usedThisMonth,
+			RemainingThisMonth: remainingThisMonth,
+			ActiveToday:        activeToday,
+			AvailableToday:     availableToday,
+			ActivatedAt:        sub.QuotaBoostActivatedAt,
+			DayResetsAt:        dayResetsAt,
+			MonthResetsAt:      monthResetsAt,
+		},
+		CreatedAt: sub.CreatedAt,
+		UpdatedAt: sub.UpdatedAt,
+		RevokedAt: sub.DeletedAt,
+		User:      UserFromServiceShallow(sub.User),
+		Group:     GroupFromServiceShallow(sub.Group),
 	}
 }
 

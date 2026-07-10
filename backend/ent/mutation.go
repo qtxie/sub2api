@@ -54417,39 +54417,45 @@ func (m *UserPlatformQuotaMutation) ResetEdge(name string) error {
 // UserSubscriptionMutation represents an operation that mutates the UserSubscription nodes in the graph.
 type UserSubscriptionMutation struct {
 	config
-	op                      Op
-	typ                     string
-	id                      *int64
-	created_at              *time.Time
-	updated_at              *time.Time
-	deleted_at              *time.Time
-	starts_at               *time.Time
-	expires_at              *time.Time
-	status                  *string
-	daily_window_start      *time.Time
-	weekly_window_start     *time.Time
-	monthly_window_start    *time.Time
-	daily_usage_usd         *float64
-	adddaily_usage_usd      *float64
-	weekly_usage_usd        *float64
-	addweekly_usage_usd     *float64
-	monthly_usage_usd       *float64
-	addmonthly_usage_usd    *float64
-	assigned_at             *time.Time
-	notes                   *string
-	clearedFields           map[string]struct{}
-	user                    *int64
-	cleareduser             bool
-	group                   *int64
-	clearedgroup            bool
-	assigned_by_user        *int64
-	clearedassigned_by_user bool
-	usage_logs              map[int64]struct{}
-	removedusage_logs       map[int64]struct{}
-	clearedusage_logs       bool
-	done                    bool
-	oldValue                func(context.Context) (*UserSubscription, error)
-	predicates              []predicate.UserSubscription
+	op                           Op
+	typ                          string
+	id                           *int64
+	created_at                   *time.Time
+	updated_at                   *time.Time
+	deleted_at                   *time.Time
+	starts_at                    *time.Time
+	expires_at                   *time.Time
+	status                       *string
+	daily_window_start           *time.Time
+	weekly_window_start          *time.Time
+	monthly_window_start         *time.Time
+	daily_usage_usd              *float64
+	adddaily_usage_usd           *float64
+	weekly_usage_usd             *float64
+	addweekly_usage_usd          *float64
+	monthly_usage_usd            *float64
+	addmonthly_usage_usd         *float64
+	quota_boost_monthly_limit    *int
+	addquota_boost_monthly_limit *int
+	quota_boost_monthly_used     *int
+	addquota_boost_monthly_used  *int
+	quota_boost_period_start     *time.Time
+	quota_boost_activated_at     *time.Time
+	assigned_at                  *time.Time
+	notes                        *string
+	clearedFields                map[string]struct{}
+	user                         *int64
+	cleareduser                  bool
+	group                        *int64
+	clearedgroup                 bool
+	assigned_by_user             *int64
+	clearedassigned_by_user      bool
+	usage_logs                   map[int64]struct{}
+	removedusage_logs            map[int64]struct{}
+	clearedusage_logs            bool
+	done                         bool
+	oldValue                     func(context.Context) (*UserSubscription, error)
+	predicates                   []predicate.UserSubscription
 }
 
 var _ ent.Mutation = (*UserSubscriptionMutation)(nil)
@@ -55166,6 +55172,216 @@ func (m *UserSubscriptionMutation) ResetMonthlyUsageUsd() {
 	m.addmonthly_usage_usd = nil
 }
 
+// SetQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field.
+func (m *UserSubscriptionMutation) SetQuotaBoostMonthlyLimit(i int) {
+	m.quota_boost_monthly_limit = &i
+	m.addquota_boost_monthly_limit = nil
+}
+
+// QuotaBoostMonthlyLimit returns the value of the "quota_boost_monthly_limit" field in the mutation.
+func (m *UserSubscriptionMutation) QuotaBoostMonthlyLimit() (r int, exists bool) {
+	v := m.quota_boost_monthly_limit
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldQuotaBoostMonthlyLimit returns the old "quota_boost_monthly_limit" field's value of the UserSubscription entity.
+// If the UserSubscription object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserSubscriptionMutation) OldQuotaBoostMonthlyLimit(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldQuotaBoostMonthlyLimit is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldQuotaBoostMonthlyLimit requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldQuotaBoostMonthlyLimit: %w", err)
+	}
+	return oldValue.QuotaBoostMonthlyLimit, nil
+}
+
+// AddQuotaBoostMonthlyLimit adds i to the "quota_boost_monthly_limit" field.
+func (m *UserSubscriptionMutation) AddQuotaBoostMonthlyLimit(i int) {
+	if m.addquota_boost_monthly_limit != nil {
+		*m.addquota_boost_monthly_limit += i
+	} else {
+		m.addquota_boost_monthly_limit = &i
+	}
+}
+
+// AddedQuotaBoostMonthlyLimit returns the value that was added to the "quota_boost_monthly_limit" field in this mutation.
+func (m *UserSubscriptionMutation) AddedQuotaBoostMonthlyLimit() (r int, exists bool) {
+	v := m.addquota_boost_monthly_limit
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetQuotaBoostMonthlyLimit resets all changes to the "quota_boost_monthly_limit" field.
+func (m *UserSubscriptionMutation) ResetQuotaBoostMonthlyLimit() {
+	m.quota_boost_monthly_limit = nil
+	m.addquota_boost_monthly_limit = nil
+}
+
+// SetQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field.
+func (m *UserSubscriptionMutation) SetQuotaBoostMonthlyUsed(i int) {
+	m.quota_boost_monthly_used = &i
+	m.addquota_boost_monthly_used = nil
+}
+
+// QuotaBoostMonthlyUsed returns the value of the "quota_boost_monthly_used" field in the mutation.
+func (m *UserSubscriptionMutation) QuotaBoostMonthlyUsed() (r int, exists bool) {
+	v := m.quota_boost_monthly_used
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldQuotaBoostMonthlyUsed returns the old "quota_boost_monthly_used" field's value of the UserSubscription entity.
+// If the UserSubscription object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserSubscriptionMutation) OldQuotaBoostMonthlyUsed(ctx context.Context) (v int, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldQuotaBoostMonthlyUsed is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldQuotaBoostMonthlyUsed requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldQuotaBoostMonthlyUsed: %w", err)
+	}
+	return oldValue.QuotaBoostMonthlyUsed, nil
+}
+
+// AddQuotaBoostMonthlyUsed adds i to the "quota_boost_monthly_used" field.
+func (m *UserSubscriptionMutation) AddQuotaBoostMonthlyUsed(i int) {
+	if m.addquota_boost_monthly_used != nil {
+		*m.addquota_boost_monthly_used += i
+	} else {
+		m.addquota_boost_monthly_used = &i
+	}
+}
+
+// AddedQuotaBoostMonthlyUsed returns the value that was added to the "quota_boost_monthly_used" field in this mutation.
+func (m *UserSubscriptionMutation) AddedQuotaBoostMonthlyUsed() (r int, exists bool) {
+	v := m.addquota_boost_monthly_used
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetQuotaBoostMonthlyUsed resets all changes to the "quota_boost_monthly_used" field.
+func (m *UserSubscriptionMutation) ResetQuotaBoostMonthlyUsed() {
+	m.quota_boost_monthly_used = nil
+	m.addquota_boost_monthly_used = nil
+}
+
+// SetQuotaBoostPeriodStart sets the "quota_boost_period_start" field.
+func (m *UserSubscriptionMutation) SetQuotaBoostPeriodStart(t time.Time) {
+	m.quota_boost_period_start = &t
+}
+
+// QuotaBoostPeriodStart returns the value of the "quota_boost_period_start" field in the mutation.
+func (m *UserSubscriptionMutation) QuotaBoostPeriodStart() (r time.Time, exists bool) {
+	v := m.quota_boost_period_start
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldQuotaBoostPeriodStart returns the old "quota_boost_period_start" field's value of the UserSubscription entity.
+// If the UserSubscription object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserSubscriptionMutation) OldQuotaBoostPeriodStart(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldQuotaBoostPeriodStart is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldQuotaBoostPeriodStart requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldQuotaBoostPeriodStart: %w", err)
+	}
+	return oldValue.QuotaBoostPeriodStart, nil
+}
+
+// ClearQuotaBoostPeriodStart clears the value of the "quota_boost_period_start" field.
+func (m *UserSubscriptionMutation) ClearQuotaBoostPeriodStart() {
+	m.quota_boost_period_start = nil
+	m.clearedFields[usersubscription.FieldQuotaBoostPeriodStart] = struct{}{}
+}
+
+// QuotaBoostPeriodStartCleared returns if the "quota_boost_period_start" field was cleared in this mutation.
+func (m *UserSubscriptionMutation) QuotaBoostPeriodStartCleared() bool {
+	_, ok := m.clearedFields[usersubscription.FieldQuotaBoostPeriodStart]
+	return ok
+}
+
+// ResetQuotaBoostPeriodStart resets all changes to the "quota_boost_period_start" field.
+func (m *UserSubscriptionMutation) ResetQuotaBoostPeriodStart() {
+	m.quota_boost_period_start = nil
+	delete(m.clearedFields, usersubscription.FieldQuotaBoostPeriodStart)
+}
+
+// SetQuotaBoostActivatedAt sets the "quota_boost_activated_at" field.
+func (m *UserSubscriptionMutation) SetQuotaBoostActivatedAt(t time.Time) {
+	m.quota_boost_activated_at = &t
+}
+
+// QuotaBoostActivatedAt returns the value of the "quota_boost_activated_at" field in the mutation.
+func (m *UserSubscriptionMutation) QuotaBoostActivatedAt() (r time.Time, exists bool) {
+	v := m.quota_boost_activated_at
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldQuotaBoostActivatedAt returns the old "quota_boost_activated_at" field's value of the UserSubscription entity.
+// If the UserSubscription object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *UserSubscriptionMutation) OldQuotaBoostActivatedAt(ctx context.Context) (v *time.Time, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldQuotaBoostActivatedAt is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldQuotaBoostActivatedAt requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldQuotaBoostActivatedAt: %w", err)
+	}
+	return oldValue.QuotaBoostActivatedAt, nil
+}
+
+// ClearQuotaBoostActivatedAt clears the value of the "quota_boost_activated_at" field.
+func (m *UserSubscriptionMutation) ClearQuotaBoostActivatedAt() {
+	m.quota_boost_activated_at = nil
+	m.clearedFields[usersubscription.FieldQuotaBoostActivatedAt] = struct{}{}
+}
+
+// QuotaBoostActivatedAtCleared returns if the "quota_boost_activated_at" field was cleared in this mutation.
+func (m *UserSubscriptionMutation) QuotaBoostActivatedAtCleared() bool {
+	_, ok := m.clearedFields[usersubscription.FieldQuotaBoostActivatedAt]
+	return ok
+}
+
+// ResetQuotaBoostActivatedAt resets all changes to the "quota_boost_activated_at" field.
+func (m *UserSubscriptionMutation) ResetQuotaBoostActivatedAt() {
+	m.quota_boost_activated_at = nil
+	delete(m.clearedFields, usersubscription.FieldQuotaBoostActivatedAt)
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (m *UserSubscriptionMutation) SetAssignedBy(i int64) {
 	m.assigned_by_user = &i
@@ -55482,7 +55698,7 @@ func (m *UserSubscriptionMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *UserSubscriptionMutation) Fields() []string {
-	fields := make([]string, 0, 17)
+	fields := make([]string, 0, 21)
 	if m.created_at != nil {
 		fields = append(fields, usersubscription.FieldCreatedAt)
 	}
@@ -55524,6 +55740,18 @@ func (m *UserSubscriptionMutation) Fields() []string {
 	}
 	if m.monthly_usage_usd != nil {
 		fields = append(fields, usersubscription.FieldMonthlyUsageUsd)
+	}
+	if m.quota_boost_monthly_limit != nil {
+		fields = append(fields, usersubscription.FieldQuotaBoostMonthlyLimit)
+	}
+	if m.quota_boost_monthly_used != nil {
+		fields = append(fields, usersubscription.FieldQuotaBoostMonthlyUsed)
+	}
+	if m.quota_boost_period_start != nil {
+		fields = append(fields, usersubscription.FieldQuotaBoostPeriodStart)
+	}
+	if m.quota_boost_activated_at != nil {
+		fields = append(fields, usersubscription.FieldQuotaBoostActivatedAt)
 	}
 	if m.assigned_by_user != nil {
 		fields = append(fields, usersubscription.FieldAssignedBy)
@@ -55570,6 +55798,14 @@ func (m *UserSubscriptionMutation) Field(name string) (ent.Value, bool) {
 		return m.WeeklyUsageUsd()
 	case usersubscription.FieldMonthlyUsageUsd:
 		return m.MonthlyUsageUsd()
+	case usersubscription.FieldQuotaBoostMonthlyLimit:
+		return m.QuotaBoostMonthlyLimit()
+	case usersubscription.FieldQuotaBoostMonthlyUsed:
+		return m.QuotaBoostMonthlyUsed()
+	case usersubscription.FieldQuotaBoostPeriodStart:
+		return m.QuotaBoostPeriodStart()
+	case usersubscription.FieldQuotaBoostActivatedAt:
+		return m.QuotaBoostActivatedAt()
 	case usersubscription.FieldAssignedBy:
 		return m.AssignedBy()
 	case usersubscription.FieldAssignedAt:
@@ -55613,6 +55849,14 @@ func (m *UserSubscriptionMutation) OldField(ctx context.Context, name string) (e
 		return m.OldWeeklyUsageUsd(ctx)
 	case usersubscription.FieldMonthlyUsageUsd:
 		return m.OldMonthlyUsageUsd(ctx)
+	case usersubscription.FieldQuotaBoostMonthlyLimit:
+		return m.OldQuotaBoostMonthlyLimit(ctx)
+	case usersubscription.FieldQuotaBoostMonthlyUsed:
+		return m.OldQuotaBoostMonthlyUsed(ctx)
+	case usersubscription.FieldQuotaBoostPeriodStart:
+		return m.OldQuotaBoostPeriodStart(ctx)
+	case usersubscription.FieldQuotaBoostActivatedAt:
+		return m.OldQuotaBoostActivatedAt(ctx)
 	case usersubscription.FieldAssignedBy:
 		return m.OldAssignedBy(ctx)
 	case usersubscription.FieldAssignedAt:
@@ -55726,6 +55970,34 @@ func (m *UserSubscriptionMutation) SetField(name string, value ent.Value) error 
 		}
 		m.SetMonthlyUsageUsd(v)
 		return nil
+	case usersubscription.FieldQuotaBoostMonthlyLimit:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetQuotaBoostMonthlyLimit(v)
+		return nil
+	case usersubscription.FieldQuotaBoostMonthlyUsed:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetQuotaBoostMonthlyUsed(v)
+		return nil
+	case usersubscription.FieldQuotaBoostPeriodStart:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetQuotaBoostPeriodStart(v)
+		return nil
+	case usersubscription.FieldQuotaBoostActivatedAt:
+		v, ok := value.(time.Time)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetQuotaBoostActivatedAt(v)
+		return nil
 	case usersubscription.FieldAssignedBy:
 		v, ok := value.(int64)
 		if !ok {
@@ -55764,6 +56036,12 @@ func (m *UserSubscriptionMutation) AddedFields() []string {
 	if m.addmonthly_usage_usd != nil {
 		fields = append(fields, usersubscription.FieldMonthlyUsageUsd)
 	}
+	if m.addquota_boost_monthly_limit != nil {
+		fields = append(fields, usersubscription.FieldQuotaBoostMonthlyLimit)
+	}
+	if m.addquota_boost_monthly_used != nil {
+		fields = append(fields, usersubscription.FieldQuotaBoostMonthlyUsed)
+	}
 	return fields
 }
 
@@ -55778,6 +56056,10 @@ func (m *UserSubscriptionMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedWeeklyUsageUsd()
 	case usersubscription.FieldMonthlyUsageUsd:
 		return m.AddedMonthlyUsageUsd()
+	case usersubscription.FieldQuotaBoostMonthlyLimit:
+		return m.AddedQuotaBoostMonthlyLimit()
+	case usersubscription.FieldQuotaBoostMonthlyUsed:
+		return m.AddedQuotaBoostMonthlyUsed()
 	}
 	return nil, false
 }
@@ -55808,6 +56090,20 @@ func (m *UserSubscriptionMutation) AddField(name string, value ent.Value) error 
 		}
 		m.AddMonthlyUsageUsd(v)
 		return nil
+	case usersubscription.FieldQuotaBoostMonthlyLimit:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddQuotaBoostMonthlyLimit(v)
+		return nil
+	case usersubscription.FieldQuotaBoostMonthlyUsed:
+		v, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddQuotaBoostMonthlyUsed(v)
+		return nil
 	}
 	return fmt.Errorf("unknown UserSubscription numeric field %s", name)
 }
@@ -55827,6 +56123,12 @@ func (m *UserSubscriptionMutation) ClearedFields() []string {
 	}
 	if m.FieldCleared(usersubscription.FieldMonthlyWindowStart) {
 		fields = append(fields, usersubscription.FieldMonthlyWindowStart)
+	}
+	if m.FieldCleared(usersubscription.FieldQuotaBoostPeriodStart) {
+		fields = append(fields, usersubscription.FieldQuotaBoostPeriodStart)
+	}
+	if m.FieldCleared(usersubscription.FieldQuotaBoostActivatedAt) {
+		fields = append(fields, usersubscription.FieldQuotaBoostActivatedAt)
 	}
 	if m.FieldCleared(usersubscription.FieldAssignedBy) {
 		fields = append(fields, usersubscription.FieldAssignedBy)
@@ -55859,6 +56161,12 @@ func (m *UserSubscriptionMutation) ClearField(name string) error {
 		return nil
 	case usersubscription.FieldMonthlyWindowStart:
 		m.ClearMonthlyWindowStart()
+		return nil
+	case usersubscription.FieldQuotaBoostPeriodStart:
+		m.ClearQuotaBoostPeriodStart()
+		return nil
+	case usersubscription.FieldQuotaBoostActivatedAt:
+		m.ClearQuotaBoostActivatedAt()
 		return nil
 	case usersubscription.FieldAssignedBy:
 		m.ClearAssignedBy()
@@ -55915,6 +56223,18 @@ func (m *UserSubscriptionMutation) ResetField(name string) error {
 		return nil
 	case usersubscription.FieldMonthlyUsageUsd:
 		m.ResetMonthlyUsageUsd()
+		return nil
+	case usersubscription.FieldQuotaBoostMonthlyLimit:
+		m.ResetQuotaBoostMonthlyLimit()
+		return nil
+	case usersubscription.FieldQuotaBoostMonthlyUsed:
+		m.ResetQuotaBoostMonthlyUsed()
+		return nil
+	case usersubscription.FieldQuotaBoostPeriodStart:
+		m.ResetQuotaBoostPeriodStart()
+		return nil
+	case usersubscription.FieldQuotaBoostActivatedAt:
+		m.ResetQuotaBoostActivatedAt()
 		return nil
 	case usersubscription.FieldAssignedBy:
 		m.ResetAssignedBy()

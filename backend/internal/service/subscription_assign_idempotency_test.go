@@ -73,6 +73,9 @@ func (userSubRepoNoop) Create(context.Context, *UserSubscription) error {
 func (userSubRepoNoop) GetByID(context.Context, int64) (*UserSubscription, error) {
 	panic("unexpected GetByID call")
 }
+func (userSubRepoNoop) GetByIDForUpdate(context.Context, int64) (*UserSubscription, error) {
+	panic("unexpected GetByIDForUpdate call")
+}
 func (userSubRepoNoop) GetByIDIncludeDeleted(context.Context, int64) (*UserSubscription, error) {
 	panic("unexpected GetByIDIncludeDeleted call")
 }
@@ -115,6 +118,12 @@ func (userSubRepoNoop) UpdateStatus(context.Context, int64, string) error {
 }
 func (userSubRepoNoop) UpdateNotes(context.Context, int64, string) error {
 	panic("unexpected UpdateNotes call")
+}
+func (userSubRepoNoop) UpdateQuotaBoostMonthlyLimit(context.Context, int64, int) error {
+	panic("unexpected UpdateQuotaBoostMonthlyLimit call")
+}
+func (userSubRepoNoop) UpdateQuotaBoostActivation(context.Context, int64, int, time.Time, time.Time) error {
+	panic("unexpected UpdateQuotaBoostActivation call")
 }
 func (userSubRepoNoop) ActivateWindows(context.Context, int64, time.Time) error {
 	panic("unexpected ActivateWindows call")

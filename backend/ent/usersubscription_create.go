@@ -189,6 +189,62 @@ func (_c *UserSubscriptionCreate) SetNillableMonthlyUsageUsd(v *float64) *UserSu
 	return _c
 }
 
+// SetQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field.
+func (_c *UserSubscriptionCreate) SetQuotaBoostMonthlyLimit(v int) *UserSubscriptionCreate {
+	_c.mutation.SetQuotaBoostMonthlyLimit(v)
+	return _c
+}
+
+// SetNillableQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableQuotaBoostMonthlyLimit(v *int) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetQuotaBoostMonthlyLimit(*v)
+	}
+	return _c
+}
+
+// SetQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field.
+func (_c *UserSubscriptionCreate) SetQuotaBoostMonthlyUsed(v int) *UserSubscriptionCreate {
+	_c.mutation.SetQuotaBoostMonthlyUsed(v)
+	return _c
+}
+
+// SetNillableQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableQuotaBoostMonthlyUsed(v *int) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetQuotaBoostMonthlyUsed(*v)
+	}
+	return _c
+}
+
+// SetQuotaBoostPeriodStart sets the "quota_boost_period_start" field.
+func (_c *UserSubscriptionCreate) SetQuotaBoostPeriodStart(v time.Time) *UserSubscriptionCreate {
+	_c.mutation.SetQuotaBoostPeriodStart(v)
+	return _c
+}
+
+// SetNillableQuotaBoostPeriodStart sets the "quota_boost_period_start" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableQuotaBoostPeriodStart(v *time.Time) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetQuotaBoostPeriodStart(*v)
+	}
+	return _c
+}
+
+// SetQuotaBoostActivatedAt sets the "quota_boost_activated_at" field.
+func (_c *UserSubscriptionCreate) SetQuotaBoostActivatedAt(v time.Time) *UserSubscriptionCreate {
+	_c.mutation.SetQuotaBoostActivatedAt(v)
+	return _c
+}
+
+// SetNillableQuotaBoostActivatedAt sets the "quota_boost_activated_at" field if the given value is not nil.
+func (_c *UserSubscriptionCreate) SetNillableQuotaBoostActivatedAt(v *time.Time) *UserSubscriptionCreate {
+	if v != nil {
+		_c.SetQuotaBoostActivatedAt(*v)
+	}
+	return _c
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (_c *UserSubscriptionCreate) SetAssignedBy(v int64) *UserSubscriptionCreate {
 	_c.mutation.SetAssignedBy(v)
@@ -342,6 +398,14 @@ func (_c *UserSubscriptionCreate) defaults() error {
 		v := usersubscription.DefaultMonthlyUsageUsd
 		_c.mutation.SetMonthlyUsageUsd(v)
 	}
+	if _, ok := _c.mutation.QuotaBoostMonthlyLimit(); !ok {
+		v := usersubscription.DefaultQuotaBoostMonthlyLimit
+		_c.mutation.SetQuotaBoostMonthlyLimit(v)
+	}
+	if _, ok := _c.mutation.QuotaBoostMonthlyUsed(); !ok {
+		v := usersubscription.DefaultQuotaBoostMonthlyUsed
+		_c.mutation.SetQuotaBoostMonthlyUsed(v)
+	}
 	if _, ok := _c.mutation.AssignedAt(); !ok {
 		if usersubscription.DefaultAssignedAt == nil {
 			return fmt.Errorf("ent: uninitialized usersubscription.DefaultAssignedAt (forgotten import ent/runtime?)")
@@ -388,6 +452,22 @@ func (_c *UserSubscriptionCreate) check() error {
 	}
 	if _, ok := _c.mutation.MonthlyUsageUsd(); !ok {
 		return &ValidationError{Name: "monthly_usage_usd", err: errors.New(`ent: missing required field "UserSubscription.monthly_usage_usd"`)}
+	}
+	if _, ok := _c.mutation.QuotaBoostMonthlyLimit(); !ok {
+		return &ValidationError{Name: "quota_boost_monthly_limit", err: errors.New(`ent: missing required field "UserSubscription.quota_boost_monthly_limit"`)}
+	}
+	if v, ok := _c.mutation.QuotaBoostMonthlyLimit(); ok {
+		if err := usersubscription.QuotaBoostMonthlyLimitValidator(v); err != nil {
+			return &ValidationError{Name: "quota_boost_monthly_limit", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.quota_boost_monthly_limit": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.QuotaBoostMonthlyUsed(); !ok {
+		return &ValidationError{Name: "quota_boost_monthly_used", err: errors.New(`ent: missing required field "UserSubscription.quota_boost_monthly_used"`)}
+	}
+	if v, ok := _c.mutation.QuotaBoostMonthlyUsed(); ok {
+		if err := usersubscription.QuotaBoostMonthlyUsedValidator(v); err != nil {
+			return &ValidationError{Name: "quota_boost_monthly_used", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.quota_boost_monthly_used": %w`, err)}
+		}
 	}
 	if _, ok := _c.mutation.AssignedAt(); !ok {
 		return &ValidationError{Name: "assigned_at", err: errors.New(`ent: missing required field "UserSubscription.assigned_at"`)}
@@ -472,6 +552,22 @@ func (_c *UserSubscriptionCreate) createSpec() (*UserSubscription, *sqlgraph.Cre
 	if value, ok := _c.mutation.MonthlyUsageUsd(); ok {
 		_spec.SetField(usersubscription.FieldMonthlyUsageUsd, field.TypeFloat64, value)
 		_node.MonthlyUsageUsd = value
+	}
+	if value, ok := _c.mutation.QuotaBoostMonthlyLimit(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostMonthlyLimit, field.TypeInt, value)
+		_node.QuotaBoostMonthlyLimit = value
+	}
+	if value, ok := _c.mutation.QuotaBoostMonthlyUsed(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostMonthlyUsed, field.TypeInt, value)
+		_node.QuotaBoostMonthlyUsed = value
+	}
+	if value, ok := _c.mutation.QuotaBoostPeriodStart(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostPeriodStart, field.TypeTime, value)
+		_node.QuotaBoostPeriodStart = &value
+	}
+	if value, ok := _c.mutation.QuotaBoostActivatedAt(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostActivatedAt, field.TypeTime, value)
+		_node.QuotaBoostActivatedAt = &value
 	}
 	if value, ok := _c.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)
@@ -798,6 +894,78 @@ func (u *UserSubscriptionUpsert) AddMonthlyUsageUsd(v float64) *UserSubscription
 	return u
 }
 
+// SetQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field.
+func (u *UserSubscriptionUpsert) SetQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldQuotaBoostMonthlyLimit, v)
+	return u
+}
+
+// UpdateQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateQuotaBoostMonthlyLimit() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldQuotaBoostMonthlyLimit)
+	return u
+}
+
+// AddQuotaBoostMonthlyLimit adds v to the "quota_boost_monthly_limit" field.
+func (u *UserSubscriptionUpsert) AddQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpsert {
+	u.Add(usersubscription.FieldQuotaBoostMonthlyLimit, v)
+	return u
+}
+
+// SetQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field.
+func (u *UserSubscriptionUpsert) SetQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldQuotaBoostMonthlyUsed, v)
+	return u
+}
+
+// UpdateQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateQuotaBoostMonthlyUsed() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldQuotaBoostMonthlyUsed)
+	return u
+}
+
+// AddQuotaBoostMonthlyUsed adds v to the "quota_boost_monthly_used" field.
+func (u *UserSubscriptionUpsert) AddQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpsert {
+	u.Add(usersubscription.FieldQuotaBoostMonthlyUsed, v)
+	return u
+}
+
+// SetQuotaBoostPeriodStart sets the "quota_boost_period_start" field.
+func (u *UserSubscriptionUpsert) SetQuotaBoostPeriodStart(v time.Time) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldQuotaBoostPeriodStart, v)
+	return u
+}
+
+// UpdateQuotaBoostPeriodStart sets the "quota_boost_period_start" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateQuotaBoostPeriodStart() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldQuotaBoostPeriodStart)
+	return u
+}
+
+// ClearQuotaBoostPeriodStart clears the value of the "quota_boost_period_start" field.
+func (u *UserSubscriptionUpsert) ClearQuotaBoostPeriodStart() *UserSubscriptionUpsert {
+	u.SetNull(usersubscription.FieldQuotaBoostPeriodStart)
+	return u
+}
+
+// SetQuotaBoostActivatedAt sets the "quota_boost_activated_at" field.
+func (u *UserSubscriptionUpsert) SetQuotaBoostActivatedAt(v time.Time) *UserSubscriptionUpsert {
+	u.Set(usersubscription.FieldQuotaBoostActivatedAt, v)
+	return u
+}
+
+// UpdateQuotaBoostActivatedAt sets the "quota_boost_activated_at" field to the value that was provided on create.
+func (u *UserSubscriptionUpsert) UpdateQuotaBoostActivatedAt() *UserSubscriptionUpsert {
+	u.SetExcluded(usersubscription.FieldQuotaBoostActivatedAt)
+	return u
+}
+
+// ClearQuotaBoostActivatedAt clears the value of the "quota_boost_activated_at" field.
+func (u *UserSubscriptionUpsert) ClearQuotaBoostActivatedAt() *UserSubscriptionUpsert {
+	u.SetNull(usersubscription.FieldQuotaBoostActivatedAt)
+	return u
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (u *UserSubscriptionUpsert) SetAssignedBy(v int64) *UserSubscriptionUpsert {
 	u.Set(usersubscription.FieldAssignedBy, v)
@@ -1119,6 +1287,90 @@ func (u *UserSubscriptionUpsertOne) AddMonthlyUsageUsd(v float64) *UserSubscript
 func (u *UserSubscriptionUpsertOne) UpdateMonthlyUsageUsd() *UserSubscriptionUpsertOne {
 	return u.Update(func(s *UserSubscriptionUpsert) {
 		s.UpdateMonthlyUsageUsd()
+	})
+}
+
+// SetQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field.
+func (u *UserSubscriptionUpsertOne) SetQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetQuotaBoostMonthlyLimit(v)
+	})
+}
+
+// AddQuotaBoostMonthlyLimit adds v to the "quota_boost_monthly_limit" field.
+func (u *UserSubscriptionUpsertOne) AddQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.AddQuotaBoostMonthlyLimit(v)
+	})
+}
+
+// UpdateQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateQuotaBoostMonthlyLimit() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateQuotaBoostMonthlyLimit()
+	})
+}
+
+// SetQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field.
+func (u *UserSubscriptionUpsertOne) SetQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetQuotaBoostMonthlyUsed(v)
+	})
+}
+
+// AddQuotaBoostMonthlyUsed adds v to the "quota_boost_monthly_used" field.
+func (u *UserSubscriptionUpsertOne) AddQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.AddQuotaBoostMonthlyUsed(v)
+	})
+}
+
+// UpdateQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateQuotaBoostMonthlyUsed() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateQuotaBoostMonthlyUsed()
+	})
+}
+
+// SetQuotaBoostPeriodStart sets the "quota_boost_period_start" field.
+func (u *UserSubscriptionUpsertOne) SetQuotaBoostPeriodStart(v time.Time) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetQuotaBoostPeriodStart(v)
+	})
+}
+
+// UpdateQuotaBoostPeriodStart sets the "quota_boost_period_start" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateQuotaBoostPeriodStart() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateQuotaBoostPeriodStart()
+	})
+}
+
+// ClearQuotaBoostPeriodStart clears the value of the "quota_boost_period_start" field.
+func (u *UserSubscriptionUpsertOne) ClearQuotaBoostPeriodStart() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.ClearQuotaBoostPeriodStart()
+	})
+}
+
+// SetQuotaBoostActivatedAt sets the "quota_boost_activated_at" field.
+func (u *UserSubscriptionUpsertOne) SetQuotaBoostActivatedAt(v time.Time) *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetQuotaBoostActivatedAt(v)
+	})
+}
+
+// UpdateQuotaBoostActivatedAt sets the "quota_boost_activated_at" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertOne) UpdateQuotaBoostActivatedAt() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateQuotaBoostActivatedAt()
+	})
+}
+
+// ClearQuotaBoostActivatedAt clears the value of the "quota_boost_activated_at" field.
+func (u *UserSubscriptionUpsertOne) ClearQuotaBoostActivatedAt() *UserSubscriptionUpsertOne {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.ClearQuotaBoostActivatedAt()
 	})
 }
 
@@ -1617,6 +1869,90 @@ func (u *UserSubscriptionUpsertBulk) AddMonthlyUsageUsd(v float64) *UserSubscrip
 func (u *UserSubscriptionUpsertBulk) UpdateMonthlyUsageUsd() *UserSubscriptionUpsertBulk {
 	return u.Update(func(s *UserSubscriptionUpsert) {
 		s.UpdateMonthlyUsageUsd()
+	})
+}
+
+// SetQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field.
+func (u *UserSubscriptionUpsertBulk) SetQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetQuotaBoostMonthlyLimit(v)
+	})
+}
+
+// AddQuotaBoostMonthlyLimit adds v to the "quota_boost_monthly_limit" field.
+func (u *UserSubscriptionUpsertBulk) AddQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.AddQuotaBoostMonthlyLimit(v)
+	})
+}
+
+// UpdateQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateQuotaBoostMonthlyLimit() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateQuotaBoostMonthlyLimit()
+	})
+}
+
+// SetQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field.
+func (u *UserSubscriptionUpsertBulk) SetQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetQuotaBoostMonthlyUsed(v)
+	})
+}
+
+// AddQuotaBoostMonthlyUsed adds v to the "quota_boost_monthly_used" field.
+func (u *UserSubscriptionUpsertBulk) AddQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.AddQuotaBoostMonthlyUsed(v)
+	})
+}
+
+// UpdateQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateQuotaBoostMonthlyUsed() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateQuotaBoostMonthlyUsed()
+	})
+}
+
+// SetQuotaBoostPeriodStart sets the "quota_boost_period_start" field.
+func (u *UserSubscriptionUpsertBulk) SetQuotaBoostPeriodStart(v time.Time) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetQuotaBoostPeriodStart(v)
+	})
+}
+
+// UpdateQuotaBoostPeriodStart sets the "quota_boost_period_start" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateQuotaBoostPeriodStart() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateQuotaBoostPeriodStart()
+	})
+}
+
+// ClearQuotaBoostPeriodStart clears the value of the "quota_boost_period_start" field.
+func (u *UserSubscriptionUpsertBulk) ClearQuotaBoostPeriodStart() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.ClearQuotaBoostPeriodStart()
+	})
+}
+
+// SetQuotaBoostActivatedAt sets the "quota_boost_activated_at" field.
+func (u *UserSubscriptionUpsertBulk) SetQuotaBoostActivatedAt(v time.Time) *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.SetQuotaBoostActivatedAt(v)
+	})
+}
+
+// UpdateQuotaBoostActivatedAt sets the "quota_boost_activated_at" field to the value that was provided on create.
+func (u *UserSubscriptionUpsertBulk) UpdateQuotaBoostActivatedAt() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.UpdateQuotaBoostActivatedAt()
+	})
+}
+
+// ClearQuotaBoostActivatedAt clears the value of the "quota_boost_activated_at" field.
+func (u *UserSubscriptionUpsertBulk) ClearQuotaBoostActivatedAt() *UserSubscriptionUpsertBulk {
+	return u.Update(func(s *UserSubscriptionUpsert) {
+		s.ClearQuotaBoostActivatedAt()
 	})
 }
 

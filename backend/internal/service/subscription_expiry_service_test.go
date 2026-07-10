@@ -22,6 +22,10 @@ func (r *subscriptionExpiryRepoStub) GetByID(context.Context, int64) (*UserSubsc
 	return nil, ErrSubscriptionNotFound
 }
 
+func (r *subscriptionExpiryRepoStub) GetByIDForUpdate(context.Context, int64) (*UserSubscription, error) {
+	return nil, ErrSubscriptionNotFound
+}
+
 func (r *subscriptionExpiryRepoStub) GetByIDIncludeDeleted(context.Context, int64) (*UserSubscription, error) {
 	return nil, ErrSubscriptionNotFound
 }
@@ -80,6 +84,14 @@ func (r *subscriptionExpiryRepoStub) UpdateStatus(context.Context, int64, string
 }
 
 func (r *subscriptionExpiryRepoStub) UpdateNotes(context.Context, int64, string) error {
+	return nil
+}
+
+func (r *subscriptionExpiryRepoStub) UpdateQuotaBoostMonthlyLimit(context.Context, int64, int) error {
+	return nil
+}
+
+func (r *subscriptionExpiryRepoStub) UpdateQuotaBoostActivation(context.Context, int64, int, time.Time, time.Time) error {
 	return nil
 }
 

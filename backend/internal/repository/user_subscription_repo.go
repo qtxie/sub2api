@@ -38,6 +38,10 @@ func (r *userSubscriptionRepository) Create(ctx context.Context, sub *service.Us
 		SetDailyUsageUsd(sub.DailyUsageUSD).
 		SetWeeklyUsageUsd(sub.WeeklyUsageUSD).
 		SetMonthlyUsageUsd(sub.MonthlyUsageUSD).
+		SetQuotaBoostMonthlyLimit(sub.QuotaBoostMonthlyLimit).
+		SetQuotaBoostMonthlyUsed(sub.QuotaBoostMonthlyUsed).
+		SetNillableQuotaBoostPeriodStart(sub.QuotaBoostPeriodStart).
+		SetNillableQuotaBoostActivatedAt(sub.QuotaBoostActivatedAt).
 		SetNillableAssignedBy(sub.AssignedBy)
 
 	if sub.StartsAt.IsZero() {
@@ -68,6 +72,20 @@ func (r *userSubscriptionRepository) GetByID(ctx context.Context, id int64) (*se
 		WithUser().
 		WithGroup().
 		WithAssignedByUser().
+		Only(ctx)
+	if err != nil {
+		return nil, translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
+	}
+	return userSubscriptionEntityToService(m), nil
+}
+
+func (r *userSubscriptionRepository) GetByIDForUpdate(ctx context.Context, id int64) (*service.UserSubscription, error) {
+	client := clientFromContext(ctx, r.client)
+	m, err := client.UserSubscription.Query().
+		Where(usersubscription.IDEQ(id)).
+		WithUser().
+		WithGroup().
+		ForUpdate().
 		Only(ctx)
 	if err != nil {
 		return nil, translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
@@ -137,6 +155,10 @@ func (r *userSubscriptionRepository) Update(ctx context.Context, sub *service.Us
 		SetDailyUsageUsd(sub.DailyUsageUSD).
 		SetWeeklyUsageUsd(sub.WeeklyUsageUSD).
 		SetMonthlyUsageUsd(sub.MonthlyUsageUSD).
+		SetQuotaBoostMonthlyLimit(sub.QuotaBoostMonthlyLimit).
+		SetQuotaBoostMonthlyUsed(sub.QuotaBoostMonthlyUsed).
+		SetNillableQuotaBoostPeriodStart(sub.QuotaBoostPeriodStart).
+		SetNillableQuotaBoostActivatedAt(sub.QuotaBoostActivatedAt).
 		SetNillableAssignedBy(sub.AssignedBy).
 		SetAssignedAt(sub.AssignedAt).
 		SetNotes(sub.Notes)
@@ -356,6 +378,33 @@ func (r *userSubscriptionRepository) UpdateNotes(ctx context.Context, subscripti
 	return translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
 }
 
+func (r *userSubscriptionRepository) UpdateQuotaBoostMonthlyLimit(ctx context.Context, subscriptionID int64, monthlyLimit int) error {
+	client := clientFromContext(ctx, r.client)
+	update := client.UserSubscription.UpdateOneID(subscriptionID).
+		SetQuotaBoostMonthlyLimit(monthlyLimit)
+	if monthlyLimit == 0 {
+		update.ClearQuotaBoostActivatedAt()
+	}
+	_, err := update.Save(ctx)
+	return translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
+}
+
+func (r *userSubscriptionRepository) UpdateQuotaBoostActivation(
+	ctx context.Context,
+	subscriptionID int64,
+	monthlyUsed int,
+	periodStart time.Time,
+	activatedAt time.Time,
+) error {
+	client := clientFromContext(ctx, r.client)
+	_, err := client.UserSubscription.UpdateOneID(subscriptionID).
+		SetQuotaBoostMonthlyUsed(monthlyUsed).
+		SetQuotaBoostPeriodStart(periodStart).
+		SetQuotaBoostActivatedAt(activatedAt).
+		Save(ctx)
+	return translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
+}
+
 func (r *userSubscriptionRepository) ActivateWindows(ctx context.Context, id int64, start time.Time) error {
 	client := clientFromContext(ctx, r.client)
 	_, err := client.UserSubscription.UpdateOneID(id).
@@ -569,24 +618,28 @@ func userSubscriptionEntityToServiceWithStatusMapping(m *dbent.UserSubscription,
 		status = service.SubscriptionStatusRevoked
 	}
 	out := &service.UserSubscription{
-		ID:                 m.ID,
-		UserID:             m.UserID,
-		GroupID:            m.GroupID,
-		StartsAt:           m.StartsAt,
-		ExpiresAt:          m.ExpiresAt,
-		Status:             status,
-		DailyWindowStart:   m.DailyWindowStart,
-		WeeklyWindowStart:  m.WeeklyWindowStart,
-		MonthlyWindowStart: m.MonthlyWindowStart,
-		DailyUsageUSD:      m.DailyUsageUsd,
-		WeeklyUsageUSD:     m.WeeklyUsageUsd,
-		MonthlyUsageUSD:    m.MonthlyUsageUsd,
-		AssignedBy:         m.AssignedBy,
-		AssignedAt:         m.AssignedAt,
-		Notes:              derefString(m.Notes),
-		CreatedAt:          m.CreatedAt,
-		UpdatedAt:          m.UpdatedAt,
-		DeletedAt:          m.DeletedAt,
+		ID:                     m.ID,
+		UserID:                 m.UserID,
+		GroupID:                m.GroupID,
+		StartsAt:               m.StartsAt,
+		ExpiresAt:              m.ExpiresAt,
+		Status:                 status,
+		DailyWindowStart:       m.DailyWindowStart,
+		WeeklyWindowStart:      m.WeeklyWindowStart,
+		MonthlyWindowStart:     m.MonthlyWindowStart,
+		DailyUsageUSD:          m.DailyUsageUsd,
+		WeeklyUsageUSD:         m.WeeklyUsageUsd,
+		MonthlyUsageUSD:        m.MonthlyUsageUsd,
+		QuotaBoostMonthlyLimit: m.QuotaBoostMonthlyLimit,
+		QuotaBoostMonthlyUsed:  m.QuotaBoostMonthlyUsed,
+		QuotaBoostPeriodStart:  m.QuotaBoostPeriodStart,
+		QuotaBoostActivatedAt:  m.QuotaBoostActivatedAt,
+		AssignedBy:             m.AssignedBy,
+		AssignedAt:             m.AssignedAt,
+		Notes:                  derefString(m.Notes),
+		CreatedAt:              m.CreatedAt,
+		UpdatedAt:              m.UpdatedAt,
+		DeletedAt:              m.DeletedAt,
 	}
 	if m.Edges.User != nil {
 		out.User = userEntityToService(m.Edges.User)

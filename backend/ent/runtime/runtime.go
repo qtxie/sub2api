@@ -2402,8 +2402,34 @@ func init() {
 	usersubscriptionDescMonthlyUsageUsd := usersubscriptionFields[10].Descriptor()
 	// usersubscription.DefaultMonthlyUsageUsd holds the default value on creation for the monthly_usage_usd field.
 	usersubscription.DefaultMonthlyUsageUsd = usersubscriptionDescMonthlyUsageUsd.Default.(float64)
+	// usersubscriptionDescQuotaBoostMonthlyLimit is the schema descriptor for quota_boost_monthly_limit field.
+	usersubscriptionDescQuotaBoostMonthlyLimit := usersubscriptionFields[11].Descriptor()
+	// usersubscription.DefaultQuotaBoostMonthlyLimit holds the default value on creation for the quota_boost_monthly_limit field.
+	usersubscription.DefaultQuotaBoostMonthlyLimit = usersubscriptionDescQuotaBoostMonthlyLimit.Default.(int)
+	// usersubscription.QuotaBoostMonthlyLimitValidator is a validator for the "quota_boost_monthly_limit" field. It is called by the builders before save.
+	usersubscription.QuotaBoostMonthlyLimitValidator = func() func(int) error {
+		validators := usersubscriptionDescQuotaBoostMonthlyLimit.Validators
+		fns := [...]func(int) error{
+			validators[0].(func(int) error),
+			validators[1].(func(int) error),
+		}
+		return func(quota_boost_monthly_limit int) error {
+			for _, fn := range fns {
+				if err := fn(quota_boost_monthly_limit); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
+	// usersubscriptionDescQuotaBoostMonthlyUsed is the schema descriptor for quota_boost_monthly_used field.
+	usersubscriptionDescQuotaBoostMonthlyUsed := usersubscriptionFields[12].Descriptor()
+	// usersubscription.DefaultQuotaBoostMonthlyUsed holds the default value on creation for the quota_boost_monthly_used field.
+	usersubscription.DefaultQuotaBoostMonthlyUsed = usersubscriptionDescQuotaBoostMonthlyUsed.Default.(int)
+	// usersubscription.QuotaBoostMonthlyUsedValidator is a validator for the "quota_boost_monthly_used" field. It is called by the builders before save.
+	usersubscription.QuotaBoostMonthlyUsedValidator = usersubscriptionDescQuotaBoostMonthlyUsed.Validators[0].(func(int) error)
 	// usersubscriptionDescAssignedAt is the schema descriptor for assigned_at field.
-	usersubscriptionDescAssignedAt := usersubscriptionFields[12].Descriptor()
+	usersubscriptionDescAssignedAt := usersubscriptionFields[16].Descriptor()
 	// usersubscription.DefaultAssignedAt holds the default value on creation for the assigned_at field.
 	usersubscription.DefaultAssignedAt = usersubscriptionDescAssignedAt.Default.(func() time.Time)
 }

@@ -108,7 +108,7 @@
                 </span>
                 <span class="text-sm text-gray-500 dark:text-dark-400">
                   ${{ (subscription.daily_usage_usd || 0).toFixed(2) }} / ${{
-                    subscription.group.daily_limit_usd.toFixed(2)
+                    getDailyLimit(subscription).toFixed(2)
                   }}
                 </span>
               </div>
@@ -118,13 +118,13 @@
                   :class="
                     getProgressBarClass(
                       subscription.daily_usage_usd,
-                      subscription.group.daily_limit_usd
+                      getDailyLimit(subscription)
                     )
                   "
                   :style="{
                     width: getProgressWidth(
                       subscription.daily_usage_usd,
-                      subscription.group.daily_limit_usd
+                      getDailyLimit(subscription)
                     )
                   }"
                 ></div>
@@ -135,6 +135,47 @@
               >
                 {{ formatDailyUsageWindow(subscription) }}
               </p>
+              <div
+                v-if="subscription.quota_boost.monthly_limit > 0"
+                class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-3 dark:border-dark-700"
+              >
+                <div class="flex items-center gap-2">
+                  <Icon name="bolt" size="sm" class="text-amber-500" />
+                  <div>
+                    <p class="text-xs font-medium text-gray-700 dark:text-gray-300">
+                      {{ subscription.quota_boost.active_today
+                        ? t('userSubscriptions.quotaBoostActive')
+                        : t('userSubscriptions.quotaBoostRemaining', {
+                            count: subscription.quota_boost.remaining_this_month
+                          })
+                      }}
+                    </p>
+                    <p class="text-[11px] text-gray-400 dark:text-gray-500">
+                      {{ t('userSubscriptions.quotaBoostMonthlyUsage', {
+                        used: subscription.quota_boost.used_this_month,
+                        limit: subscription.quota_boost.monthly_limit
+                      }) }}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-secondary px-3 py-1.5 text-xs"
+                  :disabled="
+                    boostingSubscriptionId === subscription.id ||
+                    !subscription.quota_boost.available_today
+                  "
+                  :title="t('userSubscriptions.quotaBoost')"
+                  @click="activateQuotaBoost(subscription)"
+                >
+                  <Icon
+                    name="bolt"
+                    size="sm"
+                    :class="boostingSubscriptionId === subscription.id ? 'animate-pulse' : ''"
+                  />
+                  {{ quotaBoostButtonLabel(subscription) }}
+                </button>
+              </div>
             </div>
 
             <!-- Weekly Usage -->
@@ -277,6 +318,7 @@ const appStore = useAppStore()
 
 const subscriptions = ref<UserSubscription[]>([])
 const loading = ref(true)
+const boostingSubscriptionId = ref<number | null>(null)
 
 function subscriptionHasPeakRate(subscription: UserSubscription): boolean {
   return hasPeakRate(subscription.group)
@@ -295,6 +337,38 @@ async function loadSubscriptions() {
     appStore.showError(t('userSubscriptions.failedToLoad'))
   } finally {
     loading.value = false
+  }
+}
+
+function getDailyLimit(subscription: UserSubscription): number {
+  return subscription.effective_daily_limit_usd ?? subscription.group?.daily_limit_usd ?? 0
+}
+
+function quotaBoostButtonLabel(subscription: UserSubscription): string {
+  if (boostingSubscriptionId.value === subscription.id) {
+    return t('userSubscriptions.quotaBoostActivating')
+  }
+  if (subscription.quota_boost.active_today) {
+    return t('userSubscriptions.quotaBoostActiveShort')
+  }
+  if (subscription.quota_boost.remaining_this_month <= 0) {
+    return t('userSubscriptions.quotaBoostExhausted')
+  }
+  return t('userSubscriptions.quotaBoostAction')
+}
+
+async function activateQuotaBoost(subscription: UserSubscription) {
+  if (!subscription.quota_boost.available_today || boostingSubscriptionId.value !== null) return
+  boostingSubscriptionId.value = subscription.id
+  try {
+    const updated = await subscriptionsAPI.activateQuotaBoost(subscription.id)
+    const index = subscriptions.value.findIndex((item) => item.id === updated.id)
+    if (index >= 0) subscriptions.value[index] = updated
+    appStore.showSuccess(t('userSubscriptions.quotaBoostSuccess'))
+  } catch (error: any) {
+    appStore.showError(error?.message || t('userSubscriptions.quotaBoostFailed'))
+  } finally {
+    boostingSubscriptionId.value = null
   }
 }
 

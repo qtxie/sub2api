@@ -220,16 +220,16 @@
                   <div class="h-1.5 flex-1 rounded-full bg-gray-200 dark:bg-dark-600">
                     <div
                       class="h-1.5 rounded-full transition-all"
-                      :class="getProgressClass(row.daily_usage_usd, row.group?.daily_limit_usd)"
+                      :class="getProgressClass(row.daily_usage_usd, getDailyLimit(row))"
                       :style="{
-                        width: getProgressWidth(row.daily_usage_usd, row.group?.daily_limit_usd)
+                        width: getProgressWidth(row.daily_usage_usd, getDailyLimit(row))
                       }"
                     ></div>
                   </div>
                   <span class="usage-amount">
                     ${{ row.daily_usage_usd?.toFixed(2) || '0.00' }}
                     <span class="text-gray-400">/</span>
-                    ${{ row.group?.daily_limit_usd?.toFixed(2) }}
+                    ${{ getDailyLimit(row)?.toFixed(2) }}
                   </span>
                 </div>
                 <div class="reset-info" v-if="row.daily_window_start">
@@ -247,6 +247,18 @@
                     />
                   </svg>
                   <span>{{ formatDailyUsageWindow(row) }}</span>
+                </div>
+                <div v-if="row.quota_boost.monthly_limit > 0" class="reset-info">
+                  <Icon name="bolt" size="xs" />
+                  <span>
+                    {{ t('admin.subscriptions.quotaBoostUsage', {
+                      used: row.quota_boost.used_this_month,
+                      limit: row.quota_boost.monthly_limit
+                    }) }}
+                  </span>
+                  <span v-if="row.quota_boost.active_today" class="font-medium text-emerald-600 dark:text-emerald-400">
+                    {{ t('admin.subscriptions.quotaBoostActive') }}
+                  </span>
                 </div>
               </div>
 
@@ -395,6 +407,15 @@
               >
                 <Icon name="refresh" size="sm" />
                 <span class="text-xs">{{ t('admin.subscriptions.resetQuota') }}</span>
+              </button>
+              <button
+                v-if="row.status === 'active' && row.group?.daily_limit_usd"
+                @click="handleQuotaBoostPolicy(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-900/20 dark:hover:text-amber-400"
+                :title="t('admin.subscriptions.quotaBoostPolicy')"
+              >
+                <Icon name="bolt" size="sm" />
+                <span class="text-xs">{{ t('admin.subscriptions.quotaBoost') }}</span>
               </button>
               <button
                 v-if="row.status === 'active'"
@@ -568,6 +589,53 @@
               ></path>
             </svg>
             {{ submitting ? t('admin.subscriptions.assigning') : t('admin.subscriptions.assign') }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog
+      :show="showQuotaBoostModal"
+      :title="t('admin.subscriptions.quotaBoostPolicy')"
+      width="narrow"
+      @close="closeQuotaBoostModal"
+    >
+      <form id="quota-boost-policy-form" class="space-y-5" @submit.prevent="saveQuotaBoostPolicy">
+        <div v-if="quotaBoostSubscription" class="text-sm text-gray-600 dark:text-gray-400">
+          {{ quotaBoostSubscription.user?.email || t('admin.redeem.userPrefix', { id: quotaBoostSubscription.user_id }) }}
+          <span class="mx-1">·</span>
+          {{ quotaBoostSubscription.group?.name }}
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.subscriptions.form.quotaBoostMonthlyLimit') }}</label>
+          <input
+            v-model.number="quotaBoostForm.monthly_limit"
+            type="number"
+            min="0"
+            max="31"
+            required
+            class="input"
+          />
+          <p class="input-hint">{{ t('admin.subscriptions.quotaBoostHint') }}</p>
+        </div>
+        <p v-if="quotaBoostSubscription" class="text-xs text-gray-500 dark:text-gray-400">
+          {{ t('admin.subscriptions.quotaBoostCurrentUsage', {
+            used: quotaBoostSubscription.quota_boost.used_this_month
+          }) }}
+        </p>
+      </form>
+      <template #footer>
+        <div class="flex justify-end gap-3">
+          <button type="button" class="btn btn-secondary" @click="closeQuotaBoostModal">
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="submit"
+            form="quota-boost-policy-form"
+            class="btn btn-primary"
+            :disabled="savingQuotaBoostPolicy"
+          >
+            {{ savingQuotaBoostPolicy ? t('common.saving') : t('common.save') }}
           </button>
         </div>
       </template>
@@ -961,12 +1029,15 @@ const showExtendModal = ref(false)
 const showRevokeDialog = ref(false)
 const showRestoreDialog = ref(false)
 const showResetQuotaConfirm = ref(false)
+const showQuotaBoostModal = ref(false)
 const submitting = ref(false)
 const resettingSubscription = ref<UserSubscription | null>(null)
 const resettingQuota = ref(false)
 const extendingSubscription = ref<UserSubscription | null>(null)
 const revokingSubscription = ref<UserSubscription | null>(null)
 const restoringSubscription = ref<UserSubscription | null>(null)
+const quotaBoostSubscription = ref<UserSubscription | null>(null)
+const savingQuotaBoostPolicy = ref(false)
 
 const assignForm = reactive({
   user_id: null as number | null,
@@ -976,6 +1047,10 @@ const assignForm = reactive({
 
 const extendForm = reactive({
   days: 30
+})
+
+const quotaBoostForm = reactive({
+  monthly_limit: 0
 })
 
 // Group options for filter (all groups)
@@ -1325,6 +1400,41 @@ const confirmResetQuota = async () => {
   }
 }
 
+const handleQuotaBoostPolicy = (subscription: UserSubscription) => {
+  quotaBoostSubscription.value = subscription
+  quotaBoostForm.monthly_limit = subscription.quota_boost.monthly_limit
+  showQuotaBoostModal.value = true
+}
+
+const closeQuotaBoostModal = () => {
+  if (savingQuotaBoostPolicy.value) return
+  showQuotaBoostModal.value = false
+  quotaBoostSubscription.value = null
+}
+
+const saveQuotaBoostPolicy = async () => {
+  if (!quotaBoostSubscription.value || savingQuotaBoostPolicy.value) return
+  const monthlyLimit = quotaBoostForm.monthly_limit
+  if (!Number.isInteger(monthlyLimit) || monthlyLimit < 0 || monthlyLimit > 31) {
+    appStore.showError(t('admin.subscriptions.quotaBoostLimitInvalid'))
+    return
+  }
+
+  savingQuotaBoostPolicy.value = true
+  try {
+    await adminAPI.subscriptions.setQuotaBoostPolicy(quotaBoostSubscription.value.id, monthlyLimit)
+    appStore.showSuccess(t('admin.subscriptions.quotaBoostPolicySaved'))
+    showQuotaBoostModal.value = false
+    quotaBoostSubscription.value = null
+    await loadSubscriptions()
+  } catch (error: any) {
+    appStore.showError(error?.message || t('admin.subscriptions.failedToSaveQuotaBoostPolicy'))
+    console.error('Error saving quota boost policy:', error)
+  } finally {
+    savingQuotaBoostPolicy.value = false
+  }
+}
+
 // Helper functions
 const getDaysRemaining = (expiresAt: string): number | null => {
   const now = new Date()
@@ -1338,6 +1448,9 @@ const isExpiringSoon = (expiresAt: string): boolean => {
   const days = getDaysRemaining(expiresAt)
   return days !== null && days <= 7
 }
+
+const getDailyLimit = (subscription: UserSubscription): number | null =>
+  subscription.effective_daily_limit_usd ?? subscription.group?.daily_limit_usd ?? null
 
 const getProgressWidth = (used: number | null | undefined, limit: number | null): string => {
   if (!limit || limit === 0) return '0%'

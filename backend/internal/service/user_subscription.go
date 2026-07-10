@@ -1,6 +1,10 @@
 package service
 
-import "time"
+import (
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
+)
 
 type UserSubscription struct {
 	ID      int64
@@ -18,6 +22,11 @@ type UserSubscription struct {
 	DailyUsageUSD   float64
 	WeeklyUsageUSD  float64
 	MonthlyUsageUSD float64
+
+	QuotaBoostMonthlyLimit int
+	QuotaBoostMonthlyUsed  int
+	QuotaBoostPeriodStart  *time.Time
+	QuotaBoostActivatedAt  *time.Time
 
 	AssignedBy *int64
 	AssignedAt time.Time
@@ -115,10 +124,57 @@ func (s *UserSubscription) MonthlyResetTime() *time.Time {
 }
 
 func (s *UserSubscription) CheckDailyLimit(group *Group, additionalCost float64) bool {
-	if !group.HasDailyLimit() {
+	limit := s.EffectiveDailyLimitUSDAt(group, timezone.Now())
+	if limit == nil {
 		return true
 	}
-	return s.DailyUsageUSD+additionalCost <= *group.DailyLimitUSD
+	return s.DailyUsageUSD+additionalCost <= *limit
+}
+
+func (s *UserSubscription) IsQuotaBoostActiveAt(now time.Time) bool {
+	if s == nil || s.QuotaBoostMonthlyLimit <= 0 || s.QuotaBoostActivatedAt == nil {
+		return false
+	}
+	dayStart := timezone.StartOfDay(now)
+	nextDay := dayStart.AddDate(0, 0, 1)
+	return !s.QuotaBoostActivatedAt.Before(dayStart) && s.QuotaBoostActivatedAt.Before(nextDay)
+}
+
+func (s *UserSubscription) EffectiveDailyLimitUSDAt(group *Group, now time.Time) *float64 {
+	if group == nil || !group.HasDailyLimit() {
+		return nil
+	}
+	limit := *group.DailyLimitUSD
+	if s.IsQuotaBoostActiveAt(now) {
+		limit *= 2
+	}
+	return &limit
+}
+
+func (s *UserSubscription) QuotaBoostMonthlyUsedAt(now time.Time) int {
+	if s == nil || s.QuotaBoostPeriodStart == nil {
+		return 0
+	}
+	periodStart := timezone.StartOfMonth(now)
+	nextPeriod := periodStart.AddDate(0, 1, 0)
+	if s.QuotaBoostPeriodStart.Before(periodStart) || !s.QuotaBoostPeriodStart.Before(nextPeriod) {
+		return 0
+	}
+	if s.QuotaBoostMonthlyUsed < 0 {
+		return 0
+	}
+	return s.QuotaBoostMonthlyUsed
+}
+
+func (s *UserSubscription) QuotaBoostRemainingAt(now time.Time) int {
+	if s == nil || s.QuotaBoostMonthlyLimit <= 0 {
+		return 0
+	}
+	remaining := s.QuotaBoostMonthlyLimit - s.QuotaBoostMonthlyUsedAt(now)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func (s *UserSubscription) CheckWeeklyLimit(group *Group, additionalCost float64) bool {

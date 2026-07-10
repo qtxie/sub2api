@@ -1674,6 +1674,8 @@ export interface UserSubscription {
   daily_usage_usd: number
   weekly_usage_usd: number
   monthly_usage_usd: number
+  effective_daily_limit_usd: number | null
+  quota_boost: SubscriptionQuotaBoost
   daily_window_start: string | null
   weekly_window_start: string | null
   monthly_window_start: string | null
@@ -1683,6 +1685,17 @@ export interface UserSubscription {
   expires_at: string | null
   user?: User
   group?: Group
+}
+
+export interface SubscriptionQuotaBoost {
+  monthly_limit: number
+  used_this_month: number
+  remaining_this_month: number
+  active_today: boolean
+  available_today: boolean
+  activated_at?: string | null
+  day_resets_at?: string
+  month_resets_at?: string
 }
 
 export interface SubscriptionProgress {

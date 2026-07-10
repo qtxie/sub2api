@@ -10,6 +10,7 @@ import (
 type UserSubscriptionRepository interface {
 	Create(ctx context.Context, sub *UserSubscription) error
 	GetByID(ctx context.Context, id int64) (*UserSubscription, error)
+	GetByIDForUpdate(ctx context.Context, id int64) (*UserSubscription, error)
 	GetByIDIncludeDeleted(ctx context.Context, id int64) (*UserSubscription, error)
 	GetByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*UserSubscription, error)
 	GetActiveByUserIDAndGroupID(ctx context.Context, userID, groupID int64) (*UserSubscription, error)
@@ -27,6 +28,8 @@ type UserSubscriptionRepository interface {
 	ExtendExpiry(ctx context.Context, subscriptionID int64, newExpiresAt time.Time) error
 	UpdateStatus(ctx context.Context, subscriptionID int64, status string) error
 	UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error
+	UpdateQuotaBoostMonthlyLimit(ctx context.Context, subscriptionID int64, monthlyLimit int) error
+	UpdateQuotaBoostActivation(ctx context.Context, subscriptionID int64, monthlyUsed int, periodStart, activatedAt time.Time) error
 
 	ActivateWindows(ctx context.Context, id int64, start time.Time) error
 	ResetDailyUsage(ctx context.Context, id int64, newWindowStart time.Time) error

@@ -608,9 +608,11 @@ type UserSubscription struct {
 	WeeklyWindowStart  *time.Time `json:"weekly_window_start"`
 	MonthlyWindowStart *time.Time `json:"monthly_window_start"`
 
-	DailyUsageUSD   float64 `json:"daily_usage_usd"`
-	WeeklyUsageUSD  float64 `json:"weekly_usage_usd"`
-	MonthlyUsageUSD float64 `json:"monthly_usage_usd"`
+	DailyUsageUSD          float64                `json:"daily_usage_usd"`
+	WeeklyUsageUSD         float64                `json:"weekly_usage_usd"`
+	MonthlyUsageUSD        float64                `json:"monthly_usage_usd"`
+	EffectiveDailyLimitUSD *float64               `json:"effective_daily_limit_usd"`
+	QuotaBoost             SubscriptionQuotaBoost `json:"quota_boost"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
@@ -618,6 +620,17 @@ type UserSubscription struct {
 
 	User  *User  `json:"user,omitempty"`
 	Group *Group `json:"group,omitempty"`
+}
+
+type SubscriptionQuotaBoost struct {
+	MonthlyLimit       int        `json:"monthly_limit"`
+	UsedThisMonth      int        `json:"used_this_month"`
+	RemainingThisMonth int        `json:"remaining_this_month"`
+	ActiveToday        bool       `json:"active_today"`
+	AvailableToday     bool       `json:"available_today"`
+	ActivatedAt        *time.Time `json:"activated_at,omitempty"`
+	DayResetsAt        *time.Time `json:"day_resets_at,omitempty"`
+	MonthResetsAt      *time.Time `json:"month_resets_at,omitempty"`
 }
 
 // AdminUserSubscription 是管理员接口使用的订阅 DTO（包含分配信息/备注等字段）。

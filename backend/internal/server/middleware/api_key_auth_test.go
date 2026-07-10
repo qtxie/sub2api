@@ -1261,6 +1261,10 @@ func (r *stubUserSubscriptionRepo) GetByID(ctx context.Context, id int64) (*serv
 	return nil, errors.New("not implemented")
 }
 
+func (r *stubUserSubscriptionRepo) GetByIDForUpdate(ctx context.Context, id int64) (*service.UserSubscription, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (r *stubUserSubscriptionRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }
@@ -1324,6 +1328,14 @@ func (r *stubUserSubscriptionRepo) UpdateStatus(ctx context.Context, subscriptio
 }
 
 func (r *stubUserSubscriptionRepo) UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserSubscriptionRepo) UpdateQuotaBoostMonthlyLimit(ctx context.Context, subscriptionID int64, monthlyLimit int) error {
+	return errors.New("not implemented")
+}
+
+func (r *stubUserSubscriptionRepo) UpdateQuotaBoostActivation(ctx context.Context, subscriptionID int64, monthlyUsed int, periodStart, activatedAt time.Time) error {
 	return errors.New("not implemented")
 }
 

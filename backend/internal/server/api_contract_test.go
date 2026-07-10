@@ -56,6 +56,7 @@ func TestAPIContracts(t *testing.T) {
 						"balance": 12.5,
 						"frozen_balance": 0,
 						"concurrency": 5,
+						"chat_enabled": false,
 					"rpm_limit": 0,
 					"status": "active",
 					"allowed_groups": null,
@@ -431,6 +432,14 @@ func TestAPIContracts(t *testing.T) {
 						"daily_usage_usd": 1.23,
 						"weekly_usage_usd": 2.34,
 						"monthly_usage_usd": 3.45,
+						"effective_daily_limit_usd": null,
+						"quota_boost": {
+							"monthly_limit": 0,
+							"used_this_month": 0,
+							"remaining_this_month": 0,
+							"active_today": false,
+							"available_today": false
+						},
 						"created_at": "2025-01-02T03:04:05Z",
 						"updated_at": "2025-01-02T03:04:05Z"
 					}
@@ -2084,6 +2093,9 @@ func (stubUserSubscriptionRepo) Create(ctx context.Context, sub *service.UserSub
 func (stubUserSubscriptionRepo) GetByID(ctx context.Context, id int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }
+func (stubUserSubscriptionRepo) GetByIDForUpdate(ctx context.Context, id int64) (*service.UserSubscription, error) {
+	return nil, errors.New("not implemented")
+}
 func (stubUserSubscriptionRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.UserSubscription, error) {
 	return nil, errors.New("not implemented")
 }
@@ -2133,6 +2145,12 @@ func (stubUserSubscriptionRepo) UpdateStatus(ctx context.Context, subscriptionID
 	return errors.New("not implemented")
 }
 func (stubUserSubscriptionRepo) UpdateNotes(ctx context.Context, subscriptionID int64, notes string) error {
+	return errors.New("not implemented")
+}
+func (stubUserSubscriptionRepo) UpdateQuotaBoostMonthlyLimit(ctx context.Context, subscriptionID int64, monthlyLimit int) error {
+	return errors.New("not implemented")
+}
+func (stubUserSubscriptionRepo) UpdateQuotaBoostActivation(ctx context.Context, subscriptionID int64, monthlyUsed int, periodStart, activatedAt time.Time) error {
 	return errors.New("not implemented")
 }
 func (stubUserSubscriptionRepo) ActivateWindows(ctx context.Context, id int64, start time.Time) error {
