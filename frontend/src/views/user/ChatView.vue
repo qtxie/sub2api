@@ -165,9 +165,9 @@
                       class="message-attachment"
                     >
                       <img
-                        v-if="attachment.type === 'image' && attachment.data_url"
+                        v-if="attachment.type === 'image' && attachment.preview_url"
                         class="message-attachment-image"
-                        :src="attachment.data_url"
+                        :src="attachment.preview_url"
                         :alt="attachment.name"
                       />
                       <Icon v-else name="document" size="sm" />
@@ -233,9 +233,9 @@
           <div v-if="pendingAttachments.length > 0" class="attachment-strip">
             <div v-for="attachment in pendingAttachments" :key="attachment.id" class="attachment-chip">
               <img
-                v-if="attachment.type === 'image' && attachment.data_url"
+                v-if="attachment.type === 'image' && attachment.preview_url"
                 class="attachment-thumb"
-                :src="attachment.data_url"
+                :src="attachment.preview_url"
                 :alt="attachment.name"
               />
               <Icon v-else name="document" size="sm" />
@@ -326,6 +326,16 @@
       @cancel="deleteTarget = null"
     />
 
+    <ConfirmDialog
+      :show="clearLocalAttachmentsConfirmOpen"
+      :title="t('chat.clearLocalAttachments')"
+      :message="t('chat.clearLocalAttachmentsConfirm')"
+      :confirm-text="t('chat.clearLocalAttachments')"
+      danger
+      @confirm="clearLocalAttachments"
+      @cancel="clearLocalAttachmentsConfirmOpen = false"
+    />
+
     <div v-if="settingsOpen" class="settings-backdrop" @click.self="settingsOpen = false">
       <section class="settings-dialog" role="dialog" aria-modal="true" :aria-label="t('chat.chatSettings')">
         <header class="settings-header">
@@ -357,6 +367,18 @@
             <span>{{ t('chat.exportAll') }}</span>
           </button>
         </div>
+        <div class="settings-field">
+          <span>{{ t('chat.localAttachments') }}</span>
+          <button
+            type="button"
+            class="btn btn-secondary settings-export"
+            :disabled="clearingLocalAttachments"
+            @click="clearLocalAttachmentsConfirmOpen = true"
+          >
+            <Icon name="trash" size="sm" :class="{ 'animate-spin': clearingLocalAttachments }" />
+            <span>{{ t('chat.clearLocalAttachments') }}</span>
+          </button>
+        </div>
         <footer class="settings-actions">
           <button type="button" class="btn btn-secondary" @click="systemPrompt = ''">
             {{ t('chat.clearSystemPrompt') }}
@@ -386,15 +408,30 @@ import chatAPI, {
 import keysAPI from '@/api/keys'
 import type { ApiKey } from '@/types'
 import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { renderChatMarkdown } from '@/utils/chatMarkdown'
 import {
   chatReasoningEffortOptionsForModel,
   normalizeChatReasoningEffort
 } from '@/utils/chatReasoning'
+import {
+  bindChatAttachmentsToMessage,
+  chatAttachmentDraftKey,
+  cleanupUserChatAttachments,
+  clearUserChatAttachments,
+  deleteChatAttachment,
+  deleteChatAttachmentsForConversation,
+  listChatAttachmentDrafts,
+  listChatConversationAttachments,
+  reassignChatAttachmentDrafts,
+  saveChatAttachmentDraft,
+  type StoredChatAttachment,
+} from '@/utils/chatAttachmentStore'
 
 const { t } = useI18n()
 const appStore = useAppStore()
+const authStore = useAuthStore()
 
 const conversations = ref<ChatConversation[]>([])
 const activeConversation = ref<ChatConversation | null>(null)
@@ -423,6 +460,8 @@ const renameTitle = ref('')
 const pendingAttachments = ref<PendingChatAttachment[]>([])
 const attachmentMenuOpen = ref(false)
 const attachmentLoading = ref(false)
+const clearingLocalAttachments = ref(false)
+const clearLocalAttachmentsConfirmOpen = ref(false)
 const imageInput = ref<HTMLInputElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 
@@ -432,8 +471,20 @@ let pendingModelSelection = ''
 let assistantDeltaText = ''
 let assistantDeltaFrame: number | null = null
 let assistantDeltaDrainResolve: (() => void) | null = null
+let attachmentLoadToken = 0
 
-type PendingChatAttachment = ChatStreamAttachment & { id: string }
+type PendingChatAttachment = {
+  id: string
+  type: 'image' | 'file'
+  name: string
+  mime_type: string
+  size: number
+  blob?: Blob
+  text?: string
+  preview_url?: string
+}
+
+const attachmentObjectURLs = new Set<string>()
 
 const maxChatAttachments = 8
 const maxChatImageBytes = 10 * 1024 * 1024
@@ -584,17 +635,16 @@ async function loadModelsForKey(apiKeyId: number, force = false): Promise<string
 
 async function selectConversation(id: number) {
   if (sending.value || activeConversation.value?.id === id) return
-  clearAttachments()
   loadingConversation.value = true
   try {
     const conversation = await chatAPI.getConversation(id)
     activeConversation.value = conversation
-    messages.value = conversation.messages || []
     pendingModelSelection = conversation.model || ''
     selectedApiKeyId.value = conversation.api_key_id ?? null
     selectedModel.value = conversation.model || ''
     selectedReasoningEffort.value = normalizeReasoningEffort(conversation.reasoning_effort)
     systemPrompt.value = conversation.system_prompt || ''
+    await restoreLocalAttachments(conversation.id, conversation.messages || [])
     await scrollToBottom()
   } catch (err) {
     appStore.showError(extractApiErrorMessage(err, t('chat.loadFailed')))
@@ -603,14 +653,14 @@ async function selectConversation(id: number) {
   }
 }
 
-function startNewChat() {
+async function startNewChat() {
   if (sending.value) return
   activeConversation.value = null
   messages.value = []
   systemPrompt.value = ''
   draft.value = ''
   void resizeComposerInput()
-  clearAttachments()
+  await restoreLocalAttachments(null, [])
 }
 
 function toggleSidebar() {
@@ -679,7 +729,12 @@ async function addFiles(fileList: FileList | null, type: 'image' | 'file') {
         const attachment = type === 'image'
           ? await imageFileToAttachment(file)
           : await textFileToAttachment(file)
-        if (attachment) pendingAttachments.value.push(attachment)
+        if (attachment) {
+          pendingAttachments.value.push(attachment)
+          await persistDraftAttachment(attachment).catch(() => {
+            appStore.showWarning(t('chat.localAttachmentSaveFailed'))
+          })
+        }
       } catch {
         appStore.showError(t('chat.readAttachmentFailed'))
       }
@@ -698,14 +753,14 @@ async function imageFileToAttachment(file: File): Promise<PendingChatAttachment 
     appStore.showError(t('chat.imageTooLarge'))
     return null
   }
-  const dataUrl = await readFileAsDataURL(file)
   return {
     id: makeAttachmentId(),
     type: 'image',
     name: file.name,
     mime_type: file.type,
     size: file.size,
-    data_url: dataUrl,
+    blob: file,
+    preview_url: createAttachmentPreview(file),
   }
 }
 
@@ -746,7 +801,7 @@ function isSupportedTextFile(file: File): boolean {
   ].some((suffix) => lowerName.endsWith(suffix))
 }
 
-function readFileAsDataURL(file: File): Promise<string> {
+function readBlobAsDataURL(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => {
@@ -757,15 +812,23 @@ function readFileAsDataURL(file: File): Promise<string> {
       }
     }
     reader.onerror = () => reject(reader.error || new Error('Failed to read file'))
-    reader.readAsDataURL(file)
+    reader.readAsDataURL(blob)
   })
 }
 
-function removeAttachment(id: string) {
-  pendingAttachments.value = pendingAttachments.value.filter((attachment) => attachment.id !== id)
+async function removeAttachment(id: string) {
+  const attachment = pendingAttachments.value.find((item) => item.id === id)
+  pendingAttachments.value = pendingAttachments.value.filter((item) => item.id !== id)
+  if (attachment) releaseAttachmentPreview(attachment)
+  try {
+    await deleteChatAttachment(currentUserId(), id)
+  } catch {
+    appStore.showWarning(t('chat.localAttachmentDeleteFailed'))
+  }
 }
 
-function clearAttachments() {
+function clearPendingAttachments(releasePreviews = true) {
+  if (releasePreviews) pendingAttachments.value.forEach(releaseAttachmentPreview)
   pendingAttachments.value = []
   attachmentMenuOpen.value = false
 }
@@ -774,14 +837,116 @@ function makeAttachmentId(): string {
   return `attachment-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-function toStreamAttachment(attachment: PendingChatAttachment): ChatStreamAttachment {
+async function toStreamAttachment(attachment: PendingChatAttachment): Promise<ChatStreamAttachment> {
+  const dataUrl = attachment.type === 'image' && attachment.blob
+    ? await readBlobAsDataURL(attachment.blob)
+    : undefined
   return {
     type: attachment.type,
     name: attachment.name,
     mime_type: attachment.mime_type,
     size: attachment.size,
-    data_url: attachment.data_url,
+    data_url: dataUrl,
     text: attachment.text,
+  }
+}
+
+function currentUserId(): number {
+  return authStore.user?.id || 0
+}
+
+function createAttachmentPreview(blob: Blob): string {
+  const url = URL.createObjectURL(blob)
+  attachmentObjectURLs.add(url)
+  return url
+}
+
+function releaseAttachmentPreview(attachment: PendingChatAttachment) {
+  const url = attachment.preview_url
+  if (!url || !attachmentObjectURLs.has(url)) return
+  URL.revokeObjectURL(url)
+  attachmentObjectURLs.delete(url)
+}
+
+function releaseAllAttachmentPreviews() {
+  for (const url of attachmentObjectURLs) URL.revokeObjectURL(url)
+  attachmentObjectURLs.clear()
+}
+
+function storedAttachmentToPending(record: StoredChatAttachment): PendingChatAttachment {
+  return {
+    id: record.id,
+    type: record.type,
+    name: record.name,
+    mime_type: record.mimeType,
+    size: record.size,
+    blob: record.blob,
+    text: record.text,
+    preview_url: record.type === 'image' && record.blob ? createAttachmentPreview(record.blob) : undefined,
+  }
+}
+
+function attachmentToStoredDraft(attachment: PendingChatAttachment): StoredChatAttachment {
+  const now = Date.now()
+  const conversationId = activeConversation.value?.id || 0
+  return {
+    id: attachment.id,
+    userId: currentUserId(),
+    conversationId,
+    messageId: 0,
+    draftKey: chatAttachmentDraftKey(conversationId),
+    type: attachment.type,
+    name: attachment.name,
+    mimeType: attachment.mime_type,
+    size: attachment.size,
+    blob: attachment.blob,
+    text: attachment.text,
+    createdAt: now,
+    lastAccessedAt: now,
+  }
+}
+
+async function persistDraftAttachment(attachment: PendingChatAttachment) {
+  await saveChatAttachmentDraft(attachmentToStoredDraft(attachment))
+}
+
+async function persistDraftAttachments(attachments: PendingChatAttachment[]) {
+  await Promise.all(attachments.map(persistDraftAttachment))
+}
+
+async function restoreLocalAttachments(conversationId: number | null, serverMessages: ChatMessage[]) {
+  const token = ++attachmentLoadToken
+  const userId = currentUserId()
+  try {
+    const [storedMessages, storedDrafts] = await Promise.all([
+      conversationId ? listChatConversationAttachments(userId, conversationId) : Promise.resolve([]),
+      listChatAttachmentDrafts(userId, chatAttachmentDraftKey(conversationId)),
+    ])
+    if (token !== attachmentLoadToken) return
+
+    releaseAllAttachmentPreviews()
+    const attachmentsByMessage = new Map<number, PendingChatAttachment[]>()
+    const attachmentOnlyMessages = new Set<number>()
+    for (const record of storedMessages) {
+      const list = attachmentsByMessage.get(record.messageId) || []
+      list.push(storedAttachmentToPending(record))
+      attachmentsByMessage.set(record.messageId, list)
+      if (record.attachmentOnly) attachmentOnlyMessages.add(record.messageId)
+    }
+    messages.value = serverMessages.map((message) => {
+      const attachments = attachmentsByMessage.get(message.id) || []
+      return attachments.length > 0
+        ? withTransientAttachments(message, attachments, attachmentOnlyMessages.has(message.id))
+        : message
+    })
+    pendingAttachments.value = storedDrafts.slice(0, maxChatAttachments).map(storedAttachmentToPending)
+  } catch {
+    if (token === attachmentLoadToken) {
+      releaseAllAttachmentPreviews()
+      messages.value = serverMessages
+      pendingAttachments.value = []
+      appStore.showWarning(t('chat.localAttachmentsLoadFailed'))
+    }
   }
 }
 
@@ -842,14 +1007,30 @@ async function sendMessage() {
   const persistedContent = content || t('chat.attachmentOnlyMessage')
   draft.value = ''
   void resizeComposerInput()
-  clearAttachments()
+  clearPendingAttachments(false)
   sending.value = true
   abortController.value = new AbortController()
 
   let assistantTemp: ChatMessage | null = null
   try {
     const conversation = await ensureConversation(content || attachments[0]?.name || persistedContent)
+    try {
+      await reassignChatAttachmentDrafts(currentUserId(), attachments.map((item) => item.id), conversation.id)
+    } catch {
+      appStore.showWarning(t('chat.localAttachmentSaveFailed'))
+    }
     const userMessage = await chatAPI.appendMessage(conversation.id, { role: 'user', content: persistedContent })
+    try {
+      await bindChatAttachmentsToMessage(
+        currentUserId(),
+        attachments.map((item) => item.id),
+        conversation.id,
+        userMessage.id,
+        content === '',
+      )
+    } catch {
+      appStore.showWarning(t('chat.localAttachmentSaveFailed'))
+    }
     messages.value.push(withTransientAttachments(userMessage, attachments, content === ''))
     assistantTemp = createTempAssistant()
     messages.value.push(assistantTemp)
@@ -858,7 +1039,7 @@ async function sendMessage() {
 
     const saved = await chatAPI.streamConversationMessage({
       conversationId: conversation.id,
-      attachments: attachments.map(toStreamAttachment),
+      attachments: await Promise.all(attachments.map(toStreamAttachment)),
       signal: abortController.value.signal,
       onDelta(delta) {
         if (assistantTemp) queueAssistantDelta(assistantTemp.id, delta)
@@ -920,6 +1101,11 @@ async function regenerateLast() {
     messages.value = messages.value.filter((message) => message.id !== lastAssistant.id && message.id !== lastUser.id)
     draft.value = lastUser.metadata?.transient_attachment_only ? '' : lastUser.content
     pendingAttachments.value = transientAttachments
+    try {
+      await persistDraftAttachments(transientAttachments)
+    } catch {
+      appStore.showWarning(t('chat.localAttachmentSaveFailed'))
+    }
     await sendMessage()
   } catch (err) {
     appStore.showError(extractApiErrorMessage(err, t('chat.regenerateFailed')))
@@ -1080,11 +1266,40 @@ async function confirmDelete() {
   deleteTarget.value = null
   try {
     await chatAPI.deleteConversation(target.id)
+    try {
+      await deleteChatAttachmentsForConversation(currentUserId(), target.id)
+    } catch {
+      appStore.showWarning(t('chat.localAttachmentDeleteFailed'))
+    }
     conversations.value = conversations.value.filter((item) => item.id !== target.id)
-    if (activeConversation.value?.id === target.id) startNewChat()
+    if (activeConversation.value?.id === target.id) await startNewChat()
   } catch (err) {
     appStore.showError(extractApiErrorMessage(err, t('chat.deleteFailed')))
   }
+}
+
+async function clearLocalAttachments() {
+  clearLocalAttachmentsConfirmOpen.value = false
+  clearingLocalAttachments.value = true
+  try {
+    await clearUserChatAttachments(currentUserId())
+    attachmentLoadToken += 1
+    releaseAllAttachmentPreviews()
+    pendingAttachments.value = []
+    messages.value = messages.value.map(withoutTransientAttachments)
+    appStore.showSuccess(t('chat.localAttachmentsCleared'))
+  } catch {
+    appStore.showError(t('chat.localAttachmentDeleteFailed'))
+  } finally {
+    clearingLocalAttachments.value = false
+  }
+}
+
+function withoutTransientAttachments(message: ChatMessage): ChatMessage {
+  const metadata = { ...message.metadata }
+  delete metadata.transient_attachments
+  delete metadata.transient_attachment_only
+  return { ...message, metadata }
 }
 
 async function scrollToBottom() {
@@ -1094,14 +1309,28 @@ async function scrollToBottom() {
   }
 }
 
+async function initializeLocalAttachments() {
+  try {
+    await cleanupUserChatAttachments(currentUserId())
+  } catch {
+    appStore.showWarning(t('chat.localAttachmentsLoadFailed'))
+  }
+  if (activeConversation.value === null) {
+    await restoreLocalAttachments(null, [])
+  }
+}
+
 onMounted(() => {
   sidebarCollapsed.value = localStorage.getItem('chat_sidebar_collapsed') === '1'
   selectedReasoningEffort.value = normalizeReasoningEffort(localStorage.getItem('chat_last_reasoning_effort') || '')
   window.addEventListener('click', closeAttachmentMenu)
   void loadInitialData()
+  void initializeLocalAttachments()
 })
 
 onUnmounted(() => {
+  attachmentLoadToken += 1
+  releaseAllAttachmentPreviews()
   window.removeEventListener('click', closeAttachmentMenu)
   resetAssistantDeltaQueue()
 })

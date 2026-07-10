@@ -263,6 +263,13 @@ export default {
     imageTooLarge: 'Image must be 10 MiB or smaller',
     fileTooLarge: 'File must be 256 KiB or smaller',
     emptyFile: 'File is empty',
+    localAttachments: 'Local attachments',
+    clearLocalAttachments: 'Clear local attachments',
+    clearLocalAttachmentsConfirm: 'Remove all chat files and images stored in this browser? This cannot be undone.',
+    localAttachmentsCleared: 'Local chat attachments cleared',
+    localAttachmentSaveFailed: 'Attachment is available now but could not be saved in this browser',
+    localAttachmentsLoadFailed: 'Failed to load local chat attachments',
+    localAttachmentDeleteFailed: 'Failed to remove local chat attachments',
   },
 
   imageStudio: {

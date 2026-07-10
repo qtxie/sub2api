@@ -263,6 +263,13 @@ export default {
     imageTooLarge: '图片不能超过 10 MiB',
     fileTooLarge: '文件不能超过 256 KiB',
     emptyFile: '文件为空',
+    localAttachments: '本地附件',
+    clearLocalAttachments: '清除本地附件',
+    clearLocalAttachmentsConfirm: '移除此浏览器中保存的所有聊天文件和图片？此操作无法撤销。',
+    localAttachmentsCleared: '本地聊天附件已清除',
+    localAttachmentSaveFailed: '附件当前可用，但无法保存到此浏览器',
+    localAttachmentsLoadFailed: '加载本地聊天附件失败',
+    localAttachmentDeleteFailed: '移除本地聊天附件失败',
   },
 
   imageStudio: {
