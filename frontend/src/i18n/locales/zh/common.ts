@@ -225,7 +225,7 @@ export default {
     reasoningUltra: '极高',
     emptyTitle: '尽管提问',
     noApiKeys: '请先创建 API 密钥再使用聊天',
-    composerPlaceholder: '给 Sub2API 发送消息',
+    composerPlaceholder: '输入你的问题...',
     send: '发送',
     stop: '停止',
     stopped: '已停止',

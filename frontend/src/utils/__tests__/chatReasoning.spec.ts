@@ -6,12 +6,14 @@ import {
 } from '@/utils/chatReasoning'
 
 describe('chat reasoning effort options', () => {
-  it('uses the GPT-5.5 options for GPT-5.6 models', () => {
+  it('adds max for GPT-5.6 models', () => {
     const gpt55Values = chatReasoningEffortOptionsForModel('gpt-5.5').map((option) => option.value)
-    const gpt56Values = chatReasoningEffortOptionsForModel('GPT-5.6-pro').map((option) => option.value)
+    const expected = ['none', 'low', 'medium', 'high', 'max', 'xhigh']
 
-    expect(gpt56Values).toEqual(gpt55Values)
-    expect(gpt56Values).toEqual(['none', 'low', 'medium', 'high', 'xhigh'])
+    expect(gpt55Values).toEqual(['none', 'low', 'medium', 'high', 'xhigh'])
+    expect(chatReasoningEffortOptionsForModel('gpt-5.6').map((option) => option.value)).toEqual(expected)
+    expect(chatReasoningEffortOptionsForModel('GPT-5.6-sol').map((option) => option.value)).toEqual(expected)
+    expect(chatReasoningEffortOptionsForModel('openai/gpt-5.6-terra').map((option) => option.value)).toEqual(expected)
   })
 
   it('drops obsolete GPT-5.6-only saved values', () => {

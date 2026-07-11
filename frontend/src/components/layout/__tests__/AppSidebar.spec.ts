@@ -53,3 +53,15 @@ describe('AppSidebar header styles', () => {
     expect(sidebarBrandBlockMatch?.[0]).not.toContain('overflow: hidden;')
   })
 })
+
+describe('AppSidebar user navigation order', () => {
+  it('keeps Image Studio as the final self-navigation item', () => {
+    const selfNavBuilder = componentSource.match(/function buildSelfNavItems[\s\S]*?\n}/)?.[0]
+
+    expect(selfNavBuilder).toBeDefined()
+    expect(selfNavBuilder?.lastIndexOf("path: '/image-studio'")).toBeGreaterThan(
+      selfNavBuilder?.lastIndexOf('customMenuItemsForUser') ?? -1
+    )
+    expect(selfNavBuilder?.trimEnd().endsWith('return items\n}')).toBe(true)
+  })
+})

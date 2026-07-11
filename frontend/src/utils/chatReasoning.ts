@@ -21,6 +21,15 @@ const gpt54PlusReasoningEffortOptions: ReasoningEffortOption[] = [
   { value: 'xhigh', label: 'chat.reasoningXHigh' }
 ]
 
+const gpt56ReasoningEffortOptions: ReasoningEffortOption[] = [
+  { value: 'none', label: 'chat.reasoningNone' },
+  { value: 'low', label: 'chat.reasoningLow' },
+  { value: 'medium', label: 'chat.reasoningMedium' },
+  { value: 'high', label: 'chat.reasoningHigh' },
+  { value: 'max', label: 'chat.reasoningMax' },
+  { value: 'xhigh', label: 'chat.reasoningXHigh' }
+]
+
 export function normalizeChatReasoningEffort(value: string): ChatReasoningEffort {
   const normalized = value.trim().toLowerCase().replace(/_/g, '-')
   if (normalized === 'x-high') return 'xhigh'
@@ -31,10 +40,13 @@ export function normalizeChatReasoningEffort(value: string): ChatReasoningEffort
 
 export function chatReasoningEffortOptionsForModel(model: string): ReasoningEffortOption[] {
   const normalized = model.trim().toLowerCase()
+  const unqualified = normalized.split('/').pop() || normalized
+  if (unqualified.startsWith('gpt-5.6')) {
+    return gpt56ReasoningEffortOptions
+  }
   if (
-    normalized.startsWith('gpt-5.4') ||
-    normalized.startsWith('gpt-5.5') ||
-    normalized.startsWith('gpt-5.6')
+    unqualified.startsWith('gpt-5.4') ||
+    unqualified.startsWith('gpt-5.5')
   ) {
     return gpt54PlusReasoningEffortOptions
   }

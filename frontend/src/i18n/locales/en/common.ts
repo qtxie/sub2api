@@ -225,7 +225,7 @@ export default {
     reasoningUltra: 'Ultra',
     emptyTitle: 'Ask anything',
     noApiKeys: 'Create an API key before using Chat',
-    composerPlaceholder: 'Message Sub2API',
+    composerPlaceholder: 'Ask anything...',
     send: 'Send',
     stop: 'Stop',
     stopped: 'Stopped',
