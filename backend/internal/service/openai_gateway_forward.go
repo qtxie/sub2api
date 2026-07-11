@@ -918,10 +918,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		req.Header.Set("accept", "application/json")
 	}
 
-	// Apply custom User-Agent if configured
-	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
-		req.Header.Set("user-agent", customUA)
+	// Apply the account-level User-Agent policy, including smart normalization.
+	if upstreamUA := resolveOpenAIUpstreamUserAgent(account, c.GetHeader("User-Agent")); upstreamUA != "" {
+		req.Header.Set("user-agent", upstreamUA)
 	}
 
 	// 若开启 ForceCodexCLI，则强制将上游 User-Agent 伪装为 Codex CLI。

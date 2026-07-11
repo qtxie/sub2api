@@ -1080,6 +1080,16 @@ async function sendMessage() {
 }
 
 function stopStreaming() {
+  const activeAssistant = [...messages.value]
+    .reverse()
+    .find((message) => message.id < 0 && message.role === 'assistant')
+  if (activeAssistant) {
+    updateMessage(activeAssistant.id, (message) => ({
+      ...message,
+      status: 'cancelled',
+      error_message: '',
+    }))
+  }
   abortController.value?.abort()
 }
 
@@ -1224,11 +1234,11 @@ function isLastAssistant(message: ChatMessage): boolean {
 }
 
 function isWaitingAssistant(message: ChatMessage): boolean {
-  return message.id < 0 && message.role === 'assistant' && message.content === ''
+  return message.id < 0 && message.role === 'assistant' && message.status === 'complete' && message.content === ''
 }
 
 function isStreamingAssistant(message: ChatMessage): boolean {
-  return message.id < 0 && message.role === 'assistant' && message.content !== ''
+  return message.id < 0 && message.role === 'assistant' && message.status === 'complete' && message.content !== ''
 }
 
 async function copyMessage(content: string) {

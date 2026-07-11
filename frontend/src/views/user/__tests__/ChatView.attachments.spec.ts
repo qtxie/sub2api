@@ -185,6 +185,26 @@ describe('ChatView local attachments', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalled()
   })
 
+  it('hides the waiting animation immediately when streaming is stopped', async () => {
+    mocks.appendMessage.mockResolvedValue(message(11, 'user', 'hello'))
+    mocks.streamConversationMessage.mockReturnValue(new Promise(() => {}))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('textarea.composer-input').setValue('hello')
+    await wrapper.get('form.composer').trigger('submit')
+    await vi.waitFor(() => expect(mocks.streamConversationMessage).toHaveBeenCalledTimes(1))
+    expect(wrapper.find('.typing-indicator').exists()).toBe(true)
+
+    const streamOptions = mocks.streamConversationMessage.mock.calls[0][0]
+    await wrapper.get('.composer-button.stop').trigger('click')
+
+    expect(streamOptions.signal.aborted).toBe(true)
+    expect(wrapper.find('.typing-indicator').exists()).toBe(false)
+    expect(wrapper.text()).toContain('chat.stopped')
+    wrapper.unmount()
+  })
+
   it('hydrates message attachments from IndexedDB when a conversation is opened', async () => {
     const conversation = {
       id: 5,

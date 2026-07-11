@@ -2488,10 +2488,18 @@ func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t 
 		name           string
 		userAgent      string
 		originator     string
+		smartUserAgent bool
 		wantOriginator string
 		wantUA         string
 	}{
 		{name: "official ua pairs originator", userAgent: "Codex Desktop/1.2.3", wantOriginator: "Codex Desktop", wantUA: "Codex Desktop/1.2.3"},
+		{
+			name:           "smart user agent is normalized and paired",
+			userAgent:      "Codex Desktop/1.2.3 (Mac OS X 14.0; arm64) unknown (Codex Desktop; 25.101.123)",
+			smartUserAgent: true,
+			wantOriginator: "Codex Desktop",
+			wantUA:         "Codex Desktop/1.2.3 (Mac OS 26.5.2; arm64) unknown (Codex Desktop; 25.101.123)",
+		},
 		{
 			name:           "mismatched originator repaired from ua",
 			userAgent:      "codex-tui/0.140.2 (Mac OS X 14.0; arm64) iTerm (codex-tui; 0.140.2)",
@@ -2517,8 +2525,12 @@ func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t 
 
 			svc := &OpenAIGatewayService{}
 			account := &Account{
+				Platform:    PlatformOpenAI,
 				Type:        AccountTypeOAuth,
-				Credentials: map[string]any{"chatgpt_account_id": "chatgpt-acc"},
+				Credentials: map[string]any{
+					"chatgpt_account_id":        "chatgpt-acc",
+					"smart_user_agent_enabled": tt.smartUserAgent,
+				},
 			}
 
 			isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
