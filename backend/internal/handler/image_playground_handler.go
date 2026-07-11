@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,13 +31,19 @@ var errImagePlaygroundResponseTooLarge = errors.New("image gateway response is t
 // gateway so a browser never receives an API key's secret value.
 type ImagePlaygroundHandler struct {
 	apiKeyService *service.APIKeyService
+	pricingQuoter imagePlaygroundPricingQuoter
 	cfg           *config.Config
 	httpClient    *http.Client
 }
 
-func NewImagePlaygroundHandler(apiKeyService *service.APIKeyService, cfg *config.Config) *ImagePlaygroundHandler {
+type imagePlaygroundPricingQuoter interface {
+	QuoteImageUnitPrice(context.Context, *service.APIKey, int64, string, string) (*service.ImageUnitPriceQuote, error)
+}
+
+func NewImagePlaygroundHandler(apiKeyService *service.APIKeyService, gatewayService *service.GatewayService, cfg *config.Config) *ImagePlaygroundHandler {
 	return &ImagePlaygroundHandler{
 		apiKeyService: apiKeyService,
+		pricingQuoter: gatewayService,
 		cfg:           cfg,
 		httpClient:    &http.Client{},
 	}
@@ -51,6 +58,95 @@ type imagePlaygroundGenerationRequest struct {
 	Background   string `json:"background"`
 	OutputFormat string `json:"output_format"`
 	OutputCount  int    `json:"n"`
+}
+
+type imagePlaygroundPricingRequest struct {
+	APIKeyID int64  `json:"api_key_id"`
+	Model    string `json:"model"`
+}
+
+type imagePlaygroundResolutionPrice struct {
+	Size         string   `json:"size"`
+	BillingTier  string   `json:"billing_tier"`
+	PricingKind  string   `json:"pricing_kind"`
+	UnitPriceUSD *float64 `json:"unit_price"`
+}
+
+type imagePlaygroundPricingResponse struct {
+	Currency    string                           `json:"currency"`
+	PricingKind string                           `json:"pricing_kind"`
+	Prices      []imagePlaygroundResolutionPrice `json:"prices"`
+}
+
+var (
+	imagePlaygroundBaseSizes   = []string{"1024x1024", "1536x1024", "1024x1536"}
+	imagePlaygroundOpenAISizes = []string{"1024x1024", "1536x1024", "1024x1536", "3840x2160", "2160x3840"}
+)
+
+// Pricing returns effective per-image prices for every size shown by Image Studio.
+func (h *ImagePlaygroundHandler) Pricing(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if h.apiKeyService == nil || h.pricingQuoter == nil {
+		response.InternalError(c, "Image pricing service is not configured")
+		return
+	}
+
+	var input imagePlaygroundPricingRequest
+	if err := c.ShouldBindJSON(&input); err != nil || input.APIKeyID <= 0 {
+		response.BadRequest(c, "API key is required")
+		return
+	}
+	apiKey, ok := h.loadEligibleAPIKey(c, input.APIKeyID, subject.UserID)
+	if !ok {
+		return
+	}
+
+	model := imagePlaygroundOpenAIModel
+	if apiKey.Group.Platform != service.PlatformOpenAI {
+		model = strings.TrimSpace(input.Model)
+		if model == "" {
+			model = imagePlaygroundDefaultGeminiModel
+		}
+		if !isImagePlaygroundGeminiModel(model) {
+			response.BadRequest(c, "Unsupported Gemini image model")
+			return
+		}
+	}
+
+	sizes := imagePlaygroundSizesForPlatform(apiKey.Group.Platform)
+	prices := make([]imagePlaygroundResolutionPrice, 0, len(sizes))
+	pricingKind := service.ImagePricingKindFixed
+	for _, size := range sizes {
+		billingTier := service.NormalizeImageBillingTierOrDefault(size)
+		if apiKey.Group.Platform != service.PlatformOpenAI {
+			// Gemini receives only an aspect ratio from this UI, so billing uses its default tier.
+			billingTier = service.ImageBillingSize2K
+		}
+		quote, err := h.pricingQuoter.QuoteImageUnitPrice(c.Request.Context(), apiKey, subject.UserID, model, billingTier)
+		if err != nil {
+			response.InternalError(c, "Failed to calculate image pricing")
+			return
+		}
+		if quote.PricingKind == service.ImagePricingKindUsageBased {
+			pricingKind = service.ImagePricingKindUsageBased
+		}
+		prices = append(prices, imagePlaygroundResolutionPrice{
+			Size:         size,
+			BillingTier:  billingTier,
+			PricingKind:  quote.PricingKind,
+			UnitPriceUSD: quote.UnitPrice,
+		})
+	}
+
+	response.Success(c, imagePlaygroundPricingResponse{
+		Currency:    "USD",
+		PricingKind: pricingKind,
+		Prices:      prices,
+	})
 }
 
 func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
@@ -87,25 +183,12 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 		return
 	}
 
-	apiKey, err := h.apiKeyService.GetByID(c.Request.Context(), input.APIKeyID)
-	if err != nil {
-		response.ErrorFrom(c, err)
+	apiKey, ok := h.loadEligibleAPIKey(c, input.APIKeyID, subject.UserID)
+	if !ok {
 		return
 	}
-	if apiKey == nil || apiKey.UserID != subject.UserID {
-		response.NotFound(c, "API key not found")
-		return
-	}
-	if !apiKey.IsActive() {
-		response.BadRequest(c, "API key is not active")
-		return
-	}
-	if apiKey.Group == nil || !imagePlaygroundPlatformSupported(apiKey.Group.Platform) {
-		response.BadRequest(c, "Image Studio requires an OpenAI, Gemini, or Antigravity API key")
-		return
-	}
-	if !service.GroupAllowsImageGeneration(apiKey.Group) {
-		response.Forbidden(c, service.ImageGenerationPermissionMessage())
+	if !imagePlaygroundSizeAllowed(input.Size, imagePlaygroundSizesForPlatform(apiKey.Group.Platform)) {
+		response.BadRequest(c, "Unsupported image size")
 		return
 	}
 
@@ -114,6 +197,31 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 		return
 	}
 	h.generateGemini(c, apiKey, input)
+}
+
+func (h *ImagePlaygroundHandler) loadEligibleAPIKey(c *gin.Context, apiKeyID, userID int64) (*service.APIKey, bool) {
+	apiKey, err := h.apiKeyService.GetByID(c.Request.Context(), apiKeyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return nil, false
+	}
+	if apiKey == nil || apiKey.UserID != userID {
+		response.NotFound(c, "API key not found")
+		return nil, false
+	}
+	if !apiKey.IsActive() {
+		response.BadRequest(c, "API key is not active")
+		return nil, false
+	}
+	if apiKey.Group == nil || !imagePlaygroundPlatformSupported(apiKey.Group.Platform) {
+		response.BadRequest(c, "Image Studio requires an OpenAI, Gemini, or Antigravity API key")
+		return nil, false
+	}
+	if !service.GroupAllowsImageGeneration(apiKey.Group) {
+		response.Forbidden(c, service.ImageGenerationPermissionMessage())
+		return nil, false
+	}
+	return apiKey, true
 }
 
 func (h *ImagePlaygroundHandler) generateOpenAI(c *gin.Context, apiKey *service.APIKey, input imagePlaygroundGenerationRequest) {
@@ -340,6 +448,26 @@ func imagePlaygroundPlatformSupported(platform string) bool {
 	return platform == service.PlatformOpenAI || platform == service.PlatformGemini || platform == service.PlatformAntigravity
 }
 
+func imagePlaygroundSizesForPlatform(platform string) []string {
+	if platform == service.PlatformOpenAI {
+		return imagePlaygroundOpenAISizes
+	}
+	return imagePlaygroundBaseSizes
+}
+
+func imagePlaygroundSizeAllowed(size string, sizes []string) bool {
+	size = strings.ToLower(strings.TrimSpace(size))
+	if size == "" {
+		return true
+	}
+	for _, candidate := range sizes {
+		if size == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func isImagePlaygroundGeminiModel(model string) bool {
 	model = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/")
 	switch model {
@@ -447,7 +575,7 @@ func validateImagePlaygroundOptions(input imagePlaygroundGenerationRequest) stri
 		return false
 	}
 
-	if !allowed(input.Size, "1024x1024", "1536x1024", "1024x1536") {
+	if !imagePlaygroundSizeAllowed(input.Size, imagePlaygroundOpenAISizes) {
 		return "Unsupported image size"
 	}
 	if !allowed(input.Quality, "low", "medium", "high") {

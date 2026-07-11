@@ -35,6 +35,32 @@ func (f imagePlaygroundRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	return f(req)
 }
 
+type imagePlaygroundPricingQuoterStub struct {
+	pricingKind string
+	prices      map[string]float64
+	calls       []imagePlaygroundPricingQuoteCall
+}
+
+type imagePlaygroundPricingQuoteCall struct {
+	model string
+	size  string
+}
+
+func (s *imagePlaygroundPricingQuoterStub) QuoteImageUnitPrice(
+	_ context.Context,
+	_ *service.APIKey,
+	_ int64,
+	model string,
+	size string,
+) (*service.ImageUnitPriceQuote, error) {
+	s.calls = append(s.calls, imagePlaygroundPricingQuoteCall{model: model, size: size})
+	if s.pricingKind == service.ImagePricingKindUsageBased {
+		return &service.ImageUnitPriceQuote{PricingKind: service.ImagePricingKindUsageBased}, nil
+	}
+	price := s.prices[size]
+	return &service.ImageUnitPriceQuote{PricingKind: service.ImagePricingKindFixed, UnitPrice: &price}, nil
+}
+
 func TestBuildImagePlaygroundGatewayBodyPinsGPTImage2(t *testing.T) {
 	body, err := buildImagePlaygroundGatewayBody(imagePlaygroundGenerationRequest{
 		Prompt:       "  an orange bicycle  ",
@@ -125,6 +151,78 @@ func TestReadImagePlaygroundResponseRejectsOverflow(t *testing.T) {
 	require.Equal(t, []byte("1234"), data)
 }
 
+func TestImagePlaygroundPricingMapsOpenAIResolutionsAndPinsModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	key := imagePlaygroundTestKey(1, service.StatusActive, service.PlatformOpenAI, true)
+	quoter := &imagePlaygroundPricingQuoterStub{prices: map[string]float64{"1K": 0.1, "2K": 0.15, "4K": 0.3}}
+	h := newImagePlaygroundTestHandler(key, nil)
+	h.pricingQuoter = quoter
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/pricing", bytes.NewBufferString(`{"api_key_id":1,"model":"ignored-model"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1})
+	h.Pricing(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var output struct {
+		Data imagePlaygroundPricingResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &output))
+	require.Equal(t, "USD", output.Data.Currency)
+	require.Equal(t, service.ImagePricingKindFixed, output.Data.PricingKind)
+	require.Equal(t, []imagePlaygroundResolutionPrice{
+		{Size: "1024x1024", BillingTier: "1K", PricingKind: service.ImagePricingKindFixed, UnitPriceUSD: float64Pointer(0.1)},
+		{Size: "1536x1024", BillingTier: "2K", PricingKind: service.ImagePricingKindFixed, UnitPriceUSD: float64Pointer(0.15)},
+		{Size: "1024x1536", BillingTier: "2K", PricingKind: service.ImagePricingKindFixed, UnitPriceUSD: float64Pointer(0.15)},
+		{Size: "3840x2160", BillingTier: "4K", PricingKind: service.ImagePricingKindFixed, UnitPriceUSD: float64Pointer(0.3)},
+		{Size: "2160x3840", BillingTier: "4K", PricingKind: service.ImagePricingKindFixed, UnitPriceUSD: float64Pointer(0.3)},
+	}, output.Data.Prices)
+	require.Equal(t, []imagePlaygroundPricingQuoteCall{
+		{model: imagePlaygroundOpenAIModel, size: "1K"},
+		{model: imagePlaygroundOpenAIModel, size: "2K"},
+		{model: imagePlaygroundOpenAIModel, size: "2K"},
+		{model: imagePlaygroundOpenAIModel, size: "4K"},
+		{model: imagePlaygroundOpenAIModel, size: "4K"},
+	}, quoter.calls)
+}
+
+func TestImagePlaygroundPricingUsesGeminiModelAndDefaultTier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	key := imagePlaygroundTestKey(1, service.StatusActive, service.PlatformGemini, true)
+	quoter := &imagePlaygroundPricingQuoterStub{pricingKind: service.ImagePricingKindUsageBased}
+	h := newImagePlaygroundTestHandler(key, nil)
+	h.pricingQuoter = quoter
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/pricing", bytes.NewBufferString(`{"api_key_id":1,"model":"gemini-2.5-flash-image"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1})
+	h.Pricing(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var output struct {
+		Data imagePlaygroundPricingResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &output))
+	require.Equal(t, service.ImagePricingKindUsageBased, output.Data.PricingKind)
+	require.Len(t, output.Data.Prices, 3)
+	for _, price := range output.Data.Prices {
+		require.Equal(t, service.ImageBillingSize2K, price.BillingTier)
+		require.Nil(t, price.UnitPriceUSD)
+	}
+	for _, call := range quoter.calls {
+		require.Equal(t, "gemini-2.5-flash-image", call.model)
+		require.Equal(t, service.ImageBillingSize2K, call.size)
+	}
+}
+
+func float64Pointer(value float64) *float64 {
+	return &value
+}
+
 func TestImagePlaygroundGenerateRejectsIneligibleKeys(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
@@ -187,6 +285,24 @@ func TestImagePlaygroundGenerateUsesGeminiNativeGateway(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &output))
 	require.Len(t, output.Data.Data, 2)
 	require.Equal(t, "image/png", output.Data.Data[0].MIMEType)
+}
+
+func TestImagePlaygroundGenerateRejectsOpenAI4KSizeForGemini(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newImagePlaygroundTestHandler(imagePlaygroundTestKey(1, service.StatusActive, service.PlatformGemini, true), func(_ *http.Request) (*http.Response, error) {
+		t.Fatal("gateway must not be called")
+		return nil, nil
+	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/generations", bytes.NewBufferString(`{"api_key_id":1,"model":"gemini-3.1-flash-image","prompt":"cat","size":"3840x2160","n":1}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1})
+
+	h.Generate(c)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Contains(t, w.Body.String(), "Unsupported image size")
 }
 
 func TestImagePlaygroundGenerateUsesAntigravityGatewayPrefix(t *testing.T) {
@@ -257,6 +373,7 @@ func TestImagePlaygroundGenerateForwardsPinnedRequest(t *testing.T) {
 		require.Equal(t, true, body["stream"])
 		require.NotContains(t, body, "response_format")
 		require.Equal(t, "cat", body["prompt"])
+		require.Equal(t, "3840x2160", body["size"])
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -265,7 +382,7 @@ func TestImagePlaygroundGenerateForwardsPinnedRequest(t *testing.T) {
 	})
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/generations", bytes.NewBufferString(`{"api_key_id":1,"prompt":"cat","n":1}`))
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/generations", bytes.NewBufferString(`{"api_key_id":1,"prompt":"cat","size":"3840x2160","n":1}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1})
 	h.Generate(c)

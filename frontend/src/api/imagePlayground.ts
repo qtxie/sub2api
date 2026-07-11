@@ -29,6 +29,33 @@ export interface ImagePlaygroundGenerationResponse {
   data: ImagePlaygroundImage[]
 }
 
+export type ImagePricingKind = 'fixed' | 'usage_based'
+
+export interface ImagePlaygroundResolutionPrice {
+  size: string
+  billing_tier: string
+  pricing_kind: ImagePricingKind
+  unit_price: number | null
+}
+
+export interface ImagePlaygroundPricingResponse {
+  currency: string
+  pricing_kind: ImagePricingKind
+  prices: ImagePlaygroundResolutionPrice[]
+}
+
+export async function getImagePricing(
+  payload: { api_key_id: number; model?: string },
+  signal?: AbortSignal
+): Promise<ImagePlaygroundPricingResponse> {
+  const { data } = await apiClient.post<ImagePlaygroundPricingResponse>(
+    '/image-playground/pricing',
+    payload,
+    { signal }
+  )
+  return data
+}
+
 interface ImageStreamPayload {
   type?: string
   created?: number
@@ -176,4 +203,4 @@ function numericTimestamp(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-export default { generateImage }
+export default { generateImage, getImagePricing }

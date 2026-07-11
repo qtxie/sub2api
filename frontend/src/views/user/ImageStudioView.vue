@@ -33,10 +33,8 @@
           <div class="grid grid-cols-2 gap-3">
             <label class="block text-sm font-medium text-gray-700 dark:text-gray-200">
               {{ t('imageStudio.size') }}
-              <select v-model="form.size" class="input mt-1.5" :disabled="generating">
-                <option value="1024x1024">1024 x 1024</option>
-                <option value="1536x1024">1536 x 1024</option>
-                <option value="1024x1536">1024 x 1536</option>
+              <select id="image-studio-size" v-model="form.size" class="input mt-1.5" :disabled="generating">
+                <option v-for="size in imageSizeOptions" :key="size" :value="size">{{ formatResolution(size) }}</option>
               </select>
             </label>
             <label v-if="!usesGemini" class="block text-sm font-medium text-gray-700 dark:text-gray-200">
@@ -62,6 +60,28 @@
                 <option value="webp">WebP</option>
               </select>
             </label>
+          </div>
+
+          <div v-if="form.apiKeyId" class="border-y border-gray-200 py-3 dark:border-dark-700" data-testid="image-pricing" aria-live="polite">
+            <div class="mb-2 flex items-center justify-between gap-3">
+              <span class="text-sm font-medium text-gray-700 dark:text-gray-200">{{ t('imageStudio.pricePerImage') }}</span>
+              <span v-if="loadingPricing" class="text-xs text-gray-500 dark:text-gray-400">{{ t('common.loading') }}</span>
+            </div>
+            <p v-if="pricingError" class="text-sm text-amber-700 dark:text-amber-300">{{ pricingError }}</p>
+            <p v-else-if="imagePricing?.pricing_kind === 'usage_based'" class="text-sm text-gray-600 dark:text-gray-300">
+              {{ t('imageStudio.usageBasedPricing') }}
+            </p>
+            <dl v-else-if="imagePricing" class="space-y-1.5">
+              <div
+                v-for="price in displayedImagePrices"
+                :key="price.billing_tier"
+                class="flex min-h-6 items-center justify-between gap-3 text-sm"
+                :class="price.billing_tier === selectedBillingTier ? 'font-medium text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-300'"
+              >
+                <dt class="tabular-nums">{{ price.billing_tier }}</dt>
+                <dd class="tabular-nums">{{ formatImagePrice(price.unit_price) }}</dd>
+              </div>
+            </dl>
           </div>
 
           <label class="block text-sm font-medium text-gray-700 dark:text-gray-200">
@@ -164,7 +184,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { keysAPI } from '@/api/keys'
-import { generateImage, type ImageBackground, type ImageOutputFormat, type ImagePlaygroundImage, type ImageQuality } from '@/api/imagePlayground'
+import { generateImage, getImagePricing, type ImageBackground, type ImageOutputFormat, type ImagePlaygroundImage, type ImagePlaygroundPricingResponse, type ImageQuality } from '@/api/imagePlayground'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -172,7 +192,7 @@ import { clearImageStudioGallery, deleteImageStudioGalleryItem, listImageStudioG
 import type { ApiKey } from '@/types'
 import { useI18n } from 'vue-i18n'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const imageKeys = ref<ApiKey[]>([])
@@ -181,6 +201,9 @@ const loadingKeys = ref(true)
 const loadingGallery = ref(true)
 const generating = ref(false)
 const error = ref('')
+const imagePricing = ref<ImagePlaygroundPricingResponse | null>(null)
+const loadingPricing = ref(false)
+const pricingError = ref('')
 const previewItem = ref<ImageStudioGalleryItem | null>(null)
 type GenerationPlaceholderStatus = 'generating' | 'error'
 interface GenerationPlaceholder {
@@ -193,6 +216,7 @@ const generationPlaceholders = ref<GenerationPlaceholder[]>([])
 const generationElapsedSeconds = ref(0)
 const revealedItemIDs = ref(new Set<string>())
 let controller: AbortController | null = null
+let pricingController: AbortController | null = null
 let generationTimer: number | null = null
 let generationSequence = 0
 
@@ -208,6 +232,9 @@ const form = reactive({
 })
 
 const canGenerate = computed(() => form.apiKeyId > 0 && form.prompt.trim().length > 0)
+const imagePlaygroundOpenAIModel = 'gpt-image-2'
+const baseImageSizes = ['1024x1024', '1536x1024', '1024x1536']
+const openAIImageSizes = [...baseImageSizes, '3840x2160', '2160x3840']
 const geminiImageModels = [
   'gemini-3.1-flash-image',
   'gemini-3.1-flash-image-preview',
@@ -219,6 +246,20 @@ const geminiImageModels = [
 ]
 const selectedKey = computed(() => imageKeys.value.find((key) => key.id === form.apiKeyId))
 const usesGemini = computed(() => ['gemini', 'antigravity'].includes(selectedKey.value?.group?.platform || ''))
+const imageSizeOptions = computed(() => usesGemini.value ? baseImageSizes : openAIImageSizes)
+const displayedImagePrices = computed(() => {
+  const pricesByTier = new Map<string, NonNullable<typeof imagePricing.value>['prices'][number]>()
+  for (const price of imagePricing.value?.prices || []) {
+    const billingTier = price.billing_tier.trim().toUpperCase()
+    if (billingTier && !pricesByTier.has(billingTier)) {
+      pricesByTier.set(billingTier, { ...price, billing_tier: billingTier })
+    }
+  }
+  return [...pricesByTier.values()]
+})
+const selectedBillingTier = computed(() => imagePricing.value?.prices
+  .find((price) => price.size === form.size)
+  ?.billing_tier.trim().toUpperCase())
 
 function imageKeyAllowed(key: ApiKey): boolean {
   return key.status === 'active' &&
@@ -244,6 +285,51 @@ async function loadKeys() {
   } finally {
     loadingKeys.value = false
   }
+}
+
+async function loadPricing() {
+  pricingController?.abort()
+  imagePricing.value = null
+  pricingError.value = ''
+  if (!form.apiKeyId || !selectedKey.value) {
+    loadingPricing.value = false
+    return
+  }
+
+  const requestController = new AbortController()
+  pricingController = requestController
+  loadingPricing.value = true
+  try {
+    const result = await getImagePricing({
+      api_key_id: form.apiKeyId,
+      ...(usesGemini.value ? { model: form.model } : {})
+    }, requestController.signal)
+    if (pricingController === requestController) imagePricing.value = result
+  } catch (err: any) {
+    const canceled = err?.code === 'ERR_CANCELED' || err?.name === 'AbortError'
+    if (!canceled && pricingController === requestController) {
+      pricingError.value = extractApiErrorMessage(err, t('imageStudio.loadPricingFailed'))
+    }
+  } finally {
+    if (pricingController === requestController) {
+      loadingPricing.value = false
+      pricingController = null
+    }
+  }
+}
+
+function formatResolution(size: string): string {
+  return size.replace('x', ' x ')
+}
+
+function formatImagePrice(value: number | null): string {
+  if (value == null) return t('imageStudio.usageBasedPricing')
+  return `${new Intl.NumberFormat(locale.value, {
+    style: 'currency',
+    currency: imagePricing.value?.currency || 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6
+  }).format(value)} ${t('imageStudio.perImage')}`
 }
 
 async function loadGallery() {
@@ -400,9 +486,17 @@ function downloadName(item: ImageStudioGalleryItem): string {
 
 watch(() => form.apiKeyId, (id) => localStorage.setItem('image_studio_api_key_id', String(id)))
 watch(() => form.model, (model) => localStorage.setItem('image_studio_gemini_model', model))
+watch(imageSizeOptions, (sizes) => {
+  if (!sizes.includes(form.size)) form.size = sizes[0]
+})
+watch(
+  () => [form.apiKeyId, selectedKey.value?.group?.platform || '', usesGemini.value ? form.model : imagePlaygroundOpenAIModel] as const,
+  () => { void loadPricing() }
+)
 onMounted(async () => { await Promise.all([loadKeys(), loadGallery()]) })
 onUnmounted(() => {
   controller?.abort()
+  pricingController?.abort()
   stopGenerationTimer()
 })
 </script>

@@ -5,13 +5,14 @@ import ImageStudioView from '../ImageStudioView.vue'
 
 const listKeys = vi.hoisted(() => vi.fn())
 const generateImage = vi.hoisted(() => vi.fn())
+const getImagePricing = vi.hoisted(() => vi.fn())
 const listImageStudioGallery = vi.hoisted(() => vi.fn())
 const saveImageStudioGalleryItem = vi.hoisted(() => vi.fn())
 const showSuccess = vi.hoisted(() => vi.fn())
 const showWarning = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/keys', () => ({ keysAPI: { list: listKeys } }))
-vi.mock('@/api/imagePlayground', () => ({ generateImage }))
+vi.mock('@/api/imagePlayground', () => ({ generateImage, getImagePricing }))
 vi.mock('@/utils/imageStudioGallery', () => ({
   listImageStudioGallery,
   saveImageStudioGalleryItem,
@@ -28,7 +29,7 @@ vi.mock('vue-i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-i18n')>()
   return {
     ...actual,
-    useI18n: () => ({ t: (key: string) => key })
+    useI18n: () => ({ t: (key: string) => key, locale: { value: 'en-US' } })
   }
 })
 
@@ -68,6 +69,17 @@ describe('ImageStudioView', () => {
     listKeys.mockReset().mockResolvedValue({ items: [activeOpenAIKey, activeGrokKey, activeGeminiKey], pages: 1 })
     listImageStudioGallery.mockReset().mockResolvedValue([])
     generateImage.mockReset().mockResolvedValue({ data: [{ b64_json: 'abc' }] })
+    getImagePricing.mockReset().mockResolvedValue({
+      currency: 'USD',
+      pricing_kind: 'fixed',
+      prices: [
+        { size: '1024x1024', billing_tier: '1K', pricing_kind: 'fixed', unit_price: 0.1 },
+        { size: '1536x1024', billing_tier: '2K', pricing_kind: 'fixed', unit_price: 0.15 },
+        { size: '1024x1536', billing_tier: '2K', pricing_kind: 'fixed', unit_price: 0.15 },
+        { size: '3840x2160', billing_tier: '4K', pricing_kind: 'fixed', unit_price: 0.3 },
+        { size: '2160x3840', billing_tier: '4K', pricing_kind: 'fixed', unit_price: 0.3 }
+      ]
+    })
     saveImageStudioGalleryItem.mockReset().mockRejectedValue(new Error('quota exceeded'))
     showSuccess.mockReset()
     showWarning.mockReset()
@@ -91,6 +103,113 @@ describe('ImageStudioView', () => {
     expect(options).toContain('OpenAI image key')
     expect(options).toContain('Gemini image key')
     expect(options).not.toContain('Grok image key')
+  })
+
+  it('loads and displays the selected key price once per billing tier', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(getImagePricing).toHaveBeenCalledWith({ api_key_id: 7 }, expect.any(AbortSignal))
+    const pricing = wrapper.get('[data-testid="image-pricing"]')
+    expect(pricing.text()).toContain('imageStudio.pricePerImage')
+    expect(pricing.text()).toContain('1K')
+    expect(pricing.text()).toContain('2K')
+    expect(pricing.text()).toContain('4K')
+    expect(pricing.text()).not.toContain('1024 x 1024')
+    expect(pricing.text()).not.toContain('3840 x 2160')
+    expect(pricing.text()).toContain('$0.10 imageStudio.perImage')
+    expect(pricing.text().match(/\$0\.15 imageStudio\.perImage/g)).toHaveLength(1)
+    expect(pricing.text().match(/\$0\.30 imageStudio\.perImage/g)).toHaveLength(1)
+  })
+
+  it('offers 4K sizes only for OpenAI keys', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const sizeSelect = wrapper.get('#image-studio-size')
+    expect(sizeSelect.findAll('option').map((option) => option.attributes('value'))).toEqual([
+      '1024x1024', '1536x1024', '1024x1536', '3840x2160', '2160x3840'
+    ])
+    await sizeSelect.setValue('3840x2160')
+    await wrapper.get('#image-studio-key').setValue('9')
+    await flushPromises()
+
+    expect(sizeSelect.findAll('option').map((option) => option.attributes('value'))).toEqual([
+      '1024x1024', '1536x1024', '1024x1536'
+    ])
+    expect((sizeSelect.element as HTMLSelectElement).value).toBe('1024x1024')
+  })
+
+  it('refreshes pricing when the selected Gemini model changes', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    getImagePricing.mockClear()
+
+    await wrapper.get('#image-studio-key').setValue('9')
+    await flushPromises()
+    expect(getImagePricing).toHaveBeenLastCalledWith({
+      api_key_id: 9,
+      model: 'gemini-3.1-flash-image'
+    }, expect.any(AbortSignal))
+
+    await wrapper.get('#image-studio-model').setValue('gemini-2.5-flash-image')
+    await flushPromises()
+    expect(getImagePricing).toHaveBeenLastCalledWith({
+      api_key_id: 9,
+      model: 'gemini-2.5-flash-image'
+    }, expect.any(AbortSignal))
+  })
+
+  it('shows usage-based pricing without presenting a false fixed amount', async () => {
+    getImagePricing.mockResolvedValueOnce({
+      currency: 'USD',
+      pricing_kind: 'usage_based',
+      prices: [
+        { size: '1024x1024', billing_tier: '1K', pricing_kind: 'usage_based', unit_price: null }
+      ]
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    const pricing = wrapper.get('[data-testid="image-pricing"]')
+    expect(pricing.text()).toContain('imageStudio.usageBasedPricing')
+    expect(pricing.text()).not.toContain('$0.00')
+  })
+
+  it('does not let a stale key price overwrite the latest selection', async () => {
+    let resolveFirst!: (value: any) => void
+    getImagePricing
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({
+        currency: 'USD',
+        pricing_kind: 'fixed',
+        prices: [{ size: '1024x1024', billing_tier: '2K', pricing_kind: 'fixed', unit_price: 0.2 }]
+      })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-key').setValue('9')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="image-pricing"]').text()).toContain('$0.20 imageStudio.perImage')
+
+    resolveFirst({
+      currency: 'USD',
+      pricing_kind: 'fixed',
+      prices: [{ size: '1024x1024', billing_tier: '1K', pricing_kind: 'fixed', unit_price: 0.99 }]
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="image-pricing"]').text()).not.toContain('$0.99')
+    expect(wrapper.get('[data-testid="image-pricing"]').text()).toContain('$0.20 imageStudio.perImage')
+  })
+
+  it('shows pricing failures without disabling image generation', async () => {
+    getImagePricing.mockRejectedValueOnce(new Error('pricing offline'))
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="image-pricing"]').text()).toContain('pricing offline')
+    await wrapper.get('#image-studio-prompt').setValue('paper kite')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
   })
 
   it('uses the selected Gemini image model and returned MIME type', async () => {

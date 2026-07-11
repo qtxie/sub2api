@@ -6,7 +6,7 @@ vi.mock('../client', () => ({
   apiClient: { post }
 }))
 
-import { generateImage, parseImagePlaygroundResponse } from '../imagePlayground'
+import { generateImage, getImagePricing, parseImagePlaygroundResponse } from '../imagePlayground'
 
 describe('image playground API', () => {
   beforeEach(() => post.mockReset())
@@ -31,6 +31,22 @@ describe('image playground API', () => {
       n: 1
     }), { signal, timeout: 300000 })
     expect(result.data[0].b64_json).toBe('abc')
+  })
+
+  it('loads effective pricing for an image-enabled API key', async () => {
+    const signal = new AbortController().signal
+    post.mockResolvedValue({
+      data: {
+        currency: 'USD',
+        pricing_kind: 'fixed',
+        prices: [{ size: '1024x1024', billing_tier: '1K', pricing_kind: 'fixed', unit_price: 0.1 }]
+      }
+    })
+
+    const result = await getImagePricing({ api_key_id: 7 }, signal)
+
+    expect(post).toHaveBeenCalledWith('/image-playground/pricing', { api_key_id: 7 }, { signal })
+    expect(result.prices[0].unit_price).toBe(0.1)
   })
 })
 

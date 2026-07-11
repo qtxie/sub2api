@@ -85,6 +85,7 @@ func RegisterUserRoutes(
 
 		imagePlayground := authenticated.Group("/image-playground")
 		{
+			imagePlayground.POST("/pricing", h.ImagePlayground.Pricing)
 			imagePlayground.POST("/generations", h.ImagePlayground.Generate)
 		}
 
