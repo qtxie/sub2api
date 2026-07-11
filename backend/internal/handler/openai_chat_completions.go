@@ -181,6 +181,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		failoverAttempt = failoverAttempt.withTarget(account)
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_chat_completions.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
@@ -277,7 +278,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
-					started := h.notifyOpenAIAccountSwitchStarted(c, "openai_chat_completions.upstream_failover_switching", "chat_completions", apiKey, subject.UserID, reqModel, reqStream, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+					started := h.advanceOpenAIAccountSwitch(c, failoverAttempt, "openai_chat_completions.upstream_failover_switching", "chat_completions", apiKey, subject.UserID, reqModel, reqStream, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					failoverAttempt = started
 					continue
 				}

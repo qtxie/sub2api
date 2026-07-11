@@ -152,6 +152,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		failoverAttempt = failoverAttempt.withTarget(account)
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, accountAcquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, "", selection, false, &streamStarted, reqLog)
@@ -208,7 +209,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 					zap.Int("switch_count", switchCount),
 					zap.Int("max_switches", maxAccountSwitches),
 				)
-				started := h.notifyOpenAIAccountSwitchStarted(c, "openai_embeddings.upstream_failover_switching", "embeddings", apiKey, subject.UserID, reqModel, false, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+				started := h.advanceOpenAIAccountSwitch(c, failoverAttempt, "openai_embeddings.upstream_failover_switching", "embeddings", apiKey, subject.UserID, reqModel, false, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 				failoverAttempt = started
 				continue
 			}

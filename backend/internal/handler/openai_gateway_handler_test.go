@@ -94,6 +94,21 @@ func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
 	}
 }
 
+func TestOpenAIAccountSwitchAttemptTracksSelectedTarget(t *testing.T) {
+	attempt := openAIAccountSwitchAttempt{
+		FailedAccountID:   1,
+		FailedAccountName: "account-a",
+	}
+
+	got := attempt.withTarget(&service.Account{ID: 2, Name: "account-b", Priority: 7})
+	require.Equal(t, int64(2), got.TargetAccountID)
+	require.Equal(t, "account-b", got.TargetAccountName)
+	require.Equal(t, 7, got.TargetPriority)
+
+	unchanged := attempt.withTarget(&service.Account{ID: 1, Name: "account-a"})
+	require.Zero(t, unchanged.TargetAccountID)
+}
+
 func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
 

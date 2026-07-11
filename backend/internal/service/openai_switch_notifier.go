@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,14 @@ import (
 )
 
 const defaultOpenAISwitchNotifierTelegramBaseURL = "https://api.telegram.org"
+
+const (
+	openAISwitchNotifierQueueSize      = 1024
+	openAISwitchNotifierMaxAttempts    = 3
+	openAISwitchNotifierRetryBaseDelay = 250 * time.Millisecond
+	telegramSendMessageMaxRunes        = 4096
+	telegramSendMessageTruncatedSuffix = "\n...[truncated]"
+)
 
 const (
 	OpenAIAccountSwitchPhaseStarted   = "started"
@@ -75,10 +84,19 @@ type OpenAIAccountSwitchNotifier struct {
 	httpClient      *http.Client
 	timeout         time.Duration
 	minInterval     time.Duration
+	retryBaseDelay  time.Duration
 	now             func() time.Time
+	sleep           func(context.Context, time.Duration) error
 
-	mu       sync.Mutex
-	lastSent map[string]time.Time
+	mu        sync.Mutex
+	lastSent  map[string]time.Time
+	inFlight  map[string]struct{}
+	queueMu   sync.RWMutex
+	queue     chan OpenAIAccountSwitchNotification
+	closed    bool
+	workerWG  sync.WaitGroup
+	workerCtx context.Context
+	cancel    context.CancelFunc
 }
 
 // NewOpenAIAccountSwitchNotifier creates a notifier from runtime config.
@@ -104,7 +122,7 @@ func NewOpenAIAccountSwitchNotifier(cfg *config.Config) *OpenAIAccountSwitchNoti
 		minInterval = 0
 	}
 
-	return &OpenAIAccountSwitchNotifier{
+	n := &OpenAIAccountSwitchNotifier{
 		telegramEnabled: true,
 		sendStarted:     cfg.Gateway.OpenAISwitchNotify.SendStarted,
 		botToken:        strings.TrimSpace(tg.BotToken),
@@ -113,9 +131,17 @@ func NewOpenAIAccountSwitchNotifier(cfg *config.Config) *OpenAIAccountSwitchNoti
 		httpClient:      &http.Client{Timeout: timeout},
 		timeout:         timeout,
 		minInterval:     minInterval,
+		retryBaseDelay:  openAISwitchNotifierRetryBaseDelay,
 		now:             time.Now,
+		sleep:           sleepOpenAISwitchNotifier,
 		lastSent:        make(map[string]time.Time),
+		inFlight:        make(map[string]struct{}),
+		queue:           make(chan OpenAIAccountSwitchNotification, openAISwitchNotifierQueueSize),
 	}
+	n.workerCtx, n.cancel = context.WithCancel(context.Background())
+	n.workerWG.Add(1)
+	go n.run()
+	return n
 }
 
 // NotifyAsync sends the notification in the background. Failures are logged and
@@ -127,22 +153,21 @@ func (n *OpenAIAccountSwitchNotifier) NotifyAsync(event OpenAIAccountSwitchNotif
 	if !n.shouldSend(event) {
 		return
 	}
-	if !n.markSend(event) {
+	n.queueMu.RLock()
+	defer n.queueMu.RUnlock()
+	if n.closed || n.queue == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), n.timeout)
-		defer cancel()
-		if err := n.sendTelegram(ctx, event); err != nil {
-			slog.Warn("openai switch Telegram notification failed",
-				"event", event.EventName,
-				"route", event.Route,
-				"account_id", event.AccountID,
-				"upstream_status", event.UpstreamStatus,
-				"err", err,
-			)
-		}
-	}()
+	select {
+	case n.queue <- event:
+	default:
+		slog.Error("openai switch Telegram notification queue full",
+			"event", event.EventName,
+			"route", event.Route,
+			"account_id", event.AccountID,
+			"queue_capacity", cap(n.queue),
+		)
+	}
 }
 
 // Notify sends synchronously. It is intended for tests and direct callers.
@@ -153,10 +178,12 @@ func (n *OpenAIAccountSwitchNotifier) Notify(ctx context.Context, event OpenAIAc
 	if !n.shouldSend(event) {
 		return nil
 	}
-	if !n.markSend(event) {
+	if !n.reserveSend(event) {
 		return nil
 	}
-	return n.sendTelegram(ctx, event)
+	err := n.sendTelegramWithRetry(ctx, event)
+	n.finishSend(event, err == nil)
+	return err
 }
 
 func (n *OpenAIAccountSwitchNotifier) shouldSend(event OpenAIAccountSwitchNotification) bool {
@@ -166,19 +193,99 @@ func (n *OpenAIAccountSwitchNotifier) shouldSend(event OpenAIAccountSwitchNotifi
 	return true
 }
 
-func (n *OpenAIAccountSwitchNotifier) markSend(event OpenAIAccountSwitchNotification) bool {
+func (n *OpenAIAccountSwitchNotifier) reserveSend(event OpenAIAccountSwitchNotification) bool {
 	if n.minInterval <= 0 {
 		return true
 	}
 	key := event.dedupeKey()
-	now := n.now()
+	now := n.currentTime()
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if _, ok := n.inFlight[key]; ok {
+		return false
+	}
 	if last, ok := n.lastSent[key]; ok && now.Sub(last) < n.minInterval {
 		return false
 	}
-	n.lastSent[key] = now
+	if n.inFlight == nil {
+		n.inFlight = make(map[string]struct{})
+	}
+	n.inFlight[key] = struct{}{}
 	return true
+}
+
+func (n *OpenAIAccountSwitchNotifier) finishSend(event OpenAIAccountSwitchNotification, sent bool) {
+	if n.minInterval <= 0 {
+		return
+	}
+	key := event.dedupeKey()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.inFlight, key)
+	if sent {
+		if n.lastSent == nil {
+			n.lastSent = make(map[string]time.Time)
+		}
+		n.lastSent[key] = n.currentTime()
+	}
+}
+
+func (n *OpenAIAccountSwitchNotifier) currentTime() time.Time {
+	if n.now != nil {
+		return n.now()
+	}
+	return time.Now()
+}
+
+func (n *OpenAIAccountSwitchNotifier) run() {
+	defer n.workerWG.Done()
+	for event := range n.queue {
+		if !n.reserveSend(event) {
+			continue
+		}
+		err := n.sendTelegramWithRetry(n.workerCtx, event)
+		n.finishSend(event, err == nil)
+		if err != nil {
+			slog.Warn("openai switch Telegram notification failed",
+				"event", event.EventName,
+				"route", event.Route,
+				"account_id", event.AccountID,
+				"upstream_status", event.UpstreamStatus,
+				"err", err,
+			)
+		}
+	}
+}
+
+// Close stops accepting notifications and waits for queued deliveries to finish.
+func (n *OpenAIAccountSwitchNotifier) Close(ctx context.Context) error {
+	if n == nil || n.queue == nil {
+		return nil
+	}
+	n.queueMu.Lock()
+	if !n.closed {
+		n.closed = true
+		close(n.queue)
+	}
+	n.queueMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		n.workerWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		if n.cancel != nil {
+			n.cancel()
+		}
+		return nil
+	case <-ctx.Done():
+		if n.cancel != nil {
+			n.cancel()
+		}
+		return ctx.Err()
+	}
 }
 
 func (n *OpenAIAccountSwitchNotifier) sendTelegram(ctx context.Context, event OpenAIAccountSwitchNotification) error {
@@ -188,7 +295,7 @@ func (n *OpenAIAccountSwitchNotifier) sendTelegram(ctx context.Context, event Op
 	}
 	payload := map[string]any{
 		"chat_id":                  telegramChatIDValue(n.chatID),
-		"text":                     event.telegramText(),
+		"text":                     truncateTelegramText(event.telegramText()),
 		"disable_web_page_preview": true,
 	}
 	body, err := json.Marshal(payload)
@@ -203,16 +310,122 @@ func (n *OpenAIAccountSwitchNotifier) sendTelegram(ctx context.Context, event Op
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("send Telegram request: %s", redactTelegramToken(err.Error(), n.botToken))
+		return &telegramDeliveryError{
+			err:       fmt.Errorf("send Telegram request: %s", redactTelegramToken(err.Error(), n.botToken)),
+			retryable: true,
+		}
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("telegram returned status %d: %s", resp.StatusCode, redactTelegramToken(strings.TrimSpace(string(respBody)), n.botToken))
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if readErr != nil {
+		return &telegramDeliveryError{err: fmt.Errorf("read Telegram response: %w", readErr), retryable: true}
 	}
-	return nil
+	var result telegramAPIResponse
+	parseErr := json.Unmarshal(respBody, &result)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && parseErr == nil && result.OK {
+		return nil
+	}
+
+	retryAfter := time.Duration(result.Parameters.RetryAfter) * time.Second
+	retryable := parseErr != nil || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError || result.ErrorCode == http.StatusTooManyRequests || result.ErrorCode >= http.StatusInternalServerError
+	detail := strings.TrimSpace(result.Description)
+	if detail == "" {
+		detail = strings.TrimSpace(string(respBody))
+	}
+	if parseErr != nil && detail == "" {
+		detail = parseErr.Error()
+	}
+	return &telegramDeliveryError{
+		err:        fmt.Errorf("telegram returned status %d: %s", resp.StatusCode, redactTelegramToken(detail, n.botToken)),
+		retryable:  retryable,
+		retryAfter: retryAfter,
+	}
+}
+
+type telegramAPIResponse struct {
+	OK          bool   `json:"ok"`
+	ErrorCode   int    `json:"error_code"`
+	Description string `json:"description"`
+	Parameters  struct {
+		RetryAfter int `json:"retry_after"`
+	} `json:"parameters"`
+}
+
+type telegramDeliveryError struct {
+	err        error
+	retryable  bool
+	retryAfter time.Duration
+}
+
+func (e *telegramDeliveryError) Error() string {
+	if e == nil || e.err == nil {
+		return "Telegram delivery failed"
+	}
+	return e.err.Error()
+}
+
+func (e *telegramDeliveryError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func (n *OpenAIAccountSwitchNotifier) sendTelegramWithRetry(ctx context.Context, event OpenAIAccountSwitchNotification) error {
+	var lastErr error
+	for attempt := 1; attempt <= openAISwitchNotifierMaxAttempts; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, n.timeout)
+		err := n.sendTelegram(attemptCtx, event)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		var deliveryErr *telegramDeliveryError
+		if attempt == openAISwitchNotifierMaxAttempts || !errors.As(err, &deliveryErr) || !deliveryErr.retryable {
+			break
+		}
+		delay := deliveryErr.retryAfter
+		if delay <= 0 {
+			delay = n.retryBaseDelay * time.Duration(1<<(attempt-1))
+		}
+		if err := n.wait(ctx, delay); err != nil {
+			return fmt.Errorf("Telegram retry interrupted: %w", err)
+		}
+	}
+	return lastErr
+}
+
+func (n *OpenAIAccountSwitchNotifier) wait(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	if n.sleep != nil {
+		return n.sleep(ctx, delay)
+	}
+	return sleepOpenAISwitchNotifier(ctx, delay)
+}
+
+func sleepOpenAISwitchNotifier(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func truncateTelegramText(text string) string {
+	runes := []rune(text)
+	if len(runes) <= telegramSendMessageMaxRunes {
+		return text
+	}
+	suffix := []rune(telegramSendMessageTruncatedSuffix)
+	return string(runes[:telegramSendMessageMaxRunes-len(suffix)]) + telegramSendMessageTruncatedSuffix
 }
 
 func redactTelegramToken(message, token string) string {
@@ -241,6 +454,11 @@ func (e OpenAIAccountSwitchNotification) dedupeKey() string {
 		strconv.Itoa(e.UpstreamStatus),
 		strconv.Itoa(e.FinalStatus),
 		e.Model,
+		e.RequestID,
+		e.ClientRequestID,
+		strconv.FormatInt(e.UserID, 10),
+		strconv.FormatInt(e.APIKeyID, 10),
+		strconv.FormatInt(e.OccurredAt.UnixNano(), 10),
 	}, "|")
 }
 
@@ -266,6 +484,7 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 		writeNotificationLine(&b, "error status", strconv.Itoa(status))
 	case OpenAIAccountSwitchPhaseFailed:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
+		writeNotificationLine(&b, "attempted", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
 		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
 		if e.ClientStatus > 0 {
 			writeNotificationLine(&b, "client status", strconv.Itoa(e.ClientStatus))

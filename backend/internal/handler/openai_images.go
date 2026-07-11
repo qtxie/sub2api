@@ -203,6 +203,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		)
 
 		account := selection.Account
+		failoverAttempt = failoverAttempt.withTarget(account)
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.images.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
@@ -308,7 +309,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						zap.Int("switch_count", switchCount),
 						zap.Int("max_switches", maxAccountSwitches),
 					)
-					started := h.notifyOpenAIAccountSwitchStarted(c, "openai.images.upstream_failover_switching", "images", apiKey, subject.UserID, requestModel, parsed.Stream, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
+					started := h.advanceOpenAIAccountSwitch(c, failoverAttempt, "openai.images.upstream_failover_switching", "images", apiKey, subject.UserID, requestModel, parsed.Stream, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					failoverAttempt = started
 					continue
 				}
