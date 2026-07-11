@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -190,5 +191,30 @@ func TestValidateChatStreamAttachmentsRejectsInvalidImageDataURL(t *testing.T) {
 	}})
 	if err == nil || err.Error() != "invalid image attachment" {
 		t.Fatalf("validateChatStreamAttachments() error = %v, want invalid image attachment", err)
+	}
+}
+
+func TestFilterChatImageGenerationModels(t *testing.T) {
+	models := []string{
+		"gpt-5.4",
+		"gpt-image-2",
+		"gemini-2.5-pro",
+		"models/gemini-3.1-flash-image-preview",
+		"grok-imagine-image-quality",
+		"imagen-4.0-generate",
+		"dall-e-3",
+		"flux-1.1-pro",
+	}
+	want := []string{"gpt-5.4", "gemini-2.5-pro"}
+	if got := filterChatImageGenerationModels(models); !reflect.DeepEqual(got, want) {
+		t.Fatalf("filterChatImageGenerationModels() = %#v, want %#v", got, want)
+	}
+}
+
+func TestIsChatImageGenerationModelDoesNotBlockImageInputModels(t *testing.T) {
+	for _, model := range []string{"gpt-4o", "gpt-5.4", "claude-sonnet-4", "gemini-2.5-pro"} {
+		if isChatImageGenerationModel(model) {
+			t.Fatalf("isChatImageGenerationModel(%q) = true, want false", model)
+		}
 	}
 }

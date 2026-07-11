@@ -8,6 +8,7 @@ export type ImageBackground = 'auto' | 'opaque'
 
 export interface ImagePlaygroundGenerationRequest {
   api_key_id: number
+  model?: string
   prompt: string
   size?: string
   quality?: ImageQuality
@@ -19,6 +20,7 @@ export interface ImagePlaygroundGenerationRequest {
 export interface ImagePlaygroundImage {
   b64_json?: string
   url?: string
+  mime_type?: string
   revised_prompt?: string
 }
 
@@ -143,10 +145,12 @@ function normalizeImage(value: unknown): ImagePlaygroundImage | null {
   const b64 = stringValue(image.b64_json) || stringValue(image.result)
   const url = stringValue(image.url)
   const revisedPrompt = stringValue(image.revised_prompt)
+  const mimeType = stringValue(image.mime_type)
   if (!b64 && !url) return null
   return {
     ...(b64 ? { b64_json: b64 } : {}),
     ...(url ? { url } : {}),
+    ...(mimeType ? { mime_type: mimeType } : {}),
     ...(revisedPrompt ? { revised_prompt: revisedPrompt } : {}),
   }
 }

@@ -44,6 +44,12 @@ const activeGrokKey = {
   status: 'active',
   group: { platform: 'grok', allow_image_generation: true }
 }
+const activeGeminiKey = {
+  id: 9,
+  name: 'Gemini image key',
+  status: 'active',
+  group: { platform: 'gemini', allow_image_generation: true }
+}
 
 function mountView() {
   return mount(ImageStudioView, {
@@ -58,7 +64,8 @@ function mountView() {
 
 describe('ImageStudioView', () => {
   beforeEach(() => {
-    listKeys.mockReset().mockResolvedValue({ items: [activeOpenAIKey, activeGrokKey], pages: 1 })
+    localStorage.clear()
+    listKeys.mockReset().mockResolvedValue({ items: [activeOpenAIKey, activeGrokKey, activeGeminiKey], pages: 1 })
     listImageStudioGallery.mockReset().mockResolvedValue([])
     generateImage.mockReset().mockResolvedValue({ data: [{ b64_json: 'abc' }] })
     saveImageStudioGalleryItem.mockReset().mockRejectedValue(new Error('quota exceeded'))
@@ -76,13 +83,35 @@ describe('ImageStudioView', () => {
     expect(wrapper.text()).not.toContain('imageStudio.description')
   })
 
-  it('only presents OpenAI image-enabled keys', async () => {
+  it('presents OpenAI and Gemini image-enabled keys', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     const options = wrapper.find('#image-studio-key').findAll('option').map((option) => option.text())
     expect(options).toContain('OpenAI image key')
+    expect(options).toContain('Gemini image key')
     expect(options).not.toContain('Grok image key')
+  })
+
+  it('uses the selected Gemini image model and returned MIME type', async () => {
+    generateImage.mockResolvedValueOnce({ data: [{ b64_json: 'webp', mime_type: 'image/webp' }] })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('#image-studio-key').setValue('9')
+    await wrapper.get('#image-studio-model').setValue('gemini-2.5-flash-image')
+    await wrapper.get('#image-studio-prompt').setValue('paper kite')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({
+      api_key_id: 9,
+      model: 'gemini-2.5-flash-image'
+    }), expect.any(AbortSignal))
+    expect(wrapper.find('img').attributes('src')).toBe('data:image/webp;base64,webp')
+    expect(saveImageStudioGalleryItem.mock.calls[0][0]).toEqual(expect.objectContaining({
+      model: 'gemini-2.5-flash-image',
+      outputFormat: 'webp'
+    }))
   })
 
   it('only presents backgrounds supported by GPT Image 2', async () => {
@@ -103,7 +132,53 @@ describe('ImageStudioView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('imageStudio.noImagesReturned')
+    expect(wrapper.get('[data-testid="generation-placeholder"]').text()).toContain('imageStudio.generationFailed')
+    expect(wrapper.get('[data-testid="generation-placeholder"] button').text()).toContain('imageStudio.retryGeneration')
     expect(showSuccess).not.toHaveBeenCalled()
+  })
+
+  it('shows one animated placeholder per requested image until results arrive', async () => {
+    let resolveGeneration!: (value: { data: Array<{ b64_json: string }> }) => void
+    generateImage.mockImplementationOnce(() => new Promise((resolve) => { resolveGeneration = resolve }))
+    const randomUUID = vi.fn()
+      .mockReturnValueOnce('generated-image-1')
+      .mockReturnValueOnce('generated-image-2')
+    vi.stubGlobal('crypto', { randomUUID })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.find('#image-studio-prompt').setValue('two paper kites')
+    await wrapper.find('input[type="number"]').setValue(2)
+    await wrapper.find('form').trigger('submit')
+
+    const placeholders = wrapper.findAll('[data-testid="generation-placeholder"]')
+    expect(placeholders).toHaveLength(2)
+    expect(placeholders[0].text()).toContain('imageStudio.generatingImage')
+    expect(placeholders[0].text()).toContain('imageStudio.elapsedSeconds')
+
+    resolveGeneration({ data: [{ b64_json: 'first' }, { b64_json: 'second' }] })
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(0)
+    expect(wrapper.findAll('.image-studio-result-reveal')).toHaveLength(2)
+  })
+
+  it('removes generation placeholders when the request is cancelled', async () => {
+    generateImage.mockImplementationOnce((_payload: unknown, signal: AbortSignal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { code: 'ERR_CANCELED' })))
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.find('#image-studio-prompt').setValue('paper kite')
+    await wrapper.find('form').trigger('submit')
+
+    expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(1)
+    const cancelButton = wrapper.findAll('button').find((button) => button.text().includes('common.cancel'))
+    expect(cancelButton).toBeDefined()
+    await cancelButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('imageStudio.emptyGallery')
   })
 
   it('surfaces gallery loading failures', async () => {

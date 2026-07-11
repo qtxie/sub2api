@@ -48,7 +48,7 @@ func TestBuildImagePlaygroundGatewayBodyPinsGPTImage2(t *testing.T) {
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(body, &payload))
-	require.Equal(t, imagePlaygroundModel, payload["model"])
+	require.Equal(t, imagePlaygroundOpenAIModel, payload["model"])
 	require.Equal(t, true, payload["stream"])
 	require.NotContains(t, payload, "response_format")
 	require.Equal(t, "an orange bicycle", payload["prompt"])
@@ -65,13 +65,49 @@ func TestBuildImagePlaygroundGatewayBodyOmitsBlankOptions(t *testing.T) {
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(body, &payload))
-	require.Equal(t, imagePlaygroundModel, payload["model"])
+	require.Equal(t, imagePlaygroundOpenAIModel, payload["model"])
 	require.Equal(t, true, payload["stream"])
 	require.NotContains(t, payload, "response_format")
 	require.NotContains(t, payload, "size")
 	require.NotContains(t, payload, "quality")
 	require.NotContains(t, payload, "background")
 	require.NotContains(t, payload, "output_format")
+}
+
+func TestBuildImagePlaygroundGeminiBody(t *testing.T) {
+	body, err := buildImagePlaygroundGeminiBody(imagePlaygroundGenerationRequest{
+		Prompt: "  a paper kite  ", Size: "1536x1024",
+	})
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(body, &payload))
+	contents := payload["contents"].([]any)
+	parts := contents[0].(map[string]any)["parts"].([]any)
+	require.Equal(t, "a paper kite", parts[0].(map[string]any)["text"])
+	config := payload["generationConfig"].(map[string]any)
+	require.Equal(t, []any{"TEXT", "IMAGE"}, config["responseModalities"])
+	require.Equal(t, "3:2", config["imageConfig"].(map[string]any)["aspectRatio"])
+}
+
+func TestParseImagePlaygroundGeminiResponse(t *testing.T) {
+	images, err := parseImagePlaygroundGeminiResponse([]byte(`{
+		"candidates":[{"content":{"parts":[
+			{"text":"revised prompt"},
+			{"inlineData":{"mimeType":"image/webp","data":"d2VicA=="}}
+		]}}]
+	}`))
+	require.NoError(t, err)
+	require.Equal(t, []imagePlaygroundImage{{
+		B64JSON: "d2VicA==", MIMEType: "image/webp", RevisedPrompt: "revised prompt",
+	}}, images)
+}
+
+func TestImagePlaygroundGeminiModelAllowlist(t *testing.T) {
+	require.True(t, isImagePlaygroundGeminiModel("gemini-3.1-flash-image"))
+	require.True(t, isImagePlaygroundGeminiModel("models/gemini-2.5-flash-image"))
+	require.False(t, isImagePlaygroundGeminiModel("gemini-3.1-flash-image/../../other"))
+	require.False(t, isImagePlaygroundGeminiModel("gemini-3.1-flash-image-unknown"))
 }
 
 func TestGatewayErrorMessage(t *testing.T) {
@@ -119,6 +155,59 @@ func TestImagePlaygroundGenerateRejectsIneligibleKeys(t *testing.T) {
 	}
 }
 
+func TestImagePlaygroundGenerateUsesGeminiNativeGateway(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	requestCount := 0
+	h := newImagePlaygroundTestHandler(imagePlaygroundTestKey(1, service.StatusActive, service.PlatformGemini, true), func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		require.Equal(t, "/v1beta/models/gemini-3.1-flash-image:generateContent", req.URL.Path)
+		require.Equal(t, "playground-secret", req.Header.Get("x-goog-api-key"))
+		require.Empty(t, req.Header.Get("Authorization"))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewBufferString(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"cG5n"}}]}}]}`)),
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/generations", bytes.NewBufferString(`{"api_key_id":1,"model":"gemini-3.1-flash-image","prompt":"cat","n":2}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1})
+
+	h.Generate(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, 2, requestCount)
+	var output struct {
+		Data struct {
+			Data []imagePlaygroundImage `json:"data"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &output))
+	require.Len(t, output.Data.Data, 2)
+	require.Equal(t, "image/png", output.Data.Data[0].MIMEType)
+}
+
+func TestImagePlaygroundGenerateUsesAntigravityGatewayPrefix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newImagePlaygroundTestHandler(imagePlaygroundTestKey(1, service.StatusActive, service.PlatformAntigravity, true), func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "/antigravity/v1beta/models/gemini-2.5-flash-image:generateContent", req.URL.Path)
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(bytes.NewBufferString(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"cG5n"}}]}}]}`)),
+		}, nil
+	})
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/image-playground/generations", bytes.NewBufferString(`{"api_key_id":1,"model":"gemini-2.5-flash-image","prompt":"cat","n":1}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1})
+
+	h.Generate(c)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestImagePlaygroundGenerateRejectsMoreThanFourImages(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := newImagePlaygroundTestHandler(imagePlaygroundTestKey(1, service.StatusActive, service.PlatformOpenAI, true), func(_ *http.Request) (*http.Response, error) {
@@ -164,7 +253,7 @@ func TestImagePlaygroundGenerateForwardsPinnedRequest(t *testing.T) {
 		require.Equal(t, "text/event-stream, application/json", req.Header.Get("Accept"))
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
-		require.Equal(t, imagePlaygroundModel, body["model"])
+		require.Equal(t, imagePlaygroundOpenAIModel, body["model"])
 		require.Equal(t, true, body["stream"])
 		require.NotContains(t, body, "response_format")
 		require.Equal(t, "cat", body["prompt"])

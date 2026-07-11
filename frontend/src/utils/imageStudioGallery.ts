@@ -5,6 +5,7 @@ export interface ImageStudioGalleryItem {
   prompt: string
   revisedPrompt?: string
   apiKeyId: number
+  model?: string
   size?: string
   quality?: string
   background?: string

@@ -131,10 +131,11 @@ type chatExportResponse struct {
 }
 
 const (
-	chatStreamMaxAttachments = 8
-	chatStreamMaxImageBytes  = 10 * 1024 * 1024
-	chatStreamMaxFileBytes   = 256 * 1024
-	chatStreamMaxTotalBytes  = 16 * 1024 * 1024
+	chatStreamMaxAttachments   = 8
+	chatStreamMaxImageBytes    = 10 * 1024 * 1024
+	chatStreamMaxFileBytes     = 256 * 1024
+	chatStreamMaxTotalBytes    = 16 * 1024 * 1024
+	chatImageGenerationMessage = "Image generation is available in Image Studio"
 )
 
 func (h *ChatHandler) ListModels(c *gin.Context) {
@@ -397,6 +398,10 @@ func (h *ChatHandler) StreamConversation(c *gin.Context) {
 	}
 	if strings.TrimSpace(conversation.Model) == "" {
 		response.BadRequest(c, "Conversation model is required")
+		return
+	}
+	if isChatImageGenerationModel(conversation.Model) {
+		response.BadRequest(c, chatImageGenerationMessage)
 		return
 	}
 
@@ -1033,12 +1038,42 @@ func chatModelIDsForGroup(ctx context.Context, gatewayService *service.GatewaySe
 	availableModels := gatewayService.GetAvailableModels(ctx, groupID, platform)
 	if group != nil && group.CustomModelsListEnabled() {
 		fallbackModels := defaultModelIDsForPlatform(platform)
-		return filterModelsByCustomList(customModelsListSource(platform, availableModels, fallbackModels), fallbackModels, group.ModelsListConfig.Models)
+		models := filterModelsByCustomList(customModelsListSource(platform, availableModels, fallbackModels), fallbackModels, group.ModelsListConfig.Models)
+		return filterChatImageGenerationModels(models)
 	}
 	if len(availableModels) > 0 {
-		return availableModels
+		return filterChatImageGenerationModels(availableModels)
 	}
-	return defaultModelIDsForPlatform(platform)
+	return filterChatImageGenerationModels(defaultModelIDsForPlatform(platform))
+}
+
+func filterChatImageGenerationModels(models []string) []string {
+	filtered := make([]string, 0, len(models))
+	for _, model := range models {
+		if !isChatImageGenerationModel(model) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+// isChatImageGenerationModel identifies dedicated image-output models. Chat
+// still accepts image attachments for multimodal text models.
+func isChatImageGenerationModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	model = strings.TrimPrefix(model, "models/")
+
+	return strings.HasPrefix(model, "gpt-image-") ||
+		strings.HasPrefix(model, "dall-e-") ||
+		model == "grok-imagine" ||
+		model == "grok-imagine-edit" ||
+		strings.HasPrefix(model, "grok-imagine-image") ||
+		strings.HasPrefix(model, "imagen-") ||
+		strings.HasPrefix(model, "flux-") ||
+		strings.Contains(model, "-image-generation") ||
+		strings.HasPrefix(model, "gemini-2.5-flash-image") ||
+		strings.HasPrefix(model, "gemini-3-pro-image") ||
+		strings.HasPrefix(model, "gemini-3.1-flash-image")
 }
 
 func chatConversationToResponse(conversation *service.ChatConversation, includeMessages bool) chatConversationResponse {

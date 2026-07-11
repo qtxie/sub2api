@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	imagePlaygroundModel            = "gpt-image-2"
-	imagePlaygroundMaxOutputCount   = 4
-	imagePlaygroundMaxResponseBytes = 64 << 20
+	imagePlaygroundOpenAIModel        = "gpt-image-2"
+	imagePlaygroundDefaultGeminiModel = "gemini-3.1-flash-image"
+	imagePlaygroundMaxOutputCount     = 4
+	imagePlaygroundMaxResponseBytes   = 64 << 20
 )
 
 var errImagePlaygroundResponseTooLarge = errors.New("image gateway response is too large")
@@ -43,6 +44,7 @@ func NewImagePlaygroundHandler(apiKeyService *service.APIKeyService, cfg *config
 
 type imagePlaygroundGenerationRequest struct {
 	APIKeyID     int64  `json:"api_key_id"`
+	Model        string `json:"model"`
 	Prompt       string `json:"prompt"`
 	Size         string `json:"size"`
 	Quality      string `json:"quality"`
@@ -98,8 +100,8 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 		response.BadRequest(c, "API key is not active")
 		return
 	}
-	if apiKey.Group == nil || apiKey.Group.Platform != service.PlatformOpenAI {
-		response.BadRequest(c, "Image Studio requires an OpenAI API key")
+	if apiKey.Group == nil || !imagePlaygroundPlatformSupported(apiKey.Group.Platform) {
+		response.BadRequest(c, "Image Studio requires an OpenAI, Gemini, or Antigravity API key")
 		return
 	}
 	if !service.GroupAllowsImageGeneration(apiKey.Group) {
@@ -107,6 +109,14 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 		return
 	}
 
+	if apiKey.Group.Platform == service.PlatformOpenAI {
+		h.generateOpenAI(c, apiKey, input)
+		return
+	}
+	h.generateGemini(c, apiKey, input)
+}
+
+func (h *ImagePlaygroundHandler) generateOpenAI(c *gin.Context, apiKey *service.APIKey, input imagePlaygroundGenerationRequest) {
 	body, err := buildImagePlaygroundGatewayBody(input)
 	if err != nil {
 		response.InternalError(c, "Failed to build image generation request")
@@ -167,9 +177,78 @@ func (h *ImagePlaygroundHandler) Generate(c *gin.Context) {
 	response.Success(c, output)
 }
 
+func (h *ImagePlaygroundHandler) generateGemini(c *gin.Context, apiKey *service.APIKey, input imagePlaygroundGenerationRequest) {
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		model = imagePlaygroundDefaultGeminiModel
+	}
+	if !isImagePlaygroundGeminiModel(model) {
+		response.BadRequest(c, "Unsupported Gemini image model")
+		return
+	}
+	body, err := buildImagePlaygroundGeminiBody(input)
+	if err != nil {
+		response.InternalError(c, "Failed to build image generation request")
+		return
+	}
+
+	images := make([]imagePlaygroundImage, 0, input.OutputCount)
+	for len(images) < input.OutputCount {
+		pathPrefix := "/v1beta"
+		if apiKey.Group.Platform == service.PlatformAntigravity {
+			pathPrefix = "/antigravity/v1beta"
+		}
+		path := pathPrefix + "/models/" + model + ":generateContent"
+		upstreamReq, requestErr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, h.localGatewayURL(c, path), bytes.NewReader(body))
+		if requestErr != nil {
+			response.InternalError(c, "Failed to create image generation request")
+			return
+		}
+		upstreamReq.Header.Set("x-goog-api-key", apiKey.Key)
+		upstreamReq.Header.Set("Content-Type", "application/json")
+		upstreamReq.Header.Set("Accept", "application/json")
+		copyImagePlaygroundRequestHeaders(c, upstreamReq)
+
+		upstreamResp, requestErr := h.httpClient.Do(upstreamReq)
+		if requestErr != nil {
+			response.InternalError(c, "Image gateway request failed")
+			return
+		}
+		upstreamBody, readErr := readImagePlaygroundResponse(upstreamResp.Body, imagePlaygroundMaxResponseBytes)
+		_ = upstreamResp.Body.Close()
+		if readErr != nil {
+			if errors.Is(readErr, errImagePlaygroundResponseTooLarge) {
+				response.Error(c, http.StatusBadGateway, "Image gateway response is too large")
+			} else {
+				response.InternalError(c, "Failed to read image gateway response")
+			}
+			return
+		}
+		if upstreamResp.StatusCode >= http.StatusBadRequest {
+			message := gatewayErrorMessage(upstreamBody)
+			if message == "" {
+				message = "Image gateway request failed"
+			}
+			response.Error(c, upstreamResp.StatusCode, message)
+			return
+		}
+		generated, parseErr := parseImagePlaygroundGeminiResponse(upstreamBody)
+		if parseErr != nil {
+			response.Error(c, http.StatusBadGateway, parseErr.Error())
+			return
+		}
+		remaining := input.OutputCount - len(images)
+		if len(generated) > remaining {
+			generated = generated[:remaining]
+		}
+		images = append(images, generated...)
+	}
+	response.Success(c, map[string]any{"data": images})
+}
+
 func buildImagePlaygroundGatewayBody(input imagePlaygroundGenerationRequest) ([]byte, error) {
 	payload := map[string]any{
-		"model":  imagePlaygroundModel,
+		"model":  imagePlaygroundOpenAIModel,
 		"prompt": strings.TrimSpace(input.Prompt),
 		"n":      input.OutputCount,
 		"stream": true,
@@ -185,6 +264,116 @@ func buildImagePlaygroundGatewayBody(input imagePlaygroundGenerationRequest) ([]
 		}
 	}
 	return json.Marshal(payload)
+}
+
+func buildImagePlaygroundGeminiBody(input imagePlaygroundGenerationRequest) ([]byte, error) {
+	imageConfig := map[string]any{"aspectRatio": imagePlaygroundGeminiAspectRatio(input.Size)}
+	payload := map[string]any{
+		"contents": []map[string]any{{
+			"role":  "user",
+			"parts": []map[string]any{{"text": strings.TrimSpace(input.Prompt)}},
+		}},
+		"generationConfig": map[string]any{
+			"responseModalities": []string{"TEXT", "IMAGE"},
+			"imageConfig":        imageConfig,
+		},
+	}
+	return json.Marshal(payload)
+}
+
+type imagePlaygroundImage struct {
+	B64JSON       string `json:"b64_json"`
+	MIMEType      string `json:"mime_type,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
+}
+
+func parseImagePlaygroundGeminiResponse(body []byte) ([]imagePlaygroundImage, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, errors.New("Image gateway returned an invalid response")
+	}
+	if wrapped, ok := payload["response"].(map[string]any); ok {
+		payload = wrapped
+	}
+	candidates, _ := payload["candidates"].([]any)
+	images := make([]imagePlaygroundImage, 0, 1)
+	for _, rawCandidate := range candidates {
+		candidateImageStart := len(images)
+		candidate, _ := rawCandidate.(map[string]any)
+		content, _ := candidate["content"].(map[string]any)
+		parts, _ := content["parts"].([]any)
+		textParts := make([]string, 0, 1)
+		for _, rawPart := range parts {
+			part, _ := rawPart.(map[string]any)
+			if text, _ := part["text"].(string); strings.TrimSpace(text) != "" {
+				textParts = append(textParts, strings.TrimSpace(text))
+			}
+			inline, _ := part["inlineData"].(map[string]any)
+			if inline == nil {
+				inline, _ = part["inline_data"].(map[string]any)
+			}
+			data, _ := inline["data"].(string)
+			if strings.TrimSpace(data) == "" {
+				continue
+			}
+			mimeType, _ := inline["mimeType"].(string)
+			if mimeType == "" {
+				mimeType, _ = inline["mime_type"].(string)
+			}
+			images = append(images, imagePlaygroundImage{B64JSON: data, MIMEType: mimeType})
+		}
+		if len(textParts) > 0 {
+			for i := candidateImageStart; i < len(images); i++ {
+				if images[i].RevisedPrompt == "" {
+					images[i].RevisedPrompt = strings.Join(textParts, "\n")
+				}
+			}
+		}
+	}
+	if len(images) == 0 {
+		return nil, errors.New("Image gateway returned no usable images")
+	}
+	return images, nil
+}
+
+func imagePlaygroundPlatformSupported(platform string) bool {
+	return platform == service.PlatformOpenAI || platform == service.PlatformGemini || platform == service.PlatformAntigravity
+}
+
+func isImagePlaygroundGeminiModel(model string) bool {
+	model = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/")
+	switch model {
+	case "gemini-2.0-flash-exp-image-generation",
+		"gemini-2.5-flash-image",
+		"gemini-3-pro-image",
+		"gemini-3-pro-image-preview",
+		"gemini-3.1-flash-image",
+		"gemini-3.1-flash-image-preview",
+		"gemini-3.1-flash-lite-image":
+		return true
+	default:
+		return false
+	}
+}
+
+func imagePlaygroundGeminiAspectRatio(size string) string {
+	switch strings.TrimSpace(size) {
+	case "1536x1024":
+		return "3:2"
+	case "1024x1536":
+		return "2:3"
+	default:
+		return "1:1"
+	}
+}
+
+func copyImagePlaygroundRequestHeaders(c *gin.Context, req *http.Request) {
+	if lang := c.GetHeader("Accept-Language"); lang != "" {
+		req.Header.Set("Accept-Language", lang)
+	}
+	if ua := c.GetHeader("User-Agent"); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
 }
 
 func isImagePlaygroundEventStream(contentType string) bool {
