@@ -8,11 +8,12 @@ const loading = ref(false)
 const hasAllowedImageKey = ref(false)
 let pendingLoad: Promise<boolean> | null = null
 const pageSize = 100
+const imageGenerationPlatforms = new Set(['openai', 'gemini', 'antigravity'])
 
 function keyAllowsImageGeneration(key: ApiKey): boolean {
   return key.status === 'active' &&
-    key.group?.platform === 'openai' &&
-    key.group.allow_image_generation === true
+    imageGenerationPlatforms.has(key.group?.platform || '') &&
+    key.group?.allow_image_generation === true
 }
 
 async function loadImageGenerationAccess(force = false): Promise<boolean> {

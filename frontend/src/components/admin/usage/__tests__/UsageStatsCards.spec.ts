@@ -13,6 +13,8 @@ const messages: Record<string, string> = {
   'usage.cacheBreakdown': 'Cache Token Breakdown',
   'usage.cacheCreationTokensLabel': 'Cache Creation',
   'usage.cacheReadTokensLabel': 'Cache Read',
+  'usage.cacheHitRate': 'Cache hit rate',
+  'usage.cacheHitRateHint': 'Cache reads divided by all prompt-side tokens.',
   'usage.totalCost': 'Total Cost',
   'usage.accountCost': 'Cost',
   'usage.standardCost': 'Standard',
@@ -63,5 +65,29 @@ describe('UsageStatsCards', () => {
     expect(text).toContain('12')
     expect(text).toContain('Cache Read')
     expect(text).toContain('22')
+    expect(text).toContain('Cache hit rate: 16.4%')
+    expect(wrapper.get('[title="Cache reads divided by all prompt-side tokens."]').exists()).toBe(true)
+  })
+
+  it('shows a zero cache hit rate when there are no prompt-side tokens', () => {
+    const wrapper = mount(UsageStatsCards, {
+      props: {
+        stats: {
+          ...stats,
+          total_input_tokens: 0,
+          total_cache_tokens: 0,
+          total_cache_creation_tokens: 0,
+          total_cache_read_tokens: 0,
+          total_tokens: stats.total_output_tokens,
+        },
+      },
+      global: {
+        stubs: {
+          Icon: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('Cache hit rate: 0.0%')
   })
 })

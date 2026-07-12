@@ -248,6 +248,7 @@ export default {
     cacheBreakdown: 'Cache Token Breakdown',
     cacheCreationTokensLabel: 'Cache Creation',
     cacheReadTokensLabel: 'Cache Read',
+    cacheHitRateHint: 'Cache reads as a percentage of all input, cache creation, and cache read tokens. Output tokens are excluded.',
     totalCost: 'Total Cost',
     standardCost: 'Standard',
     actualCost: 'Actual',

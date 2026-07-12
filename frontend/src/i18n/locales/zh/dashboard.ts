@@ -253,6 +253,7 @@ export default {
     cacheBreakdown: '缓存 Token 明细',
     cacheCreationTokensLabel: '缓存创建',
     cacheReadTokensLabel: '缓存读取',
+    cacheHitRateHint: '缓存读取 Token 占输入、缓存创建和缓存读取 Token 总量的比例，不包含输出 Token。',
     totalCost: '总消费',
     standardCost: '标准',
     actualCost: '实际',

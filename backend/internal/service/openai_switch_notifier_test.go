@@ -235,6 +235,72 @@ func TestOpenAIAccountSwitchNotifierRetriesTelegramRateLimit(t *testing.T) {
 	require.Equal(t, []time.Duration{2 * time.Second}, delays)
 }
 
+func TestOpenAIAccountSwitchNotifierRetriesTransientFailureWithExponentialBackoff(t *testing.T) {
+	var count atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":503,"description":"temporarily unavailable"}`))
+	}))
+	defer server.Close()
+
+	var delays []time.Duration
+	notifier := &OpenAIAccountSwitchNotifier{
+		telegramEnabled: true,
+		botToken:        "token",
+		chatID:          "chat",
+		apiBaseURL:      server.URL,
+		httpClient:      server.Client(),
+		timeout:         5 * time.Second,
+		retryBaseDelay:  10 * time.Millisecond,
+		sleep: func(_ context.Context, delay time.Duration) error {
+			delays = append(delays, delay)
+			return nil
+		},
+	}
+
+	err := notifier.Notify(context.Background(), OpenAIAccountSwitchNotification{
+		Phase:       OpenAIAccountSwitchPhaseFailed,
+		FinalStatus: http.StatusServiceUnavailable,
+	})
+
+	require.ErrorContains(t, err, "temporarily unavailable")
+	require.Equal(t, int32(openAISwitchNotifierMaxAttempts), count.Load())
+	require.Equal(t, []time.Duration{10 * time.Millisecond, 20 * time.Millisecond}, delays)
+}
+
+func TestOpenAIAccountSwitchNotifierStopsRetryWhenWaitIsInterrupted(t *testing.T) {
+	var count atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":502,"description":"upstream failed"}`))
+	}))
+	defer server.Close()
+
+	notifier := &OpenAIAccountSwitchNotifier{
+		telegramEnabled: true,
+		botToken:        "token",
+		chatID:          "chat",
+		apiBaseURL:      server.URL,
+		httpClient:      server.Client(),
+		timeout:         5 * time.Second,
+		retryBaseDelay:  time.Millisecond,
+		sleep: func(context.Context, time.Duration) error {
+			return context.Canceled
+		},
+	}
+
+	err := notifier.Notify(context.Background(), OpenAIAccountSwitchNotification{
+		Phase:       OpenAIAccountSwitchPhaseFailed,
+		FinalStatus: http.StatusBadGateway,
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorContains(t, err, "Telegram retry interrupted")
+	require.Equal(t, int32(1), count.Load())
+}
+
 func TestOpenAIAccountSwitchNotifierRejectsUnsuccessfulTwoHundredResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":false,"error_code":400,"description":"chat not found"}`))
@@ -261,6 +327,26 @@ func TestTruncateTelegramTextPreservesRuneLimit(t *testing.T) {
 	got := truncateTelegramText(text)
 	require.Len(t, []rune(got), telegramSendMessageMaxRunes)
 	require.True(t, strings.HasSuffix(got, telegramSendMessageTruncatedSuffix))
+}
+
+func TestTelegramChatIDValuePreservesNonCanonicalNumericIDs(t *testing.T) {
+	tests := []struct {
+		name   string
+		chatID string
+		want   any
+	}{
+		{name: "positive numeric", chatID: "12345", want: int64(12345)},
+		{name: "negative channel", chatID: "-10012345", want: int64(-10012345)},
+		{name: "surrounding whitespace", chatID: " 42 ", want: int64(42)},
+		{name: "leading zero", chatID: "00123", want: "00123"},
+		{name: "named channel", chatID: "@alerts", want: "@alerts"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, telegramChatIDValue(tc.chatID))
+		})
+	}
 }
 
 func TestOpenAIAccountSwitchNotifierCloseDrainsInOrder(t *testing.T) {
