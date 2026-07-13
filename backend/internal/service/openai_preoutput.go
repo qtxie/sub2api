@@ -194,6 +194,10 @@ func (p *openAIPreOutputCoordinator) beginAttempt(clientCtx context.Context) (co
 			p.mu.Unlock()
 			return nil, nil, errOpenAIPreOutputBudget
 		}
+		if allowance > remaining {
+			allowance = remaining
+			timeoutCause = errOpenAIPreOutputBudget
+		}
 	}
 	p.nextAttemptID++
 	attemptID := p.nextAttemptID

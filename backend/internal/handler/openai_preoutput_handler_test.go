@@ -51,6 +51,27 @@ type preOutputFailoverHTTPUpstream struct {
 	timeoutAccountIDs map[int64]struct{}
 }
 
+type recordingOpenAIAccountSwitchNotifier struct {
+	mu     sync.Mutex
+	events []service.OpenAIAccountSwitchNotification
+}
+
+func (n *recordingOpenAIAccountSwitchNotifier) NotifyAsync(event service.OpenAIAccountSwitchNotification) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.events = append(n.events, event)
+}
+
+func (n *recordingOpenAIAccountSwitchNotifier) Close(context.Context) error {
+	return nil
+}
+
+func (n *recordingOpenAIAccountSwitchNotifier) notifications() []service.OpenAIAccountSwitchNotification {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]service.OpenAIAccountSwitchNotification(nil), n.events...)
+}
+
 func (u *preOutputFailoverHTTPUpstream) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
 	u.mu.Lock()
 	u.accountIDs = append(u.accountIDs, accountID)
@@ -226,6 +247,54 @@ func TestPreOutputBudgetExhaustionDoesNotPenalizeAccount(t *testing.T) {
 	}
 }
 
+func TestOpenAIFailoverTerminalNotificationDetailsPreservesTypedTimeout(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	status, reason := h.openAIFailoverTerminalNotificationDetails(&service.UpstreamFailoverError{
+		StatusCode:         http.StatusGatewayTimeout,
+		FirstOutputTimeout: true,
+		AttemptLatencyMs:   60000,
+	}, "no available accounts")
+
+	require.Equal(t, http.StatusGatewayTimeout, status)
+	require.Contains(t, reason, "first output timeout")
+	require.NotContains(t, reason, "no available accounts")
+}
+
+func TestAdvanceOpenAIAccountSwitchDoesNotFailSilentTimeoutTransition(t *testing.T) {
+	notifier := &recordingOpenAIAccountSwitchNotifier{}
+	h := &OpenAIGatewayHandler{accountSwitchNotifier: notifier}
+	previous := newOpenAIAccountSwitchAttempt(
+		"openai.upstream_failover_switching",
+		"responses",
+		"gpt-5",
+		true,
+		&service.Account{ID: 1, Name: "slow-one"},
+		http.StatusGatewayTimeout,
+		1,
+		0,
+	)
+
+	h.advanceOpenAIAccountSwitch(
+		nil,
+		previous,
+		"openai.upstream_failover_switching",
+		"responses",
+		nil,
+		0,
+		"gpt-5",
+		true,
+		&service.Account{ID: 2, Name: "failed-target"},
+		http.StatusBadGateway,
+		1,
+		3,
+	)
+
+	events := notifier.notifications()
+	require.Len(t, events, 1)
+	require.Equal(t, service.OpenAIAccountSwitchPhaseStarted, events[0].Phase)
+	require.Equal(t, int64(2), events[0].FailedAccountID)
+}
+
 func TestShouldStartOpenAIPreOutputMatchesInitialRolloutScope(t *testing.T) {
 	subscriptionKey := &service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription}}
 	standardKey := &service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeStandard}}
@@ -344,6 +413,8 @@ func TestResponsesFirstOutputTimeoutUsesSlowAccountFailoverUntilSuccess(t *testi
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
 		nil, nil, nil, nil, cfg,
 	)
+	notifier := &recordingOpenAIAccountSwitchNotifier{}
+	h.accountSwitchNotifier = notifier
 
 	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
 	rec := httptest.NewRecorder()
@@ -373,4 +444,17 @@ func TestResponsesFirstOutputTimeoutUsesSlowAccountFailoverUntilSuccess(t *testi
 	require.NotContains(t, rec.Body.String(), `{"account":"slow-one"`)
 	require.NotContains(t, rec.Body.String(), `{"account":"slow-two"`)
 	require.False(t, strings.HasPrefix(strings.TrimSpace(rec.Body.String()), `{"error":`))
+
+	events := notifier.notifications()
+	require.Len(t, events, 3)
+	require.Equal(t, []string{
+		"openai.account_first_output_timeout",
+		"openai.account_first_output_timeout",
+		"openai.upstream_failover_completed",
+	}, []string{events[0].EventName, events[1].EventName, events[2].EventName})
+	require.Equal(t, []string{
+		service.OpenAIAccountSwitchPhaseFailed,
+		service.OpenAIAccountSwitchPhaseFailed,
+		service.OpenAIAccountSwitchPhaseCompleted,
+	}, []string{events[0].Phase, events[1].Phase, events[2].Phase})
 }

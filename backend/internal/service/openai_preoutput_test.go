@@ -351,7 +351,7 @@ func TestOpenAIPreOutputStaleAttemptCannotWriteAfterNextAttemptStarts(t *testing
 	}
 }
 
-func TestOpenAIPreOutputAttemptUsesFullAccountDeadline(t *testing.T) {
+func TestOpenAIPreOutputInitialAttemptHonorsRemainingRequestBudget(t *testing.T) {
 	c, _ := newPreOutputTestContext(t)
 	stop := StartOpenAIPreOutput(c, OpenAIPreOutputSettings{
 		FirstOutputTimeout: 3 * time.Second,
@@ -374,11 +374,11 @@ func TestOpenAIPreOutputAttemptUsesFullAccountDeadline(t *testing.T) {
 	attemptDeadline := p.attemptDeadline
 	attemptTimeout := p.attemptTimeout
 	p.mu.Unlock()
-	if remaining := attemptDeadline.Sub(startedAt); remaining < 2900*time.Millisecond {
-		t.Fatalf("attempt deadline = %s, want full 3s account timeout", remaining)
+	if remaining := attemptDeadline.Sub(startedAt); remaining < 1900*time.Millisecond || remaining > 2200*time.Millisecond {
+		t.Fatalf("attempt deadline = %s, want remaining request budget near 2.1s", remaining)
 	}
-	if !errors.Is(attemptTimeout, errOpenAIFirstOutputTimeout) {
-		t.Fatalf("attempt timeout cause = %v, want first-output timeout", attemptTimeout)
+	if !errors.Is(attemptTimeout, errOpenAIPreOutputBudget) {
+		t.Fatalf("attempt timeout cause = %v, want pre-output budget exhaustion", attemptTimeout)
 	}
 }
 
