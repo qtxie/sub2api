@@ -195,7 +195,8 @@ func newSchedulerTestSubscriptionPriorityConfig() *config.Config {
 }
 
 type openAIAdvancedSchedulerSettingRepoStub struct {
-	values map[string]string
+	values        map[string]string
+	getMultipleFn func(context.Context, []string) (map[string]string, error)
 }
 
 func (s *openAIAdvancedSchedulerSettingRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
@@ -221,7 +222,10 @@ func (s *openAIAdvancedSchedulerSettingRepoStub) Set(context.Context, string, st
 	panic("unexpected call to Set")
 }
 
-func (s *openAIAdvancedSchedulerSettingRepoStub) GetMultiple(_ context.Context, keys []string) (map[string]string, error) {
+func (s *openAIAdvancedSchedulerSettingRepoStub) GetMultiple(ctx context.Context, keys []string) (map[string]string, error) {
+	if s != nil && s.getMultipleFn != nil {
+		return s.getMultipleFn(ctx, keys)
+	}
 	result := make(map[string]string, len(keys))
 	if s == nil || s.values == nil {
 		return result, nil
@@ -232,6 +236,32 @@ func (s *openAIAdvancedSchedulerSettingRepoStub) GetMultiple(_ context.Context, 
 		}
 	}
 	return result, nil
+}
+
+func TestOpenAIAdvancedSchedulerSettingsStopWaitingWhenRequestBudgetExpires(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	release := make(chan struct{})
+	repo := &openAIAdvancedSchedulerSettingRepoStub{getMultipleFn: func(ctx context.Context, _ []string) (map[string]string, error) {
+		select {
+		case <-release:
+			return map[string]string{}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}}
+	svc := &OpenAIGatewayService{rateLimitService: &RateLimitService{settingService: NewSettingService(repo, &config.Config{})}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	settings := svc.openAIAdvancedSchedulerRuntimeSettings(ctx)
+	require.False(t, settings.enabled)
+	require.Less(t, time.Since(startedAt), 200*time.Millisecond)
+	close(release)
+	// The timed-out caller deliberately leaves the shared singleflight load
+	// running. Join it before resetting global test state so it cannot populate
+	// the next test's freshly reset cache.
+	_ = svc.openAIAdvancedSchedulerRuntimeSettings(context.Background())
 }
 
 func (s *openAIAdvancedSchedulerSettingRepoStub) SetMultiple(context.Context, map[string]string) error {

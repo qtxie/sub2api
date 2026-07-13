@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -107,7 +108,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		return s.streamChatCompletionsAsResponses(ctx, c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
 	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
@@ -151,6 +152,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 }
 
 func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
+	ctx context.Context,
 	c *gin.Context,
 	resp *http.Response,
 	originalModel string,
@@ -171,12 +173,66 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state.ToolSearchDeclared = toolSearch
 	state.NamespaceTools = namespaceTools
 	clientDisconnected := false
-
-	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
-		if clientDisconnected || len(events) == 0 {
+	var preambleBuffer []byte
+	var pendingLines []string
+	var semanticFirstTokenMs *int
+	var attemptFirstTokenMs *int
+	var streamEarlyErr error
+	clientOutputStarted := false
+	bufferedWriter := bufio.NewWriterSize(c.Writer, 4*1024)
+	writeBuffered := func(write func() error, flush bool) error {
+		return OpenAIPreOutputWithWriterLock(c, func() error {
+			if write != nil {
+				if err := write(); err != nil {
+					return err
+				}
+			}
+			if !flush {
+				return nil
+			}
+			if err := bufferedWriter.Flush(); err != nil {
+				return err
+			}
+			c.Writer.Flush()
+			return nil
+		})
+	}
+	writeBufferedAndMarkSemantic := func(write func() error) (totalMs, attemptMs int, transitioned bool, err error) {
+		commit := func() error {
+			if write != nil {
+				if err := write(); err != nil {
+					return err
+				}
+			}
+			if err := bufferedWriter.Flush(); err != nil {
+				return err
+			}
+			c.Writer.Flush()
+			return nil
+		}
+		if OpenAIPreOutputEnabled(c) {
+			return OpenAIPreOutputCommitSemantic(c, ctx, commit)
+		}
+		err = commit()
+		if err == nil {
+			totalMs = int(time.Since(startTime).Milliseconds())
+			attemptMs = totalMs
+			transitioned = true
+		}
+		return
+	}
+	markClientDisconnected := func() {
+		if clientDisconnected {
 			return
 		}
-		writeStreamHeaders()
+		clientDisconnected = true
+		OpenAIPreOutputMarkClientDisconnected(c)
+	}
+
+	writeEvents := func(events []apicompat.ResponsesStreamEvent) {
+		if clientDisconnected || len(events) == 0 || streamEarlyErr != nil {
+			return
+		}
 		for _, event := range events {
 			sse, err := apicompat.ResponsesEventToSSE(event)
 			if err != nil {
@@ -186,62 +242,219 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 				)
 				continue
 			}
-			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
-				clientDisconnected = true
+			startsClientOutput := !openAIStreamEventIsPreamble(event.Type)
+			coordinatedPreOutput := OpenAIPreOutputEnabled(c) && !OpenAIPreOutputSemanticStarted(c)
+			if OpenAIPreOutputEnabled(c) && !OpenAIPreOutputClientConnected(c) {
+				markClientDisconnected()
+			}
+			if coordinatedPreOutput && !startsClientOutput {
+				preambleBuffer, err = appendOpenAIPreOutputPreamble(preambleBuffer, strings.TrimSuffix(sse, "\n"))
+				if err != nil {
+					streamEarlyErr = s.newOpenAIStreamFailoverError(c, nil, false, requestID, nil, "OpenAI stream preamble exceeded limit before semantic output")
+					_ = resp.Body.Close()
+					return
+				}
+				continue
+			}
+			if !OpenAIPreOutputEnabled(c) && !clientOutputStarted && !startsClientOutput {
+				pendingLines = append(pendingLines, sse)
+				continue
+			}
+			writeStreamHeaders()
+			if coordinatedPreOutput && startsClientOutput {
+				commitPreamble := preambleBuffer
+				preambleBuffer = nil
+				semanticTotalMs, semanticAttemptMs, semanticTransitioned, flushErr := writeBufferedAndMarkSemantic(func() error {
+					if len(commitPreamble) > 0 {
+						if _, err := bufferedWriter.Write(commitPreamble); err != nil {
+							return err
+						}
+					}
+					_, err := bufferedWriter.WriteString(sse)
+					return err
+				})
+				if flushErr != nil {
+					if IsOpenAIPreOutputFailure(flushErr) {
+						streamEarlyErr = flushErr
+						_ = resp.Body.Close()
+						return
+					}
+					markClientDisconnected()
+					return
+				}
+				if semanticTransitioned {
+					ms := semanticTotalMs
+					semanticFirstTokenMs = &ms
+					attempt := semanticAttemptMs
+					attemptFirstTokenMs = &attempt
+				}
+				clientOutputStarted = true
+				continue
+			}
+			pending := pendingLines
+			pendingLines = nil
+			writeEvent := func() error {
+				for _, pendingEvent := range pending {
+					if _, err := bufferedWriter.WriteString(pendingEvent); err != nil {
+						return err
+					}
+					if _, err := bufferedWriter.WriteString("\n"); err != nil {
+						return err
+					}
+				}
+				_, err := bufferedWriter.WriteString(sse)
+				return err
+			}
+			var flushErr error
+			var semanticTotalMs, semanticAttemptMs int
+			var semanticTransitioned bool
+			if startsClientOutput && semanticFirstTokenMs == nil {
+				semanticTotalMs, semanticAttemptMs, semanticTransitioned, flushErr = writeBufferedAndMarkSemantic(writeEvent)
+			} else {
+				flushErr = writeBuffered(writeEvent, true)
+			}
+			if flushErr != nil {
+				if IsOpenAIPreOutputFailure(flushErr) {
+					streamEarlyErr = flushErr
+					_ = resp.Body.Close()
+					return
+				}
+				markClientDisconnected()
 				logger.L().Debug("openai responses chat fallback: client disconnected, continuing to drain upstream for billing",
-					zap.Error(err),
+					zap.Error(flushErr),
 					zap.String("request_id", requestID),
 				)
 				return
 			}
+			if startsClientOutput && semanticFirstTokenMs == nil && semanticTransitioned {
+				ms := semanticTotalMs
+				semanticFirstTokenMs = &ms
+				attempt := semanticAttemptMs
+				attemptFirstTokenMs = &attempt
+			}
 		}
-		c.Writer.Flush()
 	}
 
 	scan := s.scanCCStream(resp, "openai responses chat fallback", requestID, startTime, func(chunk *apicompat.ChatCompletionsChunk) {
 		writeEvents(apicompat.ChatCompletionsChunkToResponsesEvents(chunk, state))
 	})
+	if scan.Err == nil && OpenAIPreOutputEnabled(c) {
+		scan.Err = ctx.Err()
+	}
+	if streamEarlyErr != nil {
+		return &OpenAIForwardResult{
+			RequestID:           requestID,
+			Usage:               scan.Usage,
+			Model:               originalModel,
+			BillingModel:        billingModel,
+			UpstreamModel:       upstreamModel,
+			ReasoningEffort:     reasoningEffort,
+			ServiceTier:         serviceTier,
+			Stream:              true,
+			Duration:            time.Since(startTime),
+			FirstTokenMs:        semanticFirstTokenMs,
+			AttemptFirstTokenMs: attemptFirstTokenMs,
+		}, streamEarlyErr
+	}
 
 	if scan.Err != nil {
+		if timeoutErr := OpenAIPreOutputFailureError(c, ctx, scan.Err); IsOpenAIPreOutputFailure(timeoutErr) {
+			return &OpenAIForwardResult{
+				RequestID:           requestID,
+				Usage:               scan.Usage,
+				Model:               originalModel,
+				BillingModel:        billingModel,
+				UpstreamModel:       upstreamModel,
+				ReasoningEffort:     reasoningEffort,
+				ServiceTier:         serviceTier,
+				Stream:              true,
+				Duration:            time.Since(startTime),
+				FirstTokenMs:        semanticFirstTokenMs,
+				AttemptFirstTokenMs: attemptFirstTokenMs,
+			}, timeoutErr
+		}
+		firstTokenMs := scan.FirstTokenMs
+		if semanticFirstTokenMs != nil {
+			firstTokenMs = semanticFirstTokenMs
+		}
+		attemptTTFT := attemptFirstTokenMs
+		if attemptTTFT == nil {
+			attemptTTFT = scan.FirstTokenMs
+		}
 		return &OpenAIForwardResult{
-			RequestID:       requestID,
-			Usage:           scan.Usage,
-			Model:           originalModel,
-			BillingModel:    billingModel,
-			UpstreamModel:   upstreamModel,
-			ReasoningEffort: reasoningEffort,
-			ServiceTier:     serviceTier,
-			Stream:          true,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    scan.FirstTokenMs,
+			RequestID:           requestID,
+			Usage:               scan.Usage,
+			Model:               originalModel,
+			BillingModel:        billingModel,
+			UpstreamModel:       upstreamModel,
+			ReasoningEffort:     reasoningEffort,
+			ServiceTier:         serviceTier,
+			Stream:              true,
+			Duration:            time.Since(startTime),
+			FirstTokenMs:        firstTokenMs,
+			AttemptFirstTokenMs: attemptTTFT,
 		}, fmt.Errorf("stream usage incomplete: %w", scan.Err)
 	}
 
 	writeEvents(apicompat.FinalizeChatCompletionsResponsesStream(state))
+	if streamEarlyErr != nil {
+		return &OpenAIForwardResult{
+			RequestID: requestID, Usage: scan.Usage, Model: originalModel, BillingModel: billingModel,
+			UpstreamModel: upstreamModel, ReasoningEffort: reasoningEffort, ServiceTier: serviceTier,
+			Stream: true, Duration: time.Since(startTime), FirstTokenMs: semanticFirstTokenMs,
+			AttemptFirstTokenMs: attemptFirstTokenMs,
+		}, streamEarlyErr
+	}
+	if OpenAIPreOutputEnabled(c) && !OpenAIPreOutputSemanticStarted(c) && !clientDisconnected {
+		return &OpenAIForwardResult{
+			RequestID: requestID, Usage: scan.Usage, Model: originalModel, BillingModel: billingModel,
+			UpstreamModel: upstreamModel, ReasoningEffort: reasoningEffort, ServiceTier: serviceTier,
+			Stream: true, Duration: time.Since(startTime), FirstTokenMs: semanticFirstTokenMs,
+			AttemptFirstTokenMs: attemptFirstTokenMs,
+		}, s.newOpenAIStreamFailoverError(c, nil, false, requestID, nil, "OpenAI compatibility stream ended before semantic output")
+	}
 	if !clientDisconnected {
 		writeStreamHeaders()
-		if _, err := fmt.Fprint(c.Writer, "data: [DONE]\n\n"); err != nil {
-			clientDisconnected = true
-		}
-		if !clientDisconnected {
-			c.Writer.Flush()
+		pending := pendingLines
+		pendingLines = nil
+		if err := writeBuffered(func() error {
+			for _, pendingEvent := range pending {
+				if _, err := bufferedWriter.WriteString(pendingEvent); err != nil {
+					return err
+				}
+				if _, err := bufferedWriter.WriteString("\n"); err != nil {
+					return err
+				}
+			}
+			_, err := bufferedWriter.WriteString("data: [DONE]\n\n")
+			return err
+		}, true); err != nil {
+			markClientDisconnected()
 		}
 	}
 	if !scan.SawDone {
 		logCCStreamMissingDoneSentinel("openai responses chat fallback", requestID)
 	}
+	firstTokenMs := scan.FirstTokenMs
+	if semanticFirstTokenMs != nil {
+		firstTokenMs = semanticFirstTokenMs
+	}
+	if attemptFirstTokenMs == nil {
+		attemptFirstTokenMs = scan.FirstTokenMs
+	}
 
 	return &OpenAIForwardResult{
-		RequestID:       requestID,
-		Usage:           scan.Usage,
-		Model:           originalModel,
-		BillingModel:    billingModel,
-		UpstreamModel:   upstreamModel,
-		ReasoningEffort: reasoningEffort,
-		ServiceTier:     serviceTier,
-		Stream:          true,
-		Duration:        time.Since(startTime),
-		FirstTokenMs:    scan.FirstTokenMs,
+		RequestID:           requestID,
+		Usage:               scan.Usage,
+		Model:               originalModel,
+		BillingModel:        billingModel,
+		UpstreamModel:       upstreamModel,
+		ReasoningEffort:     reasoningEffort,
+		ServiceTier:         serviceTier,
+		Stream:              true,
+		Duration:            time.Since(startTime),
+		FirstTokenMs:        firstTokenMs,
+		AttemptFirstTokenMs: attemptFirstTokenMs,
 	}, nil
 }
 

@@ -20,8 +20,24 @@ import (
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
+	clientCtx := ctx
+	workCtx, cancelWork := OpenAIPreOutputSchedulingContext(c, ctx)
+	defer cancelWork()
+	ctx = workCtx
+	preOutputWorkError := func() error {
+		if !OpenAIPreOutputEnabled(c) || ctx.Err() == nil {
+			return nil
+		}
+		if !OpenAIPreOutputClientConnected(c) {
+			return ctx.Err()
+		}
+		return OpenAIPreOutputBudgetError(c)
+	}
 
-	restrictionResult := s.detectCodexClientRestriction(c, account, body)
+	restrictionResult := s.detectCodexClientRestriction(ctx, c, account, body)
+	if err := preOutputWorkError(); err != nil {
+		return nil, err
+	}
 	apiKeyID := getAPIKeyIDFromContext(c)
 	logCodexCLIOnlyDetection(ctx, c, account, apiKeyID, restrictionResult, body)
 	if restrictionResult.Enabled && !restrictionResult.Matched {
@@ -42,14 +58,28 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
+	runWithPreOutputAttempt := func(_ context.Context, fn func(context.Context) (*OpenAIForwardResult, error)) (*OpenAIForwardResult, error) {
+		attemptCtx, finishAttempt, attemptErr := OpenAIPreOutputBeginAttempt(c, clientCtx)
+		if attemptErr != nil {
+			if !OpenAIPreOutputClientConnected(c) {
+				return nil, attemptErr
+			}
+			return nil, OpenAIPreOutputBudgetError(c)
+		}
+		defer finishAttempt()
+		return fn(attemptCtx)
+	}
 
 	if account.Platform == PlatformGrok {
+		DisableOpenAIPreOutput(c)
 		_ = promptCacheKey
-		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
+		return s.forwardGrokResponses(clientCtx, c, account, body, originalModel, reqStream, startTime)
 	}
 
 	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
-		return s.forwardResponsesViaRawChatCompletions(ctx, c, account, body)
+		return runWithPreOutputAttempt(ctx, func(attemptCtx context.Context) (*OpenAIForwardResult, error) {
+			return s.forwardResponsesViaRawChatCompletions(attemptCtx, c, account, body)
+		})
 	}
 
 	compatMessagesBridge := isOpenAICompatMessagesBridgeBody(body)
@@ -105,7 +135,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, mappedModel)
 		// 国产模型默认 effort 补充：也要用 mappedModel 判定是否是 passback-required 上游。
 		reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, mappedModel)
-		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
+		return runWithPreOutputAttempt(ctx, func(attemptCtx context.Context) (*OpenAIForwardResult, error) {
+			return s.forwardOpenAIPassthrough(attemptCtx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
+		})
 	}
 
 	bodyModified := false
@@ -165,6 +197,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
 	}
 	codexImageGenerationBridgeEnabled := isCodexCLI && imageGenerationAllowed && codexImageGenerationExplicitToolPolicy != codexImageGenerationExplicitToolPolicyStrip && s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
+	if err := preOutputWorkError(); err != nil {
+		return nil, err
+	}
 	var imageIntent bool
 	if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {
 		decoded, decodeErr := ensureReqBody()
@@ -384,6 +419,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if rawTier := requestView.ServiceTier; rawTier != "" {
 		if normTier := normalizedOpenAIServiceTierValue(rawTier); normTier != "" {
 			action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, upstreamModel, normTier)
+			if err := preOutputWorkError(); err != nil {
+				return nil, err
+			}
 			switch action {
 			case BetaPolicyActionBlock:
 				msg := errMsg
@@ -450,10 +488,25 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageInputSize = imageCfg.InputSize
 	}
 
+	// WebSocket transport and image-generation responses keep their existing
+	// cancellation behavior. HTTP streaming paths share the coordinator.
+	if imageIntent || wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
+		DisableOpenAIPreOutput(c)
+	}
+	attemptCtx, finishAttempt, attemptErr := OpenAIPreOutputBeginAttempt(c, clientCtx)
+	if attemptErr != nil {
+		if !OpenAIPreOutputClientConnected(c) {
+			return nil, attemptErr
+		}
+		return nil, OpenAIPreOutputBudgetError(c)
+	}
+	defer finishAttempt()
+	ctx = attemptCtx
+
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
-		return nil, err
+		return nil, OpenAIPreOutputFailureError(c, ctx, err)
 	}
 
 	// 命中 WS 时仅走 WebSocket Mode；不再自动回退 HTTP。
@@ -676,7 +729,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	httpInvalidEncryptedContentRetryTried := false
 	for {
 		// Build upstream request
-		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+		upstreamCtx, releaseUpstreamCtx := openAIUpstreamContext(ctx)
 		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, body, token, reqStream, promptCacheKey, isCodexCLI)
 		releaseUpstreamCtx()
 		if err != nil {
@@ -694,6 +747,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
+			if timeoutErr := OpenAIPreOutputFailureError(c, upstreamReq.Context(), err); IsOpenAIPreOutputFailure(timeoutErr) {
+				return nil, timeoutErr
+			}
+			if OpenAIPreOutputEnabled(c) && !OpenAIPreOutputClientConnected(c) {
+				return nil, fmt.Errorf("upstream canceled after client disconnect: %w", err)
+			}
 			// Transport-level failure (proxy/DNS/TCP/TLS — no HTTP response). Convert to
 			// a failover so the handler switches to a healthy account, and temporarily
 			// unschedule the account on durable faults (e.g. rejected proxy credentials).
@@ -767,6 +826,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		// Handle normal response
 		var usage *OpenAIUsage
 		var firstTokenMs *int
+		var attemptFirstTokenMs *int
 		responseID := ""
 		imageCount := 0
 		var imageOutputSizes []string
@@ -777,6 +837,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 			usage = streamResult.usage
 			firstTokenMs = streamResult.firstTokenMs
+			attemptFirstTokenMs = streamResult.attemptFirstTokenMs
 			responseID = strings.TrimSpace(streamResult.responseID)
 			imageCount = streamResult.imageCount
 			imageOutputSizes = streamResult.imageOutputSizes
@@ -805,18 +866,19 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		forwardResult := &OpenAIForwardResult{
-			RequestID:       resp.Header.Get("x-request-id"),
-			ResponseID:      responseID,
-			Usage:           *usage,
-			Model:           originalModel,
-			BillingModel:    billingModel,
-			UpstreamModel:   upstreamModel,
-			ServiceTier:     serviceTier,
-			ReasoningEffort: reasoningEffort,
-			Stream:          reqStream,
-			OpenAIWSMode:    false,
-			Duration:        time.Since(startTime),
-			FirstTokenMs:    firstTokenMs,
+			RequestID:           resp.Header.Get("x-request-id"),
+			ResponseID:          responseID,
+			Usage:               *usage,
+			Model:               originalModel,
+			BillingModel:        billingModel,
+			UpstreamModel:       upstreamModel,
+			ServiceTier:         serviceTier,
+			ReasoningEffort:     reasoningEffort,
+			Stream:              reqStream,
+			OpenAIWSMode:        false,
+			Duration:            time.Since(startTime),
+			FirstTokenMs:        firstTokenMs,
+			AttemptFirstTokenMs: attemptFirstTokenMs,
 		}
 		if imageCount > 0 {
 			forwardResult.ImageCount = imageCount

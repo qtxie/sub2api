@@ -145,7 +145,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
+	upstreamCtx, releaseUpstreamCtx := openAIUpstreamContext(ctx)
 	upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
 	releaseUpstreamCtx()
 	if err != nil {
@@ -165,6 +165,12 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 	if err != nil {
+		if timeoutErr := OpenAIPreOutputFailureError(c, upstreamReq.Context(), err); IsOpenAIPreOutputFailure(timeoutErr) {
+			return nil, timeoutErr
+		}
+		if OpenAIPreOutputEnabled(c) && !OpenAIPreOutputClientConnected(c) {
+			return nil, err
+		}
 		// Transport-level failure (proxy/DNS/TCP/TLS — no HTTP response). Convert to
 		// a failover so the handler switches to a healthy account, and temporarily
 		// unschedule the account on durable faults (e.g. rejected proxy credentials).
@@ -185,6 +191,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	var usage *OpenAIUsage
 	var firstTokenMs *int
+	var attemptFirstTokenMs *int
 	responseID := ""
 	imageCount := 0
 	var imageOutputSizes []string
@@ -195,6 +202,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 		usage = result.usage
 		firstTokenMs = result.firstTokenMs
+		attemptFirstTokenMs = result.attemptFirstTokenMs
 		responseID = strings.TrimSpace(result.responseID)
 		imageCount = result.imageCount
 		imageOutputSizes = result.imageOutputSizes
@@ -222,17 +230,18 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	forwardResult := &OpenAIForwardResult{
-		RequestID:       resp.Header.Get("x-request-id"),
-		ResponseID:      responseID,
-		Usage:           *usage,
-		Model:           reqModel,
-		UpstreamModel:   upstreamPassthroughModel,
-		ServiceTier:     serviceTier,
-		ReasoningEffort: reasoningEffort,
-		Stream:          reqStream,
-		OpenAIWSMode:    false,
-		Duration:        time.Since(startTime),
-		FirstTokenMs:    firstTokenMs,
+		RequestID:           resp.Header.Get("x-request-id"),
+		ResponseID:          responseID,
+		Usage:               *usage,
+		Model:               reqModel,
+		UpstreamModel:       upstreamPassthroughModel,
+		ServiceTier:         serviceTier,
+		ReasoningEffort:     reasoningEffort,
+		Stream:              reqStream,
+		OpenAIWSMode:        false,
+		Duration:            time.Since(startTime),
+		FirstTokenMs:        firstTokenMs,
+		AttemptFirstTokenMs: attemptFirstTokenMs,
 	}
 	if imageCount > 0 {
 		forwardResult.ImageCount = imageCount
@@ -561,11 +570,12 @@ func collectOpenAIPassthroughTimeoutHeaders(h http.Header) []string {
 }
 
 type openaiStreamingResultPassthrough struct {
-	usage            *OpenAIUsage
-	firstTokenMs     *int
-	responseID       string
-	imageCount       int
-	imageOutputSizes []string
+	usage               *OpenAIUsage
+	firstTokenMs        *int
+	attemptFirstTokenMs *int
+	responseID          string
+	imageCount          int
+	imageOutputSizes    []string
 }
 
 type openaiNonStreamingResultPassthrough struct {
@@ -579,6 +589,12 @@ type openaiNonStreamingResultPassthrough struct {
 func openAIStreamClientOutputStarted(c *gin.Context, localStarted bool) bool {
 	if localStarted {
 		return true
+	}
+	// A coordinator heartbeat commits HTTP transport but is deliberately not
+	// semantic client output. Do not let Writer.Written() reintroduce the old
+	// heartbeat-as-output failover bug.
+	if OpenAIPreOutputEnabled(c) {
+		return OpenAIPreOutputSemanticStarted(c)
 	}
 	return c != nil && c.Writer != nil && c.Writer.Written()
 }
@@ -817,26 +833,72 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	originalModel string,
 	mappedModel string,
 ) (*openaiStreamingResultPassthrough, error) {
-	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-
-	// SSE headers
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	if v := resp.Header.Get("x-request-id"); v != "" {
-		c.Header("x-request-id", v)
-	}
+	OpenAIPreOutputSetHeaders(c, func() {
+		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+		if v := resp.Header.Get("x-request-id"); v != "" {
+			c.Header("x-request-id", v)
+		}
+	})
 
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return nil, errors.New("streaming not supported")
 	}
+	bufferedWriter := bufio.NewWriterSize(w, 4*1024)
+	writeBuffered := func(write func() error, flush bool) error {
+		return OpenAIPreOutputWithWriterLock(c, func() error {
+			if write != nil {
+				if err := write(); err != nil {
+					return err
+				}
+			}
+			if !flush {
+				return nil
+			}
+			if err := bufferedWriter.Flush(); err != nil {
+				return err
+			}
+			flusher.Flush()
+			return nil
+		})
+	}
+	flushBuffered := func() error {
+		return writeBuffered(nil, true)
+	}
+	writeBufferedAndMarkSemantic := func(write func() error) (totalMs, attemptMs int, transitioned bool, err error) {
+		commit := func() error {
+			if write != nil {
+				if err := write(); err != nil {
+					return err
+				}
+			}
+			if err := bufferedWriter.Flush(); err != nil {
+				return err
+			}
+			flusher.Flush()
+			return nil
+		}
+		if OpenAIPreOutputEnabled(c) {
+			return OpenAIPreOutputCommitSemantic(c, ctx, commit)
+		}
+		err = commit()
+		if err == nil {
+			totalMs = int(time.Since(startTime).Milliseconds())
+			attemptMs = totalMs
+			transitioned = true
+		}
+		return
+	}
 
 	usage := &OpenAIUsage{}
 	imageCounter := newOpenAIImageOutputCounter()
 	var firstTokenMs *int
+	var attemptFirstTokenMs *int
 	responseID := ""
 	clientDisconnected := false
 	sawDone := false
@@ -844,18 +906,18 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	sawFailedEvent := false
 	failedMessage := ""
 	clientOutputStarted := false
+	semanticOutputCommitted := false
+	var streamEarlyErr error
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
+	var preambleBuffer []byte
 	pendingLines := make([]string, 0, 8)
-	writePendingLines := func() bool {
-		for _, pending := range pendingLines {
-			if _, err := fmt.Fprintln(w, pending); err != nil {
-				clientDisconnected = true
-				logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
-				return false
-			}
+	markClientDisconnected := func() {
+		if clientDisconnected {
+			return
 		}
-		pendingLines = pendingLines[:0]
-		return true
+		clientDisconnected = true
+		OpenAIPreOutputMarkClientDisconnected(c)
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -870,18 +932,23 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
 		return &openaiStreamingResultPassthrough{
-			usage:            usage,
-			firstTokenMs:     firstTokenMs,
-			responseID:       responseID,
-			imageCount:       imageCounter.Count(),
-			imageOutputSizes: imageCounter.Sizes(),
+			usage:               usage,
+			firstTokenMs:        firstTokenMs,
+			attemptFirstTokenMs: attemptFirstTokenMs,
+			responseID:          responseID,
+			imageCount:          imageCounter.Count(),
+			imageOutputSizes:    imageCounter.Sizes(),
 		}
 	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineStartsClientOutput := false
+		lineIsDone := false
 		forceFlushFailedEvent := false
+		if OpenAIPreOutputEnabled(c) && !OpenAIPreOutputClientConnected(c) {
+			markClientDisconnected()
+		}
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
 			trimmedData := strings.TrimSpace(data)
@@ -914,28 +981,36 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 						UpstreamOutTok: usage.OutputTokens,
 					})
 				}
-				if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+				if !semanticOutputCommitted {
 					if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, account.Platform, dataBytes, failedMessage); matched {
 						// 命中透传规则也要记录 ops 上游错误事件（对齐 CC/Messages 与
 						// antigravity 先例），否则透传命中的 failed 在监控中不可见。
 						s.recordOpenAIStreamUpstreamError(c, account, true, upstreamRequestID, "http_error", dataBytes, failedMessage)
 						MarkResponseCommitted(c)
-						if openAICompactClientWantsStream(c) && StopOpenAICompactSSEKeepaliveCommitted(c) {
-							writeOpenAICompactSSEFailureMessage(c, status, errType, errMsg)
+						preOutputCommitted := StopOpenAIPreOutputCommitted(c)
+						compactCommitted := openAICompactClientWantsStream(c) && StopOpenAICompactSSEKeepaliveCommitted(c)
+						if preOutputCommitted || compactCommitted {
+							WriteOpenAIResponsesSSEFailureMessage(c, status, errType, errMsg)
 						} else {
-							c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-							c.JSON(status, gin.H{
-								"error": gin.H{
-									"type":    errType,
-									"message": errMsg,
-								},
+							_ = OpenAIPreOutputWithWriterLock(c, func() error {
+								c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+								c.JSON(status, gin.H{
+									"error": gin.H{
+										"type":    errType,
+										"message": errMsg,
+									},
+								})
+								return nil
 							})
 						}
-						return resultWithUsage(), fmt.Errorf("upstream response failed: passthrough rule matched message=%s", errMsg)
+						streamEarlyErr = fmt.Errorf("upstream response failed: passthrough rule matched message=%s", errMsg)
+						_ = resp.Body.Close()
+						return resultWithUsage(), streamEarlyErr
 					}
 					if openAIStreamFailedEventShouldFailover(dataBytes, failedMessage) {
-						return resultWithUsage(),
-							s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage)
+						streamEarlyErr = s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, failedMessage)
+						_ = resp.Body.Close()
+						return resultWithUsage(), streamEarlyErr
 					}
 				}
 				forceFlushFailedEvent = true
@@ -943,6 +1018,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			}
 			if trimmedData == "[DONE]" {
 				sawDone = true
+				lineIsDone = true
 			}
 			if openAIStreamEventIsTerminal(trimmedData) {
 				sawTerminalEvent = true
@@ -961,38 +1037,112 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				line = "data: " + string(sanitizedData)
 			}
 			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
-			if firstTokenMs == nil && lineStartsClientOutput && trimmedData != "[DONE]" {
-				ms := int(time.Since(startTime).Milliseconds())
-				firstTokenMs = &ms
-			}
 			s.parseSSEUsageBytes(dataBytes, usage)
 		}
 
 		if !clientDisconnected {
-			if !clientOutputStarted && !lineStartsClientOutput {
+			firstMeaningfulOutput := firstTokenMs == nil && lineStartsClientOutput && !lineIsDone
+			coordinatedPreOutput := OpenAIPreOutputEnabled(c) && !OpenAIPreOutputSemanticStarted(c)
+			if coordinatedPreOutput && !lineStartsClientOutput {
+				var appendErr error
+				preambleBuffer, appendErr = appendOpenAIPreOutputPreamble(preambleBuffer, line)
+				if appendErr != nil {
+					return resultWithUsage(), s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, nil, "OpenAI stream preamble exceeded limit before semantic output")
+				}
+				continue
+			}
+			if coordinatedPreOutput && lineStartsClientOutput {
+				commitPreamble := preambleBuffer
+				preambleBuffer = nil
+				semanticTotalMs, semanticAttemptMs, semanticTransitioned, flushErr := writeBufferedAndMarkSemantic(func() error {
+					if len(commitPreamble) > 0 {
+						if _, err := bufferedWriter.Write(commitPreamble); err != nil {
+							return err
+						}
+					}
+					if _, err := bufferedWriter.WriteString(line); err != nil {
+						return err
+					}
+					_, err := bufferedWriter.WriteString("\n")
+					return err
+				})
+				if flushErr != nil {
+					if IsOpenAIPreOutputFailure(flushErr) {
+						return resultWithUsage(), flushErr
+					}
+					markClientDisconnected()
+				} else {
+					if semanticTransitioned {
+						firstTokenMs = &semanticTotalMs
+						attemptFirstTokenMs = &semanticAttemptMs
+					}
+					clientOutputStarted = true
+					semanticOutputCommitted = true
+				}
+				continue
+			}
+			if !OpenAIPreOutputEnabled(c) && !clientOutputStarted && !lineStartsClientOutput {
 				pendingLines = append(pendingLines, line)
 				continue
 			}
-			if !clientOutputStarted && len(pendingLines) > 0 {
-				if !writePendingLines() {
-					continue
+			pending := pendingLines
+			pendingLines = nil
+			writeLines := func() error {
+				for _, pendingLine := range pending {
+					if _, err := bufferedWriter.WriteString(pendingLine); err != nil {
+						return err
+					}
+					if _, err := bufferedWriter.WriteString("\n"); err != nil {
+						return err
+					}
 				}
+				if _, err := bufferedWriter.WriteString(line); err != nil {
+					return err
+				}
+				_, err := bufferedWriter.WriteString("\n")
+				return err
 			}
-			if _, err := fmt.Fprintln(w, line); err != nil {
-				clientDisconnected = true
-				logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)
+			var flushErr error
+			var semanticTotalMs, semanticAttemptMs int
+			var semanticTransitioned bool
+			if firstMeaningfulOutput {
+				semanticTotalMs, semanticAttemptMs, semanticTransitioned, flushErr = writeBufferedAndMarkSemantic(writeLines)
 			} else {
+				flushErr = writeBuffered(writeLines, true)
+			}
+			if flushErr != nil {
+				if IsOpenAIPreOutputFailure(flushErr) {
+					return resultWithUsage(), flushErr
+				}
+				markClientDisconnected()
+			} else {
+				if firstMeaningfulOutput && semanticTransitioned {
+					firstTokenMs = &semanticTotalMs
+					attemptFirstTokenMs = &semanticAttemptMs
+				}
 				clientOutputStarted = true
-				flusher.Flush()
+				if lineStartsClientOutput {
+					semanticOutputCommitted = true
+				}
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	scanErr := scanner.Err()
+	if scanErr == nil && OpenAIPreOutputEnabled(c) {
+		scanErr = ctx.Err()
+	}
+	if err := scanErr; err != nil {
+		if streamEarlyErr != nil {
+			return resultWithUsage(), streamEarlyErr
+		}
 		if sawTerminalEvent && !sawFailedEvent {
 			return resultWithUsage(), nil
 		}
 		if sawFailedEvent {
 			return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
+		}
+		if timeoutErr := OpenAIPreOutputFailureError(c, ctx, err); IsOpenAIPreOutputFailure(timeoutErr) {
+			return resultWithUsage(), timeoutErr
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return resultWithUsage(), fmt.Errorf("stream usage incomplete: %w", err)
@@ -1020,6 +1170,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		)
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", err)
 	}
+	if streamEarlyErr != nil {
+		return resultWithUsage(), streamEarlyErr
+	}
 	if sawFailedEvent {
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
@@ -1034,6 +1187,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, nil, "OpenAI stream ended before a terminal event")
 		}
 		return resultWithUsage(), errors.New("stream usage incomplete: missing terminal event")
+	}
+
+	if !clientDisconnected {
+		if err := flushBuffered(); err != nil {
+			markClientDisconnected()
+		}
 	}
 
 	return resultWithUsage(), nil

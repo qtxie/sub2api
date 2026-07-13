@@ -128,17 +128,46 @@ func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 	if err != nil {
 		return
 	}
-	_, _ = c.Writer.Write([]byte("event: response.failed\ndata: "))
-	_, _ = c.Writer.Write(payload)
-	_, _ = c.Writer.Write([]byte("\n\n"))
-	c.Writer.Flush()
+	if err := OpenAIPreOutputWithWriterLock(c, func() error {
+		if _, err := c.Writer.Write([]byte("event: response.failed\ndata: ")); err != nil {
+			return err
+		}
+		if _, err := c.Writer.Write(payload); err != nil {
+			return err
+		}
+		if _, err := c.Writer.Write([]byte("\n\n")); err != nil {
+			return err
+		}
+		c.Writer.Flush()
+		return nil
+	}); err != nil {
+		_ = c.Error(err)
+	}
+}
+
+// WriteOpenAIResponsesSSEFailureMessage writes the same valid Responses
+// terminal event for ordinary streaming /responses requests. The compact
+// bridge and the pre-output coordinator share this wire representation.
+func WriteOpenAIResponsesSSEFailureMessage(c *gin.Context, statusCode int, errType, message string) {
+	writeOpenAICompactSSEFailureMessage(c, statusCode, errType, message)
 }
 
 func writeOpenAICompactAwareJSONError(c *gin.Context, statusCode int, errType, message string, extra gin.H) {
+	writeOpenAITransportAwareJSONError(c, statusCode, errType, message, extra)
+}
+
+// writeOpenAITransportAwareJSONError is the single error boundary for local
+// /responses failures that may race with a downstream keepalive. Once either
+// keepalive has committed HTTP 200, only a valid terminal SSE event may follow.
+func writeOpenAITransportAwareJSONError(c *gin.Context, statusCode int, errType, message string, extra gin.H) {
 	if c == nil {
 		return
 	}
-	if StopOpenAICompactSSEKeepaliveCommitted(c) {
+	committed := StopOpenAICompactSSEKeepaliveCommitted(c)
+	if StopOpenAIPreOutputCommitted(c) {
+		committed = true
+	}
+	if committed {
 		writeOpenAICompactSSEFailureMessage(c, statusCode, errType, message)
 		return
 	}
@@ -149,7 +178,12 @@ func writeOpenAICompactAwareJSONError(c *gin.Context, statusCode int, errType, m
 	for key, value := range extra {
 		errObj[key] = value
 	}
-	c.JSON(statusCode, gin.H{"error": errObj})
+	if err := OpenAIPreOutputWithWriterLock(c, func() error {
+		c.JSON(statusCode, gin.H{"error": errObj})
+		return nil
+	}); err != nil {
+		_ = c.Error(err)
+	}
 }
 
 // buildOpenAICompactSSEPayload 把 compact 的 Response JSON 转成 SSE 事件序列：

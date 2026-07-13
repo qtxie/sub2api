@@ -229,22 +229,25 @@ type OpenAIForwardResult struct {
 	ServiceTier *string
 	// ReasoningEffort is extracted from request body (reasoning.effort) or derived from model suffix.
 	// Stored for usage records display; nil means not provided / not applicable.
-	ReasoningEffort    *string
-	Stream             bool
-	OpenAIWSMode       bool
-	ResponseHeaders    http.Header
-	Duration           time.Duration
-	FirstTokenMs       *int
-	ClientDisconnect   bool
-	ImageCount         int
-	ImageSize          string
-	ImageInputSize     string
-	ImageOutputSize    string
-	ImageOutputSizes   []string
-	ImageSizeSource    string
-	ImageSizeBreakdown map[string]int
-	VideoCount         int
-	VideoResolution    string
+	ReasoningEffort *string
+	Stream          bool
+	OpenAIWSMode    bool
+	ResponseHeaders http.Header
+	Duration        time.Duration
+	FirstTokenMs    *int
+	// AttemptFirstTokenMs excludes scheduling and prior failed accounts. It is
+	// the value used to score the account that produced semantic output.
+	AttemptFirstTokenMs *int
+	ClientDisconnect    bool
+	ImageCount          int
+	ImageSize           string
+	ImageInputSize      string
+	ImageOutputSize     string
+	ImageOutputSizes    []string
+	ImageSizeSource     string
+	ImageSizeBreakdown  map[string]int
+	VideoCount          int
+	VideoResolution     string
 	// VideoDurationSeconds 是提交时请求的生成时长（xAI 按输出秒数计费），已归一化到 1-15 秒。
 	VideoDurationSeconds int
 
@@ -916,14 +919,13 @@ func SnapshotOpenAICompatibilityFallbackMetrics() OpenAICompatibilityFallbackMet
 	}
 }
 
-func (s *OpenAIGatewayService) detectCodexClientRestriction(c *gin.Context, account *Account, body []byte) CodexClientRestrictionDetectionResult {
+func (s *OpenAIGatewayService) detectCodexClientRestriction(ctx context.Context, c *gin.Context, account *Account, body []byte) CodexClientRestrictionDetectionResult {
 	// 安全默认：即便缺 settingService（仅测试/误配可达）也保持指纹门为默认种子，
 	// 避免零值 policy（nil 信号）让指纹门失败开放。有 settingService 时整体覆盖为全局策略。
 	policy := CodexRestrictionPolicy{EngineFingerprintSignals: openai.DefaultEngineFingerprintSignals}
 	if account != nil && account.IsCodexCLIOnlyEnabled() && s != nil && s.settingService != nil {
-		ctx := context.Background()
-		if c != nil && c.Request != nil {
-			ctx = c.Request.Context()
+		if ctx == nil {
+			ctx = context.Background()
 		}
 		policy = s.settingService.GetCodexRestrictionPolicy(ctx)
 	}

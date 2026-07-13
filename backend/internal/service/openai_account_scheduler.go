@@ -2469,6 +2469,9 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerSettingRepo() SettingRepos
 }
 
 func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx context.Context) openAIAdvancedSchedulerRuntimeSettings {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if cached, ok := openAIAdvancedSchedulerSettingCache.Load().(*cachedOpenAIAdvancedSchedulerSetting); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return openAIAdvancedSchedulerRuntimeSettings{
@@ -2481,7 +2484,7 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 		}
 	}
 
-	result, _, _ := openAIAdvancedSchedulerSettingSF.Do(openAIAdvancedSchedulerSettingKey, func() (any, error) {
+	resultCh := openAIAdvancedSchedulerSettingSF.DoChan(openAIAdvancedSchedulerSettingKey, func() (any, error) {
 		if cached, ok := openAIAdvancedSchedulerSettingCache.Load().(*cachedOpenAIAdvancedSchedulerSetting); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return openAIAdvancedSchedulerRuntimeSettings{
@@ -2500,7 +2503,7 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 		lbTopKOverride := 0
 		weightOverrides := map[string]float64{}
 		if repo := s.openAIAdvancedSchedulerSettingRepo(); repo != nil {
-			dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAIAdvancedSchedulerSettingDBTimeout)
+			dbCtx, cancel := context.WithTimeout(context.Background(), openAIAdvancedSchedulerSettingDBTimeout)
 			defer cancel()
 
 			if values, err := repo.GetMultiple(dbCtx, openAIAdvancedSchedulerRuntimeSettingKeys()); err == nil {
@@ -2543,6 +2546,13 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 			weightOverrides:             weightOverrides,
 		}, nil
 	})
+	var result any
+	select {
+	case <-ctx.Done():
+		return openAIAdvancedSchedulerRuntimeSettings{}
+	case call := <-resultCh:
+		result = call.Val
+	}
 
 	settings, _ := result.(openAIAdvancedSchedulerRuntimeSettings)
 	return settings
@@ -2917,6 +2927,16 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 	}
 	report := stats.report(accountID, success, firstTokenMs, s.openAISlowAccountConfig())
 	s.logOpenAIAccountSlowStateChange(accountID, report, s.openAISlowAccountConfig())
+}
+
+func (s *OpenAIGatewayService) ReportOpenAIAccountFirstOutputTimeout(_ context.Context, account *Account, attemptFirstTokenMs *int) {
+	if account == nil || account.ID <= 0 {
+		return
+	}
+	// A first-output timeout is a dedicated TTFT signal. Do not feed it into
+	// the generic transient HTTP failure cooldown, because that would conflate
+	// slow accounts with transport/5xx health failures.
+	s.ReportOpenAIAccountScheduleResult(account.ID, false, attemptFirstTokenMs)
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {
@@ -3316,6 +3336,9 @@ func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx contex
 	if s == nil {
 		return cfg
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s.cfg != nil {
 		raw := s.cfg.Gateway.OpenAIScheduler
 		cfg.stickyEnabled = raw.StickyPreferHigherPriorityEnabled
@@ -3345,7 +3368,7 @@ func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx contex
 		}
 	}
 
-	result, _, _ := openAIStickyPreferHigherPrioritySettingSF.Do("openai_sticky_prefer_higher_priority", func() (any, error) {
+	resultCh := openAIStickyPreferHigherPrioritySettingSF.DoChan("openai_sticky_prefer_higher_priority", func() (any, error) {
 		if cached, ok := openAIStickyPreferHigherPrioritySettingCache.Load().(*cachedOpenAIStickyPreferHigherPrioritySetting); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return cached.cfg, nil
@@ -3354,7 +3377,7 @@ func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx contex
 
 		loaded := cfg
 		if repo := s.openAIAdvancedSchedulerSettingRepo(); repo != nil {
-			dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), openAIAdvancedSchedulerSettingDBTimeout)
+			dbCtx, cancel := context.WithTimeout(context.Background(), openAIAdvancedSchedulerSettingDBTimeout)
 			defer cancel()
 
 			values, err := repo.GetMultiple(dbCtx, []string{
@@ -3389,6 +3412,13 @@ func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx contex
 		})
 		return loaded, nil
 	})
+	var result any
+	select {
+	case <-ctx.Done():
+		return cfg
+	case call := <-resultCh:
+		result = call.Val
+	}
 
 	if loaded, ok := result.(openAIStickyPreferHigherPriorityConfig); ok {
 		return loaded

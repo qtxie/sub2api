@@ -4,12 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/stretchr/testify/require"
 )
+
+type blockingCodexPolicyRepo struct {
+	codexPolicyMigrationRepoStub
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (r *blockingCodexPolicyRepo) GetValue(ctx context.Context, key string) (string, error) {
+	if r.calls.Add(1) == 1 {
+		close(r.started)
+	}
+	select {
+	case <-r.release:
+		return "", ErrSettingNotFound
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
 
 func TestGetCodexRestrictionPolicy(t *testing.T) {
 	svc := NewSettingService(&codexPolicyMigrationRepoStub{values: map[string]string{
@@ -27,6 +48,24 @@ func TestGetCodexRestrictionPolicy(t *testing.T) {
 	require.Equal(t, []string{"opencode/"}, pol.Whitelist[0].UAContains)
 	require.Len(t, pol.Blacklist, 1)
 	require.Equal(t, "evil", pol.Blacklist[0].Originator)
+}
+
+func TestGetCodexRestrictionPolicyStopsWaitingWhenRequestBudgetExpires(t *testing.T) {
+	repo := &blockingCodexPolicyRepo{
+		codexPolicyMigrationRepoStub: codexPolicyMigrationRepoStub{values: map[string]string{}},
+		started:                      make(chan struct{}),
+		release:                      make(chan struct{}),
+	}
+	svc := NewSettingService(repo, &config.Config{})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	policy := svc.GetCodexRestrictionPolicy(ctx)
+	if time.Since(startedAt) > 200*time.Millisecond {
+		t.Fatal("policy lookup ignored request deadline")
+	}
+	require.True(t, openaiEngineSignalsEqual(policy.EngineFingerprintSignals, openai.DefaultEngineFingerprintSignals))
+	close(repo.release)
 }
 
 func TestGetCodexRestrictionPolicy_DefaultsSafe(t *testing.T) {

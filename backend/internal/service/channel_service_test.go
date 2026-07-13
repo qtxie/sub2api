@@ -6,11 +6,32 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestChannelServiceLoadCacheStopsWaitingWhenRequestBudgetExpires(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	repo := &mockChannelRepository{
+		listAllFn: func(context.Context) ([]Channel, error) {
+			close(started)
+			<-release
+			return nil, nil
+		},
+	}
+	svc := newTestChannelService(repo)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	_, err := svc.loadCache(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(startedAt), 200*time.Millisecond)
+	close(release)
+}
 
 // ---------------------------------------------------------------------------
 // Mock: ChannelRepository

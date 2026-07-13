@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -41,7 +42,7 @@ func TestDetectCodexClientRestriction_NilSettingServiceFailsClosed(t *testing.T)
 	// settingService 缺失（仅测试/误配可达）：账号已开 codex_cli_only、官方 UA、但无 x-codex- 指纹头。
 	// 零值 policy 不得让指纹门失败开放——gateway 应回退默认种子指纹信号并拒（MissingEngineFingerprint）。
 	s := &OpenAIGatewayService{}
-	r := s.detectCodexClientRestriction(hdrCtx(map[string]string{"User-Agent": "codex_cli_rs/0.141.0 (x)"}), codexOnlyAccount(), nil)
+	r := s.detectCodexClientRestriction(context.Background(), hdrCtx(map[string]string{"User-Agent": "codex_cli_rs/0.141.0 (x)"}), codexOnlyAccount(), nil)
 	require.True(t, r.Enabled)
 	require.False(t, r.Matched)
 	require.Equal(t, CodexClientRestrictionReasonMissingEngineFingerprint, r.Reason)

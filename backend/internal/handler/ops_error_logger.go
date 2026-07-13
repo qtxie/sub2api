@@ -472,6 +472,15 @@ type opsCaptureWriter struct {
 	buf   bytes.Buffer
 }
 
+// Unwrap lets net/http.ResponseController reach optional capabilities on the
+// server's underlying writer, including bounded write deadlines for SSE.
+func (w *opsCaptureWriter) Unwrap() http.ResponseWriter {
+	if w == nil || w.ResponseWriter == nil {
+		return nil
+	}
+	return w.ResponseWriter
+}
+
 const opsCaptureWriterLimit = 64 * 1024
 
 var opsCaptureWriterPool = sync.Pool{

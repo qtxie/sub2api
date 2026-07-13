@@ -37,41 +37,48 @@ const (
 
 // OpenAIAccountSwitchNotification describes an OpenAI upstream account switch.
 type OpenAIAccountSwitchNotification struct {
-	EventName         string
-	Phase             string
-	OccurredAt        time.Time
-	Route             string
-	RequestID         string
-	ClientRequestID   string
-	Path              string
-	Method            string
-	UserID            int64
-	UserName          string
-	APIKeyID          int64
-	APIKeyName        string
-	GroupID           string
-	GroupName         string
-	Model             string
-	Stream            bool
-	AccountID         int64
-	AccountName       string
-	AccountPriority   int
-	FailedAccountID   int64
-	FailedAccountName string
-	FailedPriority    int
-	TargetAccountID   int64
-	TargetAccountName string
-	TargetPriority    int
-	UpstreamStatus    int
-	FinalStatus       int
-	FinalError        string
-	ClientStatus      int
-	StreamStarted     bool
-	FallbackWritten   bool
-	UpstreamWritten   bool
-	LatencyMs         int64
-	SwitchCount       int
-	MaxSwitches       int
+	EventName             string
+	Phase                 string
+	OccurredAt            time.Time
+	Route                 string
+	RequestID             string
+	ClientRequestID       string
+	Path                  string
+	Method                string
+	UserID                int64
+	UserName              string
+	APIKeyID              int64
+	APIKeyName            string
+	GroupID               string
+	GroupName             string
+	Model                 string
+	Stream                bool
+	AccountID             int64
+	AccountName           string
+	AccountPriority       int
+	FailedAccountID       int64
+	FailedAccountName     string
+	FailedPriority        int
+	TargetAccountID       int64
+	TargetAccountName     string
+	TargetPriority        int
+	UpstreamStatus        int
+	FinalStatus           int
+	FinalError            string
+	ClientStatus          int
+	StreamStarted         bool
+	FallbackWritten       bool
+	UpstreamWritten       bool
+	LatencyMs             int64
+	AttemptLatencyMs      int64
+	SwitchLatencyMs       int64
+	TotalRequestLatencyMs int64
+	BudgetRemainingMs     int64
+	ClientConnected       bool
+	TransportStarted      bool
+	SemanticStarted       bool
+	SwitchCount           int
+	MaxSwitches           int
 }
 
 // OpenAIAccountSwitchNotifier sends account-switch notifications.
@@ -513,9 +520,16 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 	if e.SwitchCount > 0 || e.MaxSwitches > 0 {
 		writeNotificationLine(&b, "switch", fmt.Sprintf("%d/%d", e.SwitchCount, e.MaxSwitches))
 	}
-	if e.LatencyMs > 0 {
+	if e.LatencyMs > 0 && e.AttemptLatencyMs <= 0 && e.SwitchLatencyMs <= 0 && e.TotalRequestLatencyMs <= 0 {
 		writeNotificationLine(&b, "latency", formatDurationMs(e.LatencyMs))
 	}
+	writeNotificationLine(&b, "attempt_latency", formatDurationMs(e.AttemptLatencyMs))
+	writeNotificationLine(&b, "switch_latency", formatDurationMs(e.SwitchLatencyMs))
+	writeNotificationLine(&b, "total_request_latency", formatDurationMs(e.TotalRequestLatencyMs))
+	writeNotificationLine(&b, "budget_remaining", formatDurationMs(e.BudgetRemainingMs))
+	writeNotificationLine(&b, "client_connected", strconv.FormatBool(e.ClientConnected))
+	writeNotificationLine(&b, "transport_started", strconv.FormatBool(e.TransportStarted))
+	writeNotificationLine(&b, "semantic_started", strconv.FormatBool(e.SemanticStarted))
 	writeNotificationLine(&b, "user", displayNameID(e.UserName, e.UserID))
 	writeNotificationLine(&b, "api key", displayNameID(e.APIKeyName, e.APIKeyID))
 	writeNotificationLine(&b, "group", displayNameID(e.GroupName, parseNotificationGroupID(e.GroupID)))

@@ -381,7 +381,7 @@ func TestOpenAIAccountSwitchNotifierCloseDrainsInOrder(t *testing.T) {
 	require.Contains(t, texts[1], "request_id: second")
 }
 
-func TestOpenAIAccountSwitchNotifierSuppressesStartedByDefault(t *testing.T) {
+func TestOpenAIAccountSwitchNotifierSendsStartedByDefault(t *testing.T) {
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		count.Add(1)
@@ -392,6 +392,7 @@ func TestOpenAIAccountSwitchNotifierSuppressesStartedByDefault(t *testing.T) {
 	notifier := NewOpenAIAccountSwitchNotifier(&config.Config{
 		Gateway: config.GatewayConfig{
 			OpenAISwitchNotify: config.GatewayOpenAISwitchNotifyConfig{
+				SendStarted: true,
 				Telegram: config.GatewayOpenAISwitchNotifyTelegramConfig{
 					Enabled:        true,
 					BotToken:       "test-token",
@@ -409,7 +410,7 @@ func TestOpenAIAccountSwitchNotifierSuppressesStartedByDefault(t *testing.T) {
 		FailedAccountID: 1,
 		UpstreamStatus:  http.StatusBadGateway,
 	}))
-	require.Equal(t, int32(0), count.Load())
+	require.Equal(t, int32(1), count.Load())
 }
 
 func TestOpenAIAccountSwitchNotifierDoesNotRateLimitDifferentPhases(t *testing.T) {

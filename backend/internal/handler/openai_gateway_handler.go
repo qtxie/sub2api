@@ -221,8 +221,9 @@ func (h *OpenAIGatewayHandler) advanceOpenAIAccountSwitch(
 	maxSwitches int,
 ) openAIAccountSwitchAttempt {
 	if previous.started() && failedAccount != nil && failedAccount.ID != previous.FailedAccountID {
+		switchLatencyMs := time.Since(previous.StartedAt).Milliseconds()
 		h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
-			EventName:         previous.EventName,
+			EventName:         openAIFailoverFailedEventName(previous.EventName),
 			Phase:             service.OpenAIAccountSwitchPhaseFailed,
 			OccurredAt:        time.Now(),
 			Route:             previous.Route,
@@ -238,12 +239,21 @@ func (h *OpenAIGatewayHandler) advanceOpenAIAccountSwitch(
 			UpstreamStatus:    previous.UpstreamStatus,
 			FinalStatus:       h.openAIFailoverFinalStatus(upstreamStatus),
 			FinalError:        "target account failed before switch completed",
-			LatencyMs:         time.Since(previous.StartedAt).Milliseconds(),
+			LatencyMs:         switchLatencyMs,
+			SwitchLatencyMs:   switchLatencyMs,
 			SwitchCount:       previous.SwitchCount,
 			MaxSwitches:       previous.MaxSwitches,
 		}, apiKey, userID)
 	}
 	return h.notifyOpenAIAccountSwitchStarted(c, eventName, route, apiKey, userID, model, stream, failedAccount, upstreamStatus, switchCount, maxSwitches)
+}
+
+func openAIFailoverFailedEventName(eventName string) string {
+	const switchingSuffix = "upstream_failover_switching"
+	if strings.HasSuffix(eventName, switchingSuffix) {
+		return strings.TrimSuffix(eventName, "switching") + "failed"
+	}
+	return eventName
 }
 
 func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchDetailed(
@@ -286,6 +296,27 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchDetailed(
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now()
 	}
+	if event.AttemptLatencyMs <= 0 && event.EventName == "openai.account_first_output_timeout" {
+		event.AttemptLatencyMs = event.LatencyMs
+	}
+	if service.OpenAIPreOutputEnabled(c) {
+		attemptMs, totalMs := service.OpenAIPreOutputLatencySnapshot(c)
+		if event.AttemptLatencyMs <= 0 {
+			event.AttemptLatencyMs = attemptMs
+		}
+		if event.TotalRequestLatencyMs <= 0 {
+			event.TotalRequestLatencyMs = totalMs
+		}
+		event.BudgetRemainingMs = service.OpenAIPreOutputBudgetRemaining(c).Milliseconds()
+		event.ClientConnected = service.OpenAIPreOutputClientConnected(c)
+		event.TransportStarted = service.OpenAIPreOutputTransportStarted(c)
+		event.SemanticStarted = service.OpenAIPreOutputSemanticStarted(c)
+	} else if c == nil || c.Request == nil || c.Request.Context().Err() == nil {
+		event.ClientConnected = true
+	}
+	if event.TotalRequestLatencyMs <= 0 {
+		event.TotalRequestLatencyMs = event.LatencyMs
+	}
 	event.RequestID = strings.TrimSpace(requestID)
 	event.ClientRequestID = strings.TrimSpace(clientRequestID)
 	event.Path = strings.TrimSpace(path)
@@ -294,41 +325,48 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchDetailed(
 	event.APIKeyID = apiKeyID
 	event.GroupID = groupID
 	h.accountSwitchNotifier.NotifyAsync(service.OpenAIAccountSwitchNotification{
-		EventName:         event.EventName,
-		Phase:             event.Phase,
-		OccurredAt:        event.OccurredAt,
-		Route:             event.Route,
-		RequestID:         event.RequestID,
-		ClientRequestID:   event.ClientRequestID,
-		Path:              event.Path,
-		Method:            event.Method,
-		UserID:            event.UserID,
-		UserName:          event.UserName,
-		APIKeyID:          event.APIKeyID,
-		APIKeyName:        event.APIKeyName,
-		GroupID:           event.GroupID,
-		GroupName:         event.GroupName,
-		Model:             event.Model,
-		Stream:            event.Stream,
-		AccountID:         event.AccountID,
-		AccountName:       event.AccountName,
-		AccountPriority:   event.AccountPriority,
-		FailedAccountID:   event.FailedAccountID,
-		FailedAccountName: event.FailedAccountName,
-		FailedPriority:    event.FailedPriority,
-		TargetAccountID:   event.TargetAccountID,
-		TargetAccountName: event.TargetAccountName,
-		TargetPriority:    event.TargetPriority,
-		UpstreamStatus:    event.UpstreamStatus,
-		FinalStatus:       event.FinalStatus,
-		FinalError:        event.FinalError,
-		ClientStatus:      event.ClientStatus,
-		StreamStarted:     event.StreamStarted,
-		FallbackWritten:   event.FallbackWritten,
-		UpstreamWritten:   event.UpstreamWritten,
-		LatencyMs:         event.LatencyMs,
-		SwitchCount:       event.SwitchCount,
-		MaxSwitches:       event.MaxSwitches,
+		EventName:             event.EventName,
+		Phase:                 event.Phase,
+		OccurredAt:            event.OccurredAt,
+		Route:                 event.Route,
+		RequestID:             event.RequestID,
+		ClientRequestID:       event.ClientRequestID,
+		Path:                  event.Path,
+		Method:                event.Method,
+		UserID:                event.UserID,
+		UserName:              event.UserName,
+		APIKeyID:              event.APIKeyID,
+		APIKeyName:            event.APIKeyName,
+		GroupID:               event.GroupID,
+		GroupName:             event.GroupName,
+		Model:                 event.Model,
+		Stream:                event.Stream,
+		AccountID:             event.AccountID,
+		AccountName:           event.AccountName,
+		AccountPriority:       event.AccountPriority,
+		FailedAccountID:       event.FailedAccountID,
+		FailedAccountName:     event.FailedAccountName,
+		FailedPriority:        event.FailedPriority,
+		TargetAccountID:       event.TargetAccountID,
+		TargetAccountName:     event.TargetAccountName,
+		TargetPriority:        event.TargetPriority,
+		UpstreamStatus:        event.UpstreamStatus,
+		FinalStatus:           event.FinalStatus,
+		FinalError:            event.FinalError,
+		ClientStatus:          event.ClientStatus,
+		StreamStarted:         event.StreamStarted,
+		FallbackWritten:       event.FallbackWritten,
+		UpstreamWritten:       event.UpstreamWritten,
+		LatencyMs:             event.LatencyMs,
+		AttemptLatencyMs:      event.AttemptLatencyMs,
+		SwitchLatencyMs:       event.SwitchLatencyMs,
+		TotalRequestLatencyMs: event.TotalRequestLatencyMs,
+		BudgetRemainingMs:     event.BudgetRemainingMs,
+		ClientConnected:       event.ClientConnected,
+		TransportStarted:      event.TransportStarted,
+		SemanticStarted:       event.SemanticStarted,
+		SwitchCount:           event.SwitchCount,
+		MaxSwitches:           event.MaxSwitches,
 	})
 }
 
@@ -384,25 +422,31 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchCompleted(
 	if !attempt.started() {
 		return
 	}
+	eventName := attempt.EventName
+	if strings.HasSuffix(eventName, "upstream_failover_switching") {
+		eventName = strings.TrimSuffix(eventName, "switching") + "completed"
+	}
 	event := service.OpenAIAccountSwitchNotification{
-		EventName:         attempt.EventName,
-		Phase:             service.OpenAIAccountSwitchPhaseCompleted,
-		OccurredAt:        time.Now(),
-		Route:             attempt.Route,
-		Model:             attempt.Model,
-		Stream:            attempt.Stream,
-		AccountID:         attempt.FailedAccountID,
-		AccountName:       attempt.FailedAccountName,
-		FailedAccountID:   attempt.FailedAccountID,
-		FailedAccountName: attempt.FailedAccountName,
-		TargetAccountID:   attempt.TargetAccountID,
-		TargetAccountName: attempt.TargetAccountName,
-		TargetPriority:    attempt.TargetPriority,
-		UpstreamStatus:    attempt.UpstreamStatus,
-		FinalStatus:       finalStatus,
-		LatencyMs:         latencyMs,
-		SwitchCount:       attempt.SwitchCount,
-		MaxSwitches:       attempt.MaxSwitches,
+		EventName:             eventName,
+		Phase:                 service.OpenAIAccountSwitchPhaseCompleted,
+		OccurredAt:            time.Now(),
+		Route:                 attempt.Route,
+		Model:                 attempt.Model,
+		Stream:                attempt.Stream,
+		AccountID:             attempt.FailedAccountID,
+		AccountName:           attempt.FailedAccountName,
+		FailedAccountID:       attempt.FailedAccountID,
+		FailedAccountName:     attempt.FailedAccountName,
+		TargetAccountID:       attempt.TargetAccountID,
+		TargetAccountName:     attempt.TargetAccountName,
+		TargetPriority:        attempt.TargetPriority,
+		UpstreamStatus:        attempt.UpstreamStatus,
+		FinalStatus:           finalStatus,
+		LatencyMs:             latencyMs,
+		SwitchLatencyMs:       time.Since(attempt.StartedAt).Milliseconds(),
+		TotalRequestLatencyMs: latencyMs,
+		SwitchCount:           attempt.SwitchCount,
+		MaxSwitches:           attempt.MaxSwitches,
 	}
 	if target != nil {
 		event.TargetAccountID = target.ID
@@ -447,30 +491,33 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchFailedWithDetails(
 	if details.ClientStatus <= 0 {
 		details.ClientStatus = openAIClientStatusForNotification(c, finalStatus)
 	}
+	eventName := openAIFailoverFailedEventName(attempt.EventName)
 	h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
-		EventName:         attempt.EventName,
-		Phase:             service.OpenAIAccountSwitchPhaseFailed,
-		OccurredAt:        time.Now(),
-		Route:             attempt.Route,
-		Model:             attempt.Model,
-		Stream:            attempt.Stream,
-		AccountID:         attempt.FailedAccountID,
-		AccountName:       attempt.FailedAccountName,
-		FailedAccountID:   attempt.FailedAccountID,
-		FailedAccountName: attempt.FailedAccountName,
-		TargetAccountID:   attempt.TargetAccountID,
-		TargetAccountName: attempt.TargetAccountName,
-		TargetPriority:    attempt.TargetPriority,
-		UpstreamStatus:    attempt.UpstreamStatus,
-		FinalStatus:       finalStatus,
-		FinalError:        strings.TrimSpace(reason),
-		ClientStatus:      details.ClientStatus,
-		StreamStarted:     details.StreamStarted,
-		FallbackWritten:   details.FallbackWritten,
-		UpstreamWritten:   details.UpstreamWritten,
-		LatencyMs:         latencyMs,
-		SwitchCount:       attempt.SwitchCount,
-		MaxSwitches:       attempt.MaxSwitches,
+		EventName:             eventName,
+		Phase:                 service.OpenAIAccountSwitchPhaseFailed,
+		OccurredAt:            time.Now(),
+		Route:                 attempt.Route,
+		Model:                 attempt.Model,
+		Stream:                attempt.Stream,
+		AccountID:             attempt.FailedAccountID,
+		AccountName:           attempt.FailedAccountName,
+		FailedAccountID:       attempt.FailedAccountID,
+		FailedAccountName:     attempt.FailedAccountName,
+		TargetAccountID:       attempt.TargetAccountID,
+		TargetAccountName:     attempt.TargetAccountName,
+		TargetPriority:        attempt.TargetPriority,
+		UpstreamStatus:        attempt.UpstreamStatus,
+		FinalStatus:           finalStatus,
+		FinalError:            strings.TrimSpace(reason),
+		ClientStatus:          details.ClientStatus,
+		StreamStarted:         details.StreamStarted,
+		FallbackWritten:       details.FallbackWritten,
+		UpstreamWritten:       details.UpstreamWritten,
+		LatencyMs:             latencyMs,
+		SwitchLatencyMs:       time.Since(attempt.StartedAt).Milliseconds(),
+		TotalRequestLatencyMs: latencyMs,
+		SwitchCount:           attempt.SwitchCount,
+		MaxSwitches:           attempt.MaxSwitches,
 	}, apiKey, userID)
 }
 
@@ -497,21 +544,23 @@ func (h *OpenAIGatewayHandler) notifyOpenAIAccountSwitchCancelled(
 		return
 	}
 	event := service.OpenAIAccountSwitchNotification{
-		EventName:         attempt.EventName,
-		Phase:             service.OpenAIAccountSwitchPhaseCancelled,
-		OccurredAt:        time.Now(),
-		Route:             attempt.Route,
-		Model:             attempt.Model,
-		Stream:            attempt.Stream,
-		AccountID:         attempt.FailedAccountID,
-		AccountName:       attempt.FailedAccountName,
-		FailedAccountID:   attempt.FailedAccountID,
-		FailedAccountName: attempt.FailedAccountName,
-		UpstreamStatus:    attempt.UpstreamStatus,
-		FinalError:        strings.TrimSpace(reason),
-		LatencyMs:         latencyMs,
-		SwitchCount:       attempt.SwitchCount,
-		MaxSwitches:       attempt.MaxSwitches,
+		EventName:             attempt.EventName,
+		Phase:                 service.OpenAIAccountSwitchPhaseCancelled,
+		OccurredAt:            time.Now(),
+		Route:                 attempt.Route,
+		Model:                 attempt.Model,
+		Stream:                attempt.Stream,
+		AccountID:             attempt.FailedAccountID,
+		AccountName:           attempt.FailedAccountName,
+		FailedAccountID:       attempt.FailedAccountID,
+		FailedAccountName:     attempt.FailedAccountName,
+		UpstreamStatus:        attempt.UpstreamStatus,
+		FinalError:            strings.TrimSpace(reason),
+		LatencyMs:             latencyMs,
+		SwitchLatencyMs:       time.Since(attempt.StartedAt).Milliseconds(),
+		TotalRequestLatencyMs: latencyMs,
+		SwitchCount:           attempt.SwitchCount,
+		MaxSwitches:           attempt.MaxSwitches,
 	}
 	if target != nil {
 		event.TargetAccountID = target.ID
@@ -712,6 +761,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	imageIntent := service.IsImageGenerationIntent("/v1/responses", reqModel, body)
+	requireCompact := isOpenAIRemoteCompactPath(c)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
@@ -727,9 +777,22 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			defer imageReleaseFunc()
 		}
 	}
+	if shouldStartOpenAIPreOutput(reqStream, requireCompact, imageIntent, apiKey) {
+		stopPreOutput := service.StartOpenAIPreOutput(c, h.openAIPreOutputSettings())
+		defer stopPreOutput()
+	}
+	preOutputRequestCtx, cancelPreOutputRequestCtx := service.OpenAIPreOutputSchedulingContext(c, c.Request.Context())
+	defer cancelPreOutputRequestCtx()
 
 	// 解析渠道级模型映射
-	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
+	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(preOutputRequestCtx, apiKey.GroupID, reqModel)
+	if err := preOutputRequestCtx.Err(); err != nil {
+		if c.Request.Context().Err() != nil {
+			return
+		}
+		h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Request exceeded the pre-output budget during channel routing", streamStarted)
+		return
+	}
 	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
@@ -749,7 +812,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
-	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, reqStream, &streamStarted, reqLog)
+	slotWaitStream := reqStream && !service.OpenAIPreOutputEnabled(c)
+	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, slotWaitStream, &streamStarted, reqLog)
 	if !acquired {
 		return
 	}
@@ -759,11 +823,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	// 2. Re-check billing eligibility after wait
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+	if err := h.billingCacheService.CheckBillingEligibility(preOutputRequestCtx, apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+		if c.Request.Context().Err() != nil || (service.OpenAIPreOutputEnabled(c) && !service.OpenAIPreOutputClientConnected(c)) {
+			return
+		}
 		reqLog.Info("openai.billing_eligibility_check_failed", zap.Error(err))
+		if service.OpenAIPreOutputEnabled(c) && errors.Is(preOutputRequestCtx.Err(), context.DeadlineExceeded) {
+			h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Request exceeded the pre-output budget before reaching the upstream", streamStarted)
+			return
+		}
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
-			c.Header("Retry-After", strconv.Itoa(retryAfter))
+			service.OpenAIPreOutputSetHeaders(c, func() {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+			})
 		}
 		h.handleStreamingAwareError(c, status, code, message, streamStarted)
 		return
@@ -771,23 +844,34 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
-	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
+	if h.rejectIfCyberSessionBlockedWithContext(preOutputRequestCtx, c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
 		return
 	}
-	requireCompact := isOpenAIRemoteCompactPath(c)
-
+	if err := preOutputRequestCtx.Err(); service.OpenAIPreOutputEnabled(c) && errors.Is(err, context.DeadlineExceeded) {
+		h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Request exceeded the pre-output budget during policy checks", streamStarted)
+		return
+	}
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
+	firstOutputSwitchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 	var failoverAttempt openAIAccountSwitchAttempt
 
 	for {
+		if c.Request.Context().Err() != nil || !service.OpenAIPreOutputClientConnected(c) {
+			if failoverAttempt.started() {
+				failoverAttempt.EventName = "openai.upstream_failover_skipped"
+				h.notifyOpenAIAccountSwitchCancelled(c, failoverAttempt, apiKey, subject.UserID, nil, "client_disconnected", time.Since(requestStart).Milliseconds())
+			}
+			return
+		}
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		selectionCtx, cancelSelection := service.OpenAIPreOutputSchedulingContext(c, c.Request.Context())
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
+			selectionCtx,
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
@@ -799,6 +883,26 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			false,
 			requestPlatform,
 		)
+		selectionCtxErr := selectionCtx.Err()
+		cancelSelection()
+		if c.Request.Context().Err() != nil || !service.OpenAIPreOutputClientConnected(c) {
+			if failoverAttempt.started() {
+				failoverAttempt.EventName = "openai.upstream_failover_skipped"
+				h.notifyOpenAIAccountSwitchCancelled(c, failoverAttempt, apiKey, subject.UserID, nil, "client_disconnected", time.Since(requestStart).Milliseconds())
+			}
+			return
+		}
+		if service.OpenAIPreOutputEnabled(c) && errors.Is(selectionCtxErr, context.DeadlineExceeded) {
+			budgetErr := service.OpenAIPreOutputBudgetError(c)
+			if failoverAttempt.started() {
+				h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, http.StatusGatewayTimeout, budgetErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+					StreamStarted:   false,
+					UpstreamWritten: service.OpenAIPreOutputTransportStarted(c),
+				})
+			}
+			h.handleFailoverExhausted(c, budgetErr, false)
+			return
+		}
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",
 				zap.Error(err),
@@ -860,7 +964,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
+		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, slotWaitStream, &streamStarted, reqLog)
 		if !acquired {
 			return
 		}
@@ -904,17 +1008,47 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
-					if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
-						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
-							StreamStarted:   true,
-							ClientStatus:    openAIClientStatusForNotification(c, h.openAIFailoverFinalStatus(failoverErr.StatusCode)),
-							UpstreamWritten: true,
-						})
-						h.handleFailoverExhausted(c, failoverErr, true)
+					if c.Request.Context().Err() != nil || !service.OpenAIPreOutputClientConnected(c) {
+						if failoverAttempt.started() {
+							failoverAttempt.EventName = "openai.upstream_failover_skipped"
+							h.notifyOpenAIAccountSwitchCancelled(c, failoverAttempt, apiKey, subject.UserID, nil, "client_disconnected", time.Since(requestStart).Milliseconds())
+						}
 						return
 					}
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-					h.gatewayService.RecordOpenAITransientFailure(c.Request.Context(), account, failoverErr.StatusCode)
+					canFailover := accountOpenAIFailureBeforeFailoverDecision(
+						failoverErr,
+						func(attemptFirstTokenMs *int) {
+							h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, attemptFirstTokenMs)
+							h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
+								EventName: "openai.account_first_output_timeout", Phase: service.OpenAIAccountSwitchPhaseFailed,
+								Route: "responses", Model: reqModel, Stream: reqStream,
+								AccountID: account.ID, AccountName: account.Name,
+								FailedAccountID: account.ID, FailedAccountName: account.Name,
+								UpstreamStatus: failoverErr.StatusCode, FinalStatus: http.StatusGatewayTimeout,
+								FinalError: failoverErr.Reason, LatencyMs: failoverErr.AttemptLatencyMs,
+							}, apiKey, subject.UserID)
+						},
+						func() {
+							h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+							h.gatewayService.RecordOpenAITransientFailure(c.Request.Context(), account, failoverErr.StatusCode)
+						},
+						func() bool {
+							if service.OpenAIPreOutputEnabled(c) {
+								return service.OpenAIPreOutputCanFailover(c)
+							}
+							return service.OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward
+						},
+					)
+					if !canFailover {
+						semanticStarted := service.OpenAIPreOutputSemanticStarted(c)
+						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+							StreamStarted:   semanticStarted,
+							ClientStatus:    openAIClientStatusForNotification(c, h.openAIFailoverFinalStatus(failoverErr.StatusCode)),
+							UpstreamWritten: service.OpenAIPreOutputTransportStarted(c),
+						})
+						h.handleFailoverExhausted(c, failoverErr, semanticStarted)
+						return
+					}
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
 						retryLimit := account.GetPoolModeRetryCount()
@@ -926,10 +1060,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 								zap.Int("retry_limit", retryLimit),
 								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
 							)
+							retryCtx, cancelRetry := service.OpenAIPreOutputSchedulingContext(c, c.Request.Context())
+							retryTimer := time.NewTimer(sameAccountRetryDelay)
 							select {
-							case <-c.Request.Context().Done():
+							case <-retryCtx.Done():
+								retryTimer.Stop()
+								cancelRetry()
+								if c.Request.Context().Err() == nil && service.OpenAIPreOutputEnabled(c) && service.OpenAIPreOutputClientConnected(c) {
+									h.handleFailoverExhausted(c, service.OpenAIPreOutputBudgetError(c), false)
+								}
 								return
-							case <-time.After(sameAccountRetryDelay):
+							case <-retryTimer.C:
+								cancelRetry()
 							}
 							continue
 						}
@@ -937,9 +1079,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					if scheduleDecision.StickySessionRebind || scheduleDecision.PreviousRebind {
 						h.gatewayService.RecordOpenAIStickyFailbackFailure(c.Request.Context(), account.ID, failoverErr.StatusCode)
 					}
-					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
+					if failoverErr.FirstOutputTimeout {
+						if firstOutputSwitchCount >= h.openAIFirstOutputMaxSwitches() {
+							if failoverAttempt.started() {
+								h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, http.StatusGatewayTimeout, failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
+									StreamStarted:   false,
+									UpstreamWritten: service.OpenAIPreOutputTransportStarted(c),
+								})
+							}
+							h.handleFailoverExhausted(c, failoverErr, false)
+							return
+						}
+						firstOutputSwitchCount++
+					}
 					if switchCount >= maxAccountSwitches {
 						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
 							StreamStarted: streamStarted,
@@ -955,6 +1109,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
+					h.gatewayService.RecordOpenAIAccountSwitch()
 					reqLog.Warn("openai.upstream_failover_switching",
 						zap.Int64("account_id", account.ID),
 						zap.Int("upstream_status", failoverErr.StatusCode),
@@ -964,6 +1119,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					started := h.advanceOpenAIAccountSwitch(c, failoverAttempt, "openai.upstream_failover_switching", "responses", apiKey, subject.UserID, reqModel, reqStream, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					failoverAttempt = started
 					continue
+				}
+				if c.Request.Context().Err() != nil || !service.OpenAIPreOutputClientConnected(c) {
+					if failoverAttempt.started() {
+						failoverAttempt.EventName = "openai.upstream_failover_skipped"
+						h.notifyOpenAIAccountSwitchCancelled(c, failoverAttempt, apiKey, subject.UserID, nil, "client_disconnected", time.Since(requestStart).Milliseconds())
+					}
+					return
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
@@ -1000,7 +1162,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ClearOpenAITransientFailures(account.ID)
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			schedulerTTFT := result.AttemptFirstTokenMs
+			if schedulerTTFT == nil {
+				schedulerTTFT = result.FirstTokenMs
+			}
+			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, schedulerTTFT)
 		} else {
 			h.gatewayService.ClearOpenAITransientFailures(account.ID)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
@@ -1053,6 +1219,39 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func shouldStartOpenAIPreOutput(reqStream, requireCompact, imageIntent bool, apiKey *service.APIKey) bool {
+	return reqStream &&
+		!requireCompact &&
+		!imageIntent &&
+		apiKey != nil &&
+		apiKey.Group != nil &&
+		apiKey.Group.IsSubscriptionType() &&
+		openAICompatibleRequestPlatform(apiKey) == service.PlatformOpenAI
+}
+
+func accountOpenAIFailureBeforeFailoverDecision(
+	failoverErr *service.UpstreamFailoverError,
+	reportFirstOutputTimeout func(*int),
+	reportGenericFailure func(),
+	canFailover func() bool,
+) bool {
+	if failoverErr != nil && failoverErr.FirstOutputTimeout {
+		var attemptFirstTokenMs *int
+		if failoverErr.AttemptLatencyMs > 0 {
+			attemptLatencyMs := int(failoverErr.AttemptLatencyMs)
+			attemptFirstTokenMs = &attemptLatencyMs
+		}
+		if reportFirstOutputTimeout != nil {
+			reportFirstOutputTimeout(attemptFirstTokenMs)
+		}
+	}
+	allowed := canFailover != nil && canFailover()
+	if allowed && (failoverErr == nil || (!failoverErr.FirstOutputTimeout && !failoverErr.PreOutputBudgetExhausted)) && reportGenericFailure != nil {
+		reportGenericFailure()
+	}
+	return allowed
 }
 
 func isOpenAIRemoteCompactPath(c *gin.Context) bool {
@@ -1655,10 +1854,23 @@ func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
 	streamStarted *bool,
 	reqLog *zap.Logger,
 ) (func(), bool) {
-	ctx := c.Request.Context()
+	originalRequest := c.Request
+	ctx := originalRequest.Context()
+	acquireCtx, cancelAcquire := service.OpenAIPreOutputSchedulingContext(c, ctx)
+	c.Request = originalRequest.WithContext(acquireCtx)
 	userReleaseFunc, err := h.concurrencyHelper.AcquireUserSlotWithWait(c, userID, userConcurrency, reqStream, streamStarted)
+	acquireCtxErr := acquireCtx.Err()
+	c.Request = originalRequest
+	cancelAcquire()
 	if err != nil {
 		reqLog.Warn("openai.user_slot_acquire_failed", zap.Error(err))
+		if ctx.Err() != nil || (service.OpenAIPreOutputEnabled(c) && !service.OpenAIPreOutputClientConnected(c)) {
+			return nil, false
+		}
+		if service.OpenAIPreOutputEnabled(c) && errors.Is(acquireCtxErr, context.DeadlineExceeded) {
+			h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Request did not reach an upstream account before the deadline", *streamStarted)
+			return nil, false
+		}
 		h.handleConcurrencyError(c, err, "user", *streamStarted)
 		return nil, false
 	}
@@ -1680,10 +1892,20 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 		return nil, false
 	}
 
-	ctx := c.Request.Context()
+	originalRequest := c.Request
+	originalCtx := originalRequest.Context()
+	ctx, cancelAcquire := service.OpenAIPreOutputSchedulingContext(c, originalCtx)
+	c.Request = originalRequest.WithContext(ctx)
+	defer func() {
+		c.Request = originalRequest
+		cancelAcquire()
+	}()
 	account := selection.Account
 	if selection.Acquired {
-		return wrapReleaseOnDone(ctx, selection.ReleaseFunc), true
+		if service.OpenAIPreOutputEnabled(c) {
+			return selection.ReleaseFunc, true
+		}
+		return wrapReleaseOnDone(originalCtx, selection.ReleaseFunc), true
 	}
 	if selection.WaitPlan == nil {
 		markOpsRoutingCapacityLimited(c)
@@ -1698,6 +1920,13 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	)
 	if err != nil {
 		reqLog.Warn("openai.account_slot_quick_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		if originalCtx.Err() != nil || (service.OpenAIPreOutputEnabled(c) && !service.OpenAIPreOutputClientConnected(c)) {
+			return nil, false
+		}
+		if service.OpenAIPreOutputEnabled(c) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Request did not reach the upstream before the deadline", *streamStarted)
+			return nil, false
+		}
 		h.handleConcurrencyError(c, err, "account", *streamStarted)
 		return nil, false
 	}
@@ -1705,12 +1934,22 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 		if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
-		return wrapReleaseOnDone(ctx, fastReleaseFunc), true
+		if service.OpenAIPreOutputEnabled(c) {
+			return fastReleaseFunc, true
+		}
+		return wrapReleaseOnDone(originalCtx, fastReleaseFunc), true
 	}
 
 	canWait, waitErr := h.concurrencyHelper.IncrementAccountWaitCount(ctx, account.ID, selection.WaitPlan.MaxWaiting)
 	if waitErr != nil {
 		reqLog.Warn("openai.account_wait_counter_increment_failed", zap.Int64("account_id", account.ID), zap.Error(waitErr))
+		if originalCtx.Err() != nil || (service.OpenAIPreOutputEnabled(c) && !service.OpenAIPreOutputClientConnected(c)) {
+			return nil, false
+		}
+		if service.OpenAIPreOutputEnabled(c) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Request did not reach the upstream before the deadline", *streamStarted)
+			return nil, false
+		}
 	} else if !canWait {
 		reqLog.Info("openai.account_wait_queue_full",
 			zap.Int64("account_id", account.ID),
@@ -1739,6 +1978,13 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	)
 	if err != nil {
 		reqLog.Warn("openai.account_slot_acquire_failed", zap.Int64("account_id", account.ID), zap.Error(err))
+		if originalCtx.Err() != nil || (service.OpenAIPreOutputEnabled(c) && !service.OpenAIPreOutputClientConnected(c)) {
+			return nil, false
+		}
+		if service.OpenAIPreOutputEnabled(c) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Request did not reach the upstream before the deadline", *streamStarted)
+			return nil, false
+		}
 		h.handleConcurrencyError(c, err, "account", *streamStarted)
 		return nil, false
 	}
@@ -1748,7 +1994,10 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
-	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
+	if service.OpenAIPreOutputEnabled(c) {
+		return accountReleaseFunc, true
+	}
+	return wrapReleaseOnDone(originalCtx, accountReleaseFunc), true
 }
 
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint
@@ -2480,6 +2729,16 @@ func (h *OpenAIGatewayHandler) handleConcurrencyError(c *gin.Context, err error,
 }
 
 func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
+	if failoverErr != nil && failoverErr.PreOutputBudgetExhausted {
+		service.SetOpsUpstreamError(c, http.StatusGatewayTimeout, "pre_output_budget_exhausted", "")
+		h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Request exceeded the total pre-output budget", streamStarted)
+		return
+	}
+	if failoverErr != nil && failoverErr.FirstOutputTimeout {
+		service.SetOpsUpstreamError(c, http.StatusGatewayTimeout, "first_output_timeout", "")
+		h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "first_output_timeout", "Upstream did not produce output before the deadline", streamStarted)
+		return
+	}
 	statusCode := failoverErr.StatusCode
 	responseBody := failoverErr.ResponseBody
 	if service.IsOpenAISilentRefusalErrorBody(responseBody) {
@@ -2552,6 +2811,9 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		streamStarted = true
 	}
+	if service.StopOpenAIPreOutputCommitted(c) {
+		streamStarted = true
+	}
 	if streamStarted {
 		// /v1/responses 的严格 SDK（Codex CLI）要求终止事件必须属于
 		// response.completed/failed/incomplete/cancelled 集合。
@@ -2567,10 +2829,15 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 		if ok {
 			// SSE 错误事件固定 schema，使用 Quote 直拼可避免额外 Marshal 分配。
 			errorEvent := "event: error\ndata: " + `{"error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
-			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
+			if err := service.OpenAIPreOutputWithWriterLock(c, func() error {
+				if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
+					return err
+				}
+				flusher.Flush()
+				return nil
+			}); err != nil {
 				_ = c.Error(err)
 			}
-			flusher.Flush()
 		}
 		return
 	}
@@ -2591,6 +2858,10 @@ func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, stream
 			return true
 		}
 		return false
+	}
+	if service.StopOpenAIPreOutputCommitted(c) {
+		service.MarkOpsStreamError(c, "upstream_error", "Upstream request failed", http.StatusBadGateway)
+		return writeResponsesFailedSSE(c, "upstream_error", "Upstream request failed")
 	}
 	if service.IsResponseCommitted(c) {
 		return false
@@ -2627,8 +2898,18 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 	if err == nil || c == nil || c.Writer == nil {
 		return false
 	}
+	if service.IsResponseCommitted(c) {
+		return true
+	}
 	// 与快照同口径：排除 compact 心跳字节，避免"仅心跳写出"被误判为
 	// 响应已写出（#3887）。
+	if service.OpenAIPreOutputEnabled(c) {
+		if !service.OpenAIPreOutputSemanticStarted(c) {
+			return false
+		}
+		// Meaningful output was already committed by the coordinator.
+		return true
+	}
 	if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {
 		return false
 	}
@@ -2663,12 +2944,23 @@ func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType
 			return
 		}
 	}
-	c.JSON(status, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
-	})
+	if service.StopOpenAIPreOutputCommitted(c) {
+		service.MarkOpsStreamError(c, errType, message, status)
+		if writeResponsesFailedSSE(c, errType, message) {
+			return
+		}
+	}
+	if err := service.OpenAIPreOutputWithWriterLock(c, func() error {
+		c.JSON(status, gin.H{
+			"error": gin.H{
+				"type":    errType,
+				"message": message,
+			},
+		})
+		return nil
+	}); err != nil {
+		_ = c.Error(err)
+	}
 }
 
 // openAICompactKeepaliveInterval 复用流式 keepalive 配置作为 compact 下游
@@ -2678,6 +2970,27 @@ func (h *OpenAIGatewayHandler) openAICompactKeepaliveInterval() time.Duration {
 		return 0
 	}
 	return time.Duration(h.cfg.Gateway.StreamKeepaliveInterval) * time.Second
+}
+
+func (h *OpenAIGatewayHandler) openAIPreOutputSettings() service.OpenAIPreOutputSettings {
+	if h == nil || h.cfg == nil {
+		return service.OpenAIPreOutputSettings{}
+	}
+	gateway := h.cfg.Gateway
+	return service.OpenAIPreOutputSettings{
+		FirstOutputTimeout:  time.Duration(gateway.OpenAIFirstOutputTimeoutSeconds) * time.Second,
+		TotalBudget:         time.Duration(gateway.OpenAITotalPreOutputBudgetSeconds) * time.Second,
+		HeartbeatInterval:   time.Duration(gateway.StreamKeepaliveInterval) * time.Second,
+		PreDisconnectDrain:  time.Duration(gateway.OpenAIPreOutputDisconnectDrainSeconds) * time.Second,
+		PostDisconnectDrain: time.Duration(gateway.OpenAIPostOutputBillingDrainSeconds) * time.Second,
+	}
+}
+
+func (h *OpenAIGatewayHandler) openAIFirstOutputMaxSwitches() int {
+	if h == nil || h.cfg == nil {
+		return 0
+	}
+	return h.cfg.Gateway.OpenAIFirstOutputMaxSwitches
 }
 
 func setOpenAIClientTransportHTTP(c *gin.Context) {
@@ -2928,42 +3241,59 @@ const (
 // written + ops entry enqueued). Fail-open: disabled switch / empty key /
 // store error → false.
 func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKey *service.APIKey, body []byte, model string, format cyberSessionBlockFormat) bool {
+	ctx := context.Background()
+	if c != nil && c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	return h.rejectIfCyberSessionBlockedWithContext(ctx, c, apiKey, body, model, format)
+}
+
+func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlockedWithContext(ctx context.Context, c *gin.Context, apiKey *service.APIKey, body []byte, model string, format cyberSessionBlockFormat) bool {
 	if h == nil || h.gatewayService == nil || apiKey == nil {
 		return false
 	}
 	// 开关默认关：先走 ~ns 级缓存开关检查，再付出 key 派生(gjson+sha256)成本。
-	if enabled, _ := h.gatewayService.CyberSessionBlockRuntime(c.Request.Context()); !enabled {
+	if enabled, _ := h.gatewayService.CyberSessionBlockRuntime(ctx); !enabled {
 		return false
 	}
 	key := service.CyberSessionBlockKey(apiKey.ID, c, body)
 	if key == "" {
 		return false
 	}
-	if !h.gatewayService.IsCyberSessionBlocked(c.Request.Context(), key) {
+	if !h.gatewayService.IsCyberSessionBlocked(ctx, key) {
 		return false
 	}
 	// body-signal compact 心跳可能已把响应头提交为 200（cyber 检查在用户槽位
 	// 长等待之后执行）：以 response.failed 终止事件回传；未提交时停拍后照常
 	// 写 JSON（#3887）。
-	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+	committed := service.StopOpenAICompactSSEKeepaliveCommitted(c)
+	if format == cyberBlockFormatResponses && service.StopOpenAIPreOutputCommitted(c) {
+		committed = true
+	}
+	if committed {
 		service.MarkOpsStreamError(c, "permission_error", cyberSessionBlockedClientMsg, http.StatusForbidden)
 		if writeResponsesFailedSSE(c, "permission_error", cyberSessionBlockedClientMsg) {
 			h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, key)
 			return true
 		}
 	}
-	switch format {
-	case cyberBlockFormatAnthropic:
-		c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
-			"type":    "permission_error",
-			"message": cyberSessionBlockedClientMsg,
-		}})
-	default: // cyberBlockFormatResponses 与 cyberBlockFormatChat：同构的 OpenAI error envelope
-		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{
-			"type":    "permission_error",
-			"code":    "session_blocked_by_cyber_policy",
-			"message": cyberSessionBlockedClientMsg,
-		}})
+	if err := service.OpenAIPreOutputWithWriterLock(c, func() error {
+		switch format {
+		case cyberBlockFormatAnthropic:
+			c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
+				"type":    "permission_error",
+				"message": cyberSessionBlockedClientMsg,
+			}})
+		default: // cyberBlockFormatResponses 与 cyberBlockFormatChat：同构的 OpenAI error envelope
+			c.JSON(http.StatusForbidden, gin.H{"error": gin.H{
+				"type":    "permission_error",
+				"code":    "session_blocked_by_cyber_policy",
+				"message": cyberSessionBlockedClientMsg,
+			}})
+		}
+		return nil
+	}); err != nil {
+		_ = c.Error(err)
 	}
 	h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, key)
 	return true

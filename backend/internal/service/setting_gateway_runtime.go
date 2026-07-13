@@ -133,18 +133,21 @@ const openAIQuotaAutoPauseSettingsRefreshKey = "openai_quota_auto_pause_settings
 // 两个 setting key 在单次 singleflight 里一起读取，减少 DB 往返。
 // 默认值：开关 false，TTL 1h（与粘性会话对齐）。
 func (s *SettingService) GetCyberSessionBlockRuntime(ctx context.Context) (bool, time.Duration) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if cached, ok := s.cyberSessionBlockRuntimeCache.Load().(*cachedCyberSessionBlockRuntime); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return cached.enabled, cached.ttl
 		}
 	}
-	result, _, _ := s.cyberSessionBlockRuntimeSF.Do("cyber_session_block_runtime", func() (any, error) {
+	resultCh := s.cyberSessionBlockRuntimeSF.DoChan("cyber_session_block_runtime", func() (any, error) {
 		if cached, ok := s.cyberSessionBlockRuntimeCache.Load().(*cachedCyberSessionBlockRuntime); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return cached, nil
 			}
 		}
-		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cyberSessionBlockRuntimeDBTimeout)
+		dbCtx, cancel := context.WithTimeout(context.Background(), cyberSessionBlockRuntimeDBTimeout)
 		defer cancel()
 
 		enabledVal, enabledErr := s.settingRepo.GetValue(dbCtx, SettingKeyCyberSessionBlockEnabled)
@@ -178,6 +181,13 @@ func (s *SettingService) GetCyberSessionBlockRuntime(ctx context.Context) (bool,
 		s.cyberSessionBlockRuntimeCache.Store(entry)
 		return entry, nil
 	})
+	var result any
+	select {
+	case <-ctx.Done():
+		return false, time.Hour
+	case call := <-resultCh:
+		result = call.Val
+	}
 	if entry, ok := result.(*cachedCyberSessionBlockRuntime); ok && entry != nil {
 		return entry.enabled, entry.ttl
 	}
@@ -433,18 +443,21 @@ func normalizedCodexClientMarkers(markers []string) map[string]struct{} {
 // 仅在调用方已确认账号 codex_cli_only 开启时读取；进程内 atomic.Value 缓存（60s TTL）避免热路径访问 DB。
 // 任意键缺失/解析失败 → 安全默认：空名单、空版本、默认种子指纹信号。
 func (s *SettingService) GetCodexRestrictionPolicy(ctx context.Context) CodexRestrictionPolicy {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if cached, ok := s.codexRestrictionPolicyCache.Load().(*cachedCodexRestrictionPolicy); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return cached.value
 		}
 	}
-	result, _, _ := s.codexRestrictionPolicySF.Do("codex_restriction_policy", func() (any, error) {
+	resultCh := s.codexRestrictionPolicySF.DoChan("codex_restriction_policy", func() (any, error) {
 		if cached, ok := s.codexRestrictionPolicyCache.Load().(*cachedCodexRestrictionPolicy); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return cached.value, nil
 			}
 		}
-		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), codexRestrictionPolicyDBTimeout)
+		dbCtx, cancel := context.WithTimeout(context.Background(), codexRestrictionPolicyDBTimeout)
 		defer cancel()
 
 		pol := CodexRestrictionPolicy{EngineFingerprintSignals: openai.DefaultEngineFingerprintSignals} // 安全默认：默认种子指纹信号
@@ -467,6 +480,13 @@ func (s *SettingService) GetCodexRestrictionPolicy(ctx context.Context) CodexRes
 		})
 		return pol, nil
 	})
+	var result any
+	select {
+	case <-ctx.Done():
+		return CodexRestrictionPolicy{EngineFingerprintSignals: openai.DefaultEngineFingerprintSignals}
+	case call := <-resultCh:
+		result = call.Val
+	}
 	if pol, ok := result.(CodexRestrictionPolicy); ok {
 		return pol
 	}

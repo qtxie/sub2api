@@ -170,17 +170,29 @@ func (s *ChannelService) loadCache(ctx context.Context) (*channelCache, error) {
 		}
 	}
 
-	result, err, _ := s.cacheSF.Do("channel_cache", func() (any, error) {
+	resultCh := s.cacheSF.DoChan("channel_cache", func() (any, error) {
 		// 双重检查
 		if cached, ok := s.cache.Load().(*channelCache); ok && cached != nil {
 			if time.Since(cached.loadedAt) < channelCacheTTL {
 				return cached, nil
 			}
 		}
-		return s.buildCache(ctx)
+		// The cache fill is shared process work. It may outlive this waiter, but
+		// every request stops waiting as soon as its own budget is exhausted.
+		return s.buildCache(context.Background())
 	})
-	if err != nil {
-		return nil, err
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var result any
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case call := <-resultCh:
+		if call.Err != nil {
+			return nil, call.Err
+		}
+		result = call.Val
 	}
 	cache, ok := result.(*channelCache)
 	if !ok {
@@ -263,9 +275,10 @@ func (s *ChannelService) storeErrorCache() {
 }
 
 // buildCache 从数据库构建渠道缓存。
-// 使用独立 context 避免请求取消导致空值被长期缓存。
+// Callers that need request cancellation use loadCache's cancelable wait;
+// the shared cache build itself is bounded by channelCacheDBTimeout.
 func (s *ChannelService) buildCache(ctx context.Context) (*channelCache, error) {
-	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), channelCacheDBTimeout)
+	dbCtx, cancel := context.WithTimeout(ctx, channelCacheDBTimeout)
 	defer cancel()
 
 	channels, groupPlatforms, err := s.fetchChannelData(dbCtx)

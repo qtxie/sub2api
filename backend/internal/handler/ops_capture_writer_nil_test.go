@@ -1,10 +1,25 @@
 package handler
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+type writeDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+}
+
+func (w *writeDeadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	w.deadline = deadline
+	return nil
+}
 
 func TestOpsCaptureWriter_NilInnerWriter_NoPanic(t *testing.T) {
 	w := &opsCaptureWriter{}
@@ -56,4 +71,15 @@ func TestOpsCaptureWriter_NilInnerWriter_NoPanic(t *testing.T) {
 		p := w.Pusher()
 		assert.Nil(t, p)
 	})
+}
+
+func TestOpsCaptureWriter_UnwrapsResponseControllerWriteDeadline(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	underlying := &writeDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	c, _ := gin.CreateTestContext(underlying)
+	w := &opsCaptureWriter{ResponseWriter: c.Writer}
+	deadline := time.Now().Add(time.Second)
+
+	require.NoError(t, http.NewResponseController(w).SetWriteDeadline(deadline))
+	assert.Equal(t, deadline, underlying.deadline)
 }

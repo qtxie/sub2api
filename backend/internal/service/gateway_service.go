@@ -560,15 +560,39 @@ type ForwardResult struct {
 
 // UpstreamFailoverError indicates an upstream error that should trigger account failover.
 type UpstreamFailoverError struct {
-	StatusCode             int
-	ResponseBody           []byte      // 上游响应体，用于错误透传规则匹配
-	ResponseHeaders        http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
-	ForceCacheBilling      bool        // Antigravity 粘性会话切换时设为 true
-	RetryableOnSameAccount bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	StatusCode               int
+	ResponseBody             []byte      // 上游响应体，用于错误透传规则匹配
+	ResponseHeaders          http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
+	ForceCacheBilling        bool        // Antigravity 粘性会话切换时设为 true
+	RetryableOnSameAccount   bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	Reason                   string
+	FirstOutputTimeout       bool
+	PreOutputBudgetExhausted bool
+	AttemptLatencyMs         int64
 }
 
 func (e *UpstreamFailoverError) Error() string {
+	if e != nil && e.PreOutputBudgetExhausted {
+		return "openai total pre-output budget exhausted"
+	}
+	if e != nil && e.FirstOutputTimeout {
+		return fmt.Sprintf("upstream first output timeout after %dms (failover)", e.AttemptLatencyMs)
+	}
 	return fmt.Sprintf("upstream error: %d (failover)", e.StatusCode)
+}
+
+// IsOpenAIFirstOutputTimeout reports whether err is the typed pre-output
+// timeout used by the Responses HTTP failover loop.
+func IsOpenAIFirstOutputTimeout(err error) bool {
+	var failoverErr *UpstreamFailoverError
+	return errors.As(err, &failoverErr) && failoverErr.FirstOutputTimeout
+}
+
+// IsOpenAIPreOutputFailure reports either account-local first-output timeout or
+// request-wide pre-output budget exhaustion.
+func IsOpenAIPreOutputFailure(err error) bool {
+	var failoverErr *UpstreamFailoverError
+	return errors.As(err, &failoverErr) && (failoverErr.FirstOutputTimeout || failoverErr.PreOutputBudgetExhausted)
 }
 
 // sseStreamErrorEventError 表示上游 SSE 流体内出现 event:error 帧。

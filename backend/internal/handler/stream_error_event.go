@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -77,11 +78,16 @@ func writeResponsesFailedSSE(c *gin.Context, errType, message string) bool {
 		return true
 	}
 
-	if _, err := fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", payload); err != nil {
+	if err := service.OpenAIPreOutputWithWriterLock(c, func() error {
+		if _, err := fmt.Fprintf(c.Writer, "event: response.failed\ndata: %s\n\n", payload); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}); err != nil {
 		_ = c.Error(err)
 		return true
 	}
-	flusher.Flush()
 	return true
 }
 

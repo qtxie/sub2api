@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -80,10 +81,14 @@ func (f *fakeCyberBlockStore) IsCyberSessionBlocked(_ context.Context, key strin
 // Only GetValue is exercised by GetCyberSessionBlockRuntime; all other methods
 // panic so accidental calls are caught immediately.
 type fakeSettingRepo struct {
-	vals map[string]string
+	vals       map[string]string
+	getValueFn func(context.Context, string) (string, error)
 }
 
-func (r *fakeSettingRepo) GetValue(_ context.Context, key string) (string, error) {
+func (r *fakeSettingRepo) GetValue(ctx context.Context, key string) (string, error) {
+	if r.getValueFn != nil {
+		return r.getValueFn(ctx, key)
+	}
 	v, ok := r.vals[key]
 	if !ok {
 		return "", ErrSettingNotFound
@@ -110,6 +115,27 @@ func (r *fakeSettingRepo) Delete(_ context.Context, _ string) error {
 }
 
 var _ SettingRepository = (*fakeSettingRepo)(nil)
+
+func TestCyberSessionBlockRuntimeStopsWaitingWhenRequestBudgetExpires(t *testing.T) {
+	release := make(chan struct{})
+	repo := &fakeSettingRepo{getValueFn: func(ctx context.Context, _ string) (string, error) {
+		select {
+		case <-release:
+			return "", ErrSettingNotFound
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}}
+	svc := NewSettingService(repo, &config.Config{})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	startedAt := time.Now()
+	enabled, ttl := svc.GetCyberSessionBlockRuntime(ctx)
+	require.False(t, enabled)
+	require.Equal(t, time.Hour, ttl)
+	require.Less(t, time.Since(startedAt), 200*time.Millisecond)
+	close(release)
+}
 
 // comboCacheAndStore implements both GatewayCache (no-op stubs) and
 // CyberSessionBlockStore (delegates to fakeCyberBlockStore) so it can be
