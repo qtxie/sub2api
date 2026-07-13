@@ -610,7 +610,7 @@ func openAIStreamEventIsPreamble(eventType string) bool {
 
 func openAIStreamDataStartsClientOutput(data, eventType string) bool {
 	trimmed := strings.TrimSpace(data)
-	if trimmed == "" {
+	if trimmed == "" || trimmed == "[DONE]" {
 		return false
 	}
 	if strings.TrimSpace(eventType) == "response.failed" {
@@ -1039,6 +1039,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
 			s.parseSSEUsageBytes(dataBytes, usage)
 		}
+		if OpenAIPreOutputEnabled(c) && lineIsDone && !sawTerminalEvent {
+			continue
+		}
 
 		if !clientDisconnected {
 			firstMeaningfulOutput := firstTokenMs == nil && lineStartsClientOutput && !lineIsDone
@@ -1081,7 +1084,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 				continue
 			}
-			if !OpenAIPreOutputEnabled(c) && !clientOutputStarted && !lineStartsClientOutput {
+			if !OpenAIPreOutputEnabled(c) && !clientOutputStarted && !lineStartsClientOutput && !lineIsDone {
 				pendingLines = append(pendingLines, line)
 				continue
 			}
@@ -1176,12 +1179,17 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	if sawFailedEvent {
 		return resultWithUsage(), fmt.Errorf("upstream response failed: %s", failedMessage)
 	}
-	if !clientDisconnected && !sawDone && !sawTerminalEvent && ctx.Err() == nil {
-		logger.FromContext(ctx).With(
+	if !clientDisconnected && !sawTerminalEvent && ctx.Err() == nil && (!sawDone || OpenAIPreOutputEnabled(c)) {
+		streamLogger := logger.FromContext(ctx).With(
 			zap.String("component", "service.openai_gateway"),
 			zap.Int64("account_id", account.ID),
 			zap.String("upstream_request_id", upstreamRequestID),
-		).Info("OpenAI passthrough 上游流在未收到 [DONE] 时结束，疑似断流")
+		)
+		if sawDone {
+			streamLogger.Info("OpenAI passthrough 上游流仅收到 [DONE]，未收到终止响应事件")
+		} else {
+			streamLogger.Info("OpenAI passthrough 上游流在未收到 [DONE] 时结束，疑似断流")
+		}
 		if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
 			return resultWithUsage(),
 				s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, nil, "OpenAI stream ended before a terminal event")

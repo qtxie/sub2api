@@ -128,6 +128,7 @@ func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 	if err != nil {
 		return
 	}
+	MarkResponseCommitted(c)
 	if err := OpenAIPreOutputWithWriterLock(c, func() error {
 		if _, err := c.Writer.Write([]byte("event: response.failed\ndata: ")); err != nil {
 			return err
@@ -183,7 +184,9 @@ func writeOpenAITransportAwareJSONError(c *gin.Context, statusCode int, errType,
 		return nil
 	}); err != nil {
 		_ = c.Error(err)
+		return
 	}
+	MarkResponseCommitted(c)
 }
 
 // buildOpenAICompactSSEPayload 把 compact 的 Response JSON 转成 SSE 事件序列：

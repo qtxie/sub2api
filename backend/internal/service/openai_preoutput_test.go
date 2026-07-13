@@ -750,11 +750,39 @@ func TestWriteOpenAITransportAwareJSONErrorAfterPreOutputHeartbeatUsesSSE(t *tes
 	}
 	writeOpenAICompactAwareJSONError(c, http.StatusForbidden, "forbidden_error", "local reject", nil)
 	body := recorder.Body.String()
+	if !IsResponseCommitted(c) {
+		t.Fatal("terminal SSE error was not marked as committed")
+	}
 	if recorder.Code != http.StatusOK || !strings.Contains(body, "event: response.failed") {
 		t.Fatalf("expected committed SSE failure, code=%d body=%q", recorder.Code, body)
 	}
+	if count := strings.Count(body, `"type":"response.failed"`); count != 1 {
+		t.Fatalf("response.failed count=%d, want 1: %q", count, body)
+	}
 	if strings.Contains(body, `{"error":{"message"`) {
 		t.Fatalf("JSON error was appended to SSE stream: %q", body)
+	}
+}
+
+func TestWriteOpenAITransportAwareJSONErrorBeforeHeartbeatMarksJSONCommitted(t *testing.T) {
+	c, recorder := newPreOutputTestContext(t)
+	stop := StartOpenAIPreOutput(c, OpenAIPreOutputSettings{
+		FirstOutputTimeout: time.Second,
+		TotalBudget:        2 * time.Second,
+		HeartbeatInterval:  time.Hour,
+	})
+	defer stop()
+
+	writeOpenAICompactAwareJSONError(c, http.StatusForbidden, "forbidden_error", "local reject", nil)
+	if !IsResponseCommitted(c) {
+		t.Fatal("terminal JSON error was not marked as committed")
+	}
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusForbidden || !strings.Contains(body, `"type":"forbidden_error"`) {
+		t.Fatalf("expected JSON failure, code=%d body=%q", recorder.Code, body)
+	}
+	if strings.Contains(body, "response.failed") {
+		t.Fatalf("SSE failure was appended to JSON response: %q", body)
 	}
 }
 
@@ -771,6 +799,9 @@ func TestWriteOpenAIResponsesFallbackErrorAfterPreOutputHeartbeatUsesSSE(t *test
 		time.Sleep(time.Millisecond)
 	}
 	writeOpenAIResponsesFallbackError(c, http.StatusBadRequest, "invalid_request_error", "bad input")
+	if !IsResponseCommitted(c) {
+		t.Fatal("fallback terminal error was not marked as committed")
+	}
 	if body := recorder.Body.String(); recorder.Code != http.StatusOK || !strings.Contains(body, "event: response.failed") {
 		t.Fatalf("expected committed SSE failure, code=%d body=%q", recorder.Code, body)
 	}

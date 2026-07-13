@@ -1814,6 +1814,114 @@ func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t 
 	}
 }
 
+func TestOpenAIStreamingDoneSentinelAloneDoesNotCommitSemanticOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name string
+		run  func(*OpenAIGatewayService, context.Context, *http.Response, *gin.Context) error
+	}{
+		{
+			name: "ordinary",
+			run: func(svc *OpenAIGatewayService, ctx context.Context, resp *http.Response, c *gin.Context) error {
+				_, err := svc.handleStreamingResponse(ctx, resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			run: func(svc *OpenAIGatewayService, ctx context.Context, resp *http.Response, c *gin.Context) error {
+				_, err := svc.handleStreamingResponsePassthrough(ctx, resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+				StreamDataIntervalTimeout: 0,
+				StreamKeepaliveInterval:   0,
+				MaxLineSize:               defaultMaxLineSize,
+			}}}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			stop := StartOpenAIPreOutput(c, OpenAIPreOutputSettings{
+				FirstOutputTimeout: time.Second,
+				TotalBudget:        2 * time.Second,
+				HeartbeatInterval:  time.Hour,
+			})
+			defer stop()
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
+				Header:     http.Header{},
+			}
+
+			err := tt.run(svc, c.Request.Context(), resp, c)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.False(t, OpenAIPreOutputSemanticStarted(c))
+			require.Empty(t, recorder.Body.String())
+		})
+	}
+}
+
+func TestOpenAIStreamingDoneSentinelAfterTerminalIsForwarded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name string
+		run  func(*OpenAIGatewayService, context.Context, *http.Response, *gin.Context) error
+	}{
+		{
+			name: "ordinary",
+			run: func(svc *OpenAIGatewayService, ctx context.Context, resp *http.Response, c *gin.Context) error {
+				_, err := svc.handleStreamingResponse(ctx, resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+				return err
+			},
+		},
+		{
+			name: "passthrough",
+			run: func(svc *OpenAIGatewayService, ctx context.Context, resp *http.Response, c *gin.Context) error {
+				_, err := svc.handleStreamingResponsePassthrough(ctx, resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+				StreamDataIntervalTimeout: 0,
+				StreamKeepaliveInterval:   0,
+				MaxLineSize:               defaultMaxLineSize,
+			}}}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			stop := StartOpenAIPreOutput(c, OpenAIPreOutputSettings{
+				FirstOutputTimeout: time.Second,
+				TotalBudget:        2 * time.Second,
+				HeartbeatInterval:  time.Hour,
+			})
+			defer stop()
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_done\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+						"data: [DONE]\n\n",
+				)),
+				Header: http.Header{},
+			}
+
+			require.NoError(t, tt.run(svc, c.Request.Context(), resp, c))
+			require.True(t, OpenAIPreOutputSemanticStarted(c))
+			require.Contains(t, recorder.Body.String(), "response.completed")
+			require.Contains(t, recorder.Body.String(), "data: [DONE]")
+		})
+	}
+}
+
 func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{

@@ -2902,14 +2902,8 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 		return true
 	}
 	// 与快照同口径：排除 compact 心跳字节，避免"仅心跳写出"被误判为
-	// 响应已写出（#3887）。
-	if service.OpenAIPreOutputEnabled(c) {
-		if !service.OpenAIPreOutputSemanticStarted(c) {
-			return false
-		}
-		// Meaningful output was already committed by the coordinator.
-		return true
-	}
+	// 响应已写出（#3887）。Meaningful output alone does not mean a terminal
+	// response was communicated: a truncated stream still needs response.failed.
 	if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {
 		return false
 	}

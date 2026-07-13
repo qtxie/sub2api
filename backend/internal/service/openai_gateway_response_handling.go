@@ -159,6 +159,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	// 否则下游 SDK（例如 OpenCode）会因为类型校验失败而报错。
 	errorEventSent := false
 	clientDisconnected := false // 客户端断开后继续 drain 上游以收集 usage
+	sawDone := false
 	sawTerminalEvent := false
 	sawFailedEvent := false
 	failedMessage := ""
@@ -216,7 +217,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		if timeoutErr := OpenAIPreOutputFailureError(c, ctx, ctx.Err()); IsOpenAIPreOutputFailure(timeoutErr) {
 			return resultWithUsage(), timeoutErr
 		}
-		if !sawTerminalEvent {
+		// Legacy/non-coordinated passthrough accepts [DONE] as a compatibility
+		// terminal. Coordinated Responses requests require a protocol terminal
+		// event so [DONE] alone cannot win first-meaningful-output arbitration.
+		if !sawTerminalEvent && (!sawDone || OpenAIPreOutputEnabled(c)) {
 			if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
 				return resultWithUsage(), s.newOpenAIStreamFailoverError(
 					c,
@@ -294,6 +298,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
+			lineIsDone := strings.TrimSpace(data) == "[DONE]"
+			if lineIsDone {
+				sawDone = true
+			}
 			if openAIStreamEventIsTerminal(data) {
 				sawTerminalEvent = true
 			}
@@ -394,6 +402,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			startsClientOutput := forceFlushFailedEvent || openAIStreamDataStartsClientOutput(data, eventType)
 			coordinatedPreOutput := OpenAIPreOutputEnabled(c) && !OpenAIPreOutputSemanticStarted(c)
 			firstMeaningfulOutput := firstTokenMs == nil && startsClientOutput
+			if OpenAIPreOutputEnabled(c) && lineIsDone && !sawTerminalEvent {
+				return
+			}
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected {

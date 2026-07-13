@@ -1740,6 +1740,50 @@ data: {"type":"response.failed","error":{"message":"This content was flagged"}}
 		require.False(t, reported)
 	})
 
+	t.Run("semantic output without terminal still needs fallback", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
+		stop := service.StartOpenAIPreOutput(c, service.OpenAIPreOutputSettings{
+			FirstOutputTimeout: time.Second,
+			TotalBudget:        2 * time.Second,
+			HeartbeatInterval:  time.Hour,
+		})
+		defer stop()
+		attemptCtx, finish, err := service.OpenAIPreOutputBeginAttempt(c, c.Request.Context())
+		require.NoError(t, err)
+		defer finish()
+
+		before := c.Writer.Size()
+		_, _, transitioned, err := service.OpenAIPreOutputCommitSemantic(c, attemptCtx, func() error {
+			_, writeErr := c.Writer.WriteString("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
+			return writeErr
+		})
+		require.NoError(t, err)
+		require.True(t, transitioned)
+		require.False(t, openAIForwardErrorAlreadyCommunicated(c, before, errors.New("stream usage incomplete: missing terminal event")))
+
+		h := &OpenAIGatewayHandler{}
+		require.True(t, h.ensureForwardErrorResponse(c, true))
+		require.Contains(t, w.Body.String(), "response.output_text.delta")
+		require.Equal(t, 1, strings.Count(w.Body.String(), `"type":"response.failed"`))
+	})
+
+	t.Run("explicit terminal marker wins before semantic output", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
+		stop := service.StartOpenAIPreOutput(c, service.OpenAIPreOutputSettings{
+			FirstOutputTimeout: time.Second,
+			TotalBudget:        2 * time.Second,
+			HeartbeatInterval:  time.Hour,
+		})
+		defer stop()
+		service.MarkResponseCommitted(c)
+
+		require.True(t, openAIForwardErrorAlreadyCommunicated(c, c.Writer.Size(), errors.New("local validation failed")))
+	})
+
 	// H-2: cyber_policy 命中且响应已写出时，即便 err 前缀不在白名单（非流式 400 cyber
 	// 返回 "openai cyber_policy:"、透传账号返回 "upstream error:"），也须判定已透传，避免
 	// ensureForwardErrorResponse 在已写出的完整响应尾部追加 SSE 污染响应体。
