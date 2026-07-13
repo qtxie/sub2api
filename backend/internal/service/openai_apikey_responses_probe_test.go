@@ -51,14 +51,36 @@ func TestSelectResponsesProbeModel(t *testing.T) {
 	// No model_mapping -> fall back to DefaultTestModel (OpenAI official APIKey).
 	require.Equal(t, openai.DefaultTestModel, selectResponsesProbeModel(&Account{}))
 
-	// model_mapping values are upstream models; pick first by sort for reproducibility.
+	// Prefer the first mapped production text model in DefaultModels order. Utility
+	// and image mappings must not win merely because they sort first.
 	acct := &Account{Credentials: map[string]any{
+		"model_mapping": map[string]any{
+			"codex-auto-review": "codex-auto-review",
+			"gpt-image-2":       "gpt-image-2",
+			"gpt-5.4":           "gpt-5.6-terra",
+			"gpt-5.6-sol":       "gpt-5.6-sol",
+		},
+	}}
+	require.Equal(t, "gpt-5.6-sol", selectResponsesProbeModel(acct))
+
+	// GPT-5.5 remains an eligible production probe model when no newer mapped
+	// production model is configured.
+	acctGPT55 := &Account{Credentials: map[string]any{
+		"model_mapping": map[string]any{
+			"codex-auto-review": "codex-auto-review",
+			"gpt-5.5":           "gpt-5.5",
+		},
+	}}
+	require.Equal(t, "gpt-5.5", selectResponsesProbeModel(acctGPT55))
+
+	// Unknown third-party mappings retain a deterministic alphabetical fallback.
+	acctCustom := &Account{Credentials: map[string]any{
 		"model_mapping": map[string]any{
 			"client-b": "zeta-model",
 			"client-a": "alpha-model",
 		},
 	}}
-	require.Equal(t, "alpha-model", selectResponsesProbeModel(acct))
+	require.Equal(t, "alpha-model", selectResponsesProbeModel(acctCustom))
 
 	// Wildcard / blank upstream values are skipped.
 	acctWild := &Account{Credentials: map[string]any{

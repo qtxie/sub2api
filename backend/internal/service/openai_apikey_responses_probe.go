@@ -70,11 +70,24 @@ func openaiResponsesProbePayload(modelID string) []byte {
 // selectResponsesProbeModel 选出用于探测的上游模型。
 //
 // 工具能力探测必须用上游真实存在的模型——用占位模型(DefaultTestModel)打第三方
-// 上游只会拿到 400 model-not-found,无从判定工具能力。优先取账号 model_mapping
-// 的上游模型(值),按字典序取首个具体(非通配符)模型以保证可复现;无映射时回退
-// DefaultTestModel(适配 OpenAI 官方 APIKey 账号)。
+// 上游只会拿到 400 model-not-found,无从判定工具能力。优先按 DefaultModels 的生产
+// 文本模型顺序查找账号 model_mapping,并使用映射后的上游模型;这样内部用途模型
+// (如 codex-auto-review)或图片模型不会仅因字典序靠前而成为健康探针。第三方自定义
+// 模型不在 DefaultModels 时,按字典序选择具体映射值以保持兼容和可复现。无映射时
+// 回退 DefaultTestModel(适配 OpenAI 官方 APIKey 账号)。
 func selectResponsesProbeModel(account *Account) string {
 	mapping := account.GetModelMapping()
+	for _, model := range openai.DefaultModels {
+		modelID := strings.TrimSpace(model.ID)
+		if modelID == "codex-auto-review" || isOpenAIImageModel(modelID) {
+			continue
+		}
+		upstream := strings.TrimSpace(mapping[modelID])
+		if upstream != "" && !strings.Contains(upstream, "*") {
+			return upstream
+		}
+	}
+
 	candidates := make([]string, 0, len(mapping))
 	for _, upstream := range mapping {
 		upstream = strings.TrimSpace(upstream)
