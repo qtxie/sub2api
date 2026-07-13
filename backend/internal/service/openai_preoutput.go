@@ -44,6 +44,7 @@ type openAIPreOutputCoordinator struct {
 	semanticStarted  bool
 	clientConnected  bool
 	stopped          bool
+	slowFailover     bool
 
 	attemptStarted  time.Time
 	attemptDeadline time.Time
@@ -185,12 +186,15 @@ func (p *openAIPreOutputCoordinator) beginAttempt(clientCtx context.Context) (co
 		return nil, nil, errOpenAIClientDisconnected
 	}
 	now := time.Now()
-	remaining := p.deadline.Sub(now)
-	if remaining < 2*time.Second {
-		p.mu.Unlock()
-		return nil, nil, errOpenAIPreOutputBudget
+	allowance := p.settings.FirstOutputTimeout
+	timeoutCause := error(errOpenAIFirstOutputTimeout)
+	if !p.slowFailover {
+		remaining := p.deadline.Sub(now)
+		if remaining < 2*time.Second {
+			p.mu.Unlock()
+			return nil, nil, errOpenAIPreOutputBudget
+		}
 	}
-	allowance, timeoutCause := openAIPreOutputAttemptTimeout(p.settings.FirstOutputTimeout, remaining)
 	p.nextAttemptID++
 	attemptID := p.nextAttemptID
 	base := context.Background()
@@ -228,13 +232,6 @@ func (p *openAIPreOutputCoordinator) beginAttempt(clientCtx context.Context) (co
 		})
 	}
 	return attemptCtx, finish, nil
-}
-
-func openAIPreOutputAttemptTimeout(firstOutputTimeout, remainingBudget time.Duration) (time.Duration, error) {
-	if firstOutputTimeout <= 0 || firstOutputTimeout > remainingBudget {
-		return remainingBudget, errOpenAIPreOutputBudget
-	}
-	return firstOutputTimeout, errOpenAIFirstOutputTimeout
 }
 
 func (p *openAIPreOutputCoordinator) watchAttempt(clientCtx context.Context, cancel context.CancelCauseFunc, done <-chan struct{}, allowance time.Duration, timeoutCause error, attemptID uint64) {
@@ -549,6 +546,16 @@ func OpenAIPreOutputMarkClientDisconnected(c *gin.Context) {
 	}
 }
 
+// OpenAIPreOutputEnterSlowFailover moves timeout recovery to account-driven
+// failover. Each remaining account receives its own first-output deadline.
+func OpenAIPreOutputEnterSlowFailover(c *gin.Context) {
+	if p := getOpenAIPreOutput(c); p != nil {
+		p.mu.Lock()
+		p.slowFailover = true
+		p.mu.Unlock()
+	}
+}
+
 func OpenAIPreOutputEnabled(c *gin.Context) bool { return getOpenAIPreOutput(c) != nil }
 
 func OpenAIPreOutputCanFailover(c *gin.Context) bool {
@@ -558,7 +565,8 @@ func OpenAIPreOutputCanFailover(c *gin.Context) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return !p.semanticStarted && p.clientConnected && !p.stopped && time.Until(p.deadline) >= 2*time.Second
+	budgetAvailable := p.slowFailover || time.Until(p.deadline) >= 2*time.Second
+	return !p.semanticStarted && p.clientConnected && !p.stopped && budgetAvailable
 }
 
 func OpenAIPreOutputClientConnected(c *gin.Context) bool {
@@ -598,7 +606,7 @@ func OpenAIPreOutputBudgetRemaining(c *gin.Context) time.Duration {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.semanticStarted {
+	if p.semanticStarted || p.slowFailover {
 		return 0
 	}
 	remaining := time.Until(p.deadline)
@@ -633,11 +641,18 @@ func OpenAIPreOutputSchedulingContext(c *gin.Context, parent context.Context) (c
 	p.mu.Lock()
 	deadline := p.deadline
 	semantic := p.semanticStarted
+	slowFailover := p.slowFailover
 	p.mu.Unlock()
 	if semantic {
 		return parent, func() {}
 	}
-	ctx, cancel := context.WithDeadline(parent, deadline)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if slowFailover {
+		ctx, cancel = context.WithCancel(parent)
+	} else {
+		ctx, cancel = context.WithDeadline(parent, deadline)
+	}
 	stop := make(chan struct{})
 	var stopOnce sync.Once
 	go func() {

@@ -46,15 +46,20 @@ func (r preOutputFailoverAccountRepo) ListSchedulableByPlatform(_ context.Contex
 
 type preOutputFailoverHTTPUpstream struct {
 	service.HTTPUpstream
-	mu         sync.Mutex
-	accountIDs []int64
+	mu                sync.Mutex
+	accountIDs        []int64
+	timeoutAccountIDs map[int64]struct{}
 }
 
 func (u *preOutputFailoverHTTPUpstream) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
 	u.mu.Lock()
 	u.accountIDs = append(u.accountIDs, accountID)
 	u.mu.Unlock()
-	if accountID == 1 {
+	shouldTimeout := accountID == 1
+	if u.timeoutAccountIDs != nil {
+		_, shouldTimeout = u.timeoutAccountIDs[accountID]
+	}
+	if shouldTimeout {
 		<-req.Context().Done()
 		return nil, req.Context().Err()
 	}
@@ -261,7 +266,6 @@ func TestResponsesFirstOutputTimeoutFailsOverToSecondAccount(t *testing.T) {
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
 	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 4
-	cfg.Gateway.OpenAIFirstOutputMaxSwitches = 1
 	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
 	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
 
@@ -306,5 +310,67 @@ func TestResponsesFirstOutputTimeoutFailsOverToSecondAccount(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "response.output_text.delta")
 	require.Contains(t, rec.Body.String(), "hello")
 	require.NotContains(t, rec.Body.String(), `"account":"slow"`)
+	require.False(t, strings.HasPrefix(strings.TrimSpace(rec.Body.String()), `{"error":`))
+}
+
+func TestResponsesFirstOutputTimeoutUsesSlowAccountFailoverUntilSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(45)
+	accounts := []service.Account{
+		{ID: 1, Name: "slow-one", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 0, Credentials: map[string]any{"access_token": "slow-one-token"}},
+		{ID: 2, Name: "slow-two", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 1, Credentials: map[string]any{"access_token": "slow-two-token"}},
+		{ID: 3, Name: "healthy", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 2, Credentials: map[string]any{"access_token": "healthy-token"}},
+	}
+	repo := preOutputFailoverAccountRepo{accounts: accounts}
+	upstream := &preOutputFailoverHTTPUpstream{timeoutAccountIDs: map[int64]struct{}{1: {}, 2: {}}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 3
+	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
+	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
+	cfg.Gateway.MaxAccountSwitches = 1
+
+	concurrencyService := service.NewConcurrencyService(nil)
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCache.Stop)
+	gatewayService := service.NewOpenAIGatewayService(
+		repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
+		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	h := NewOpenAIGatewayHandler(
+		gatewayService,
+		concurrencyService,
+		billingCache,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		nil, nil, nil, nil, cfg,
+	)
+
+	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID:      10,
+		GroupID: &groupID,
+		Group: &service.Group{
+			ID:               groupID,
+			Platform:         service.PlatformOpenAI,
+			SubscriptionType: service.SubscriptionTypeSubscription,
+		},
+		User: &service.User{ID: 8},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 8})
+
+	startedAt := time.Now()
+	h.Responses(c)
+
+	require.Equal(t, []int64{1, 2, 3}, upstream.calls(), "status=%d body=%s", rec.Code, rec.Body.String())
+	require.Less(t, time.Since(startedAt), 4*time.Second)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "response.output_text.delta")
+	require.Contains(t, rec.Body.String(), "hello")
+	require.NotContains(t, rec.Body.String(), `{"account":"slow-one"`)
+	require.NotContains(t, rec.Body.String(), `{"account":"slow-two"`)
 	require.False(t, strings.HasPrefix(strings.TrimSpace(rec.Body.String()), `{"error":`))
 }

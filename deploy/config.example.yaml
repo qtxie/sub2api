@@ -154,10 +154,8 @@ gateway:
   openai_response_header_timeout: 0
   # First meaningful output deadline per ordinary HTTP /responses account attempt (seconds, 0=disabled)
   openai_first_output_timeout_seconds: 60
-  # Total scheduling + slot wait + all-attempt budget before meaningful output (seconds)
+  # Initial routing + slot wait + first-attempt budget; slow-account failover uses per-account deadlines
   openai_total_pre_output_budget_seconds: 90
-  # Maximum account switches caused specifically by first-output timeouts
-  openai_first_output_max_switches: 1
   # Maximum billing drain after a client disconnects before meaningful output (seconds)
   openai_pre_output_disconnect_drain_seconds: 15
   # Maximum billing drain after a client disconnects after meaningful output (seconds)

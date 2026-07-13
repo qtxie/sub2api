@@ -494,7 +494,11 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 		writeNotificationLine(&b, "attempted", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
 		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
 		if e.ClientStatus > 0 {
-			writeNotificationLine(&b, "client status", strconv.Itoa(e.ClientStatus))
+			clientStatus := strconv.Itoa(e.ClientStatus)
+			if e.TransportStarted && !e.SemanticStarted && e.ClientStatus == http.StatusOK {
+				clientStatus += " (SSE heartbeat committed)"
+			}
+			writeNotificationLine(&b, "client status", clientStatus)
 		}
 		if e.StreamStarted || e.FallbackWritten || e.UpstreamWritten {
 			writeNotificationLine(&b, "stream started", strconv.FormatBool(e.StreamStarted))
@@ -517,8 +521,10 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 		writeNotificationLine(&b, "failed account", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "status", strconv.Itoa(e.UpstreamStatus))
 	}
-	if e.SwitchCount > 0 || e.MaxSwitches > 0 {
+	if e.MaxSwitches > 0 {
 		writeNotificationLine(&b, "switch", fmt.Sprintf("%d/%d", e.SwitchCount, e.MaxSwitches))
+	} else if e.SwitchCount > 0 {
+		writeNotificationLine(&b, "switch", strconv.Itoa(e.SwitchCount))
 	}
 	if e.LatencyMs > 0 && e.AttemptLatencyMs <= 0 && e.SwitchLatencyMs <= 0 && e.TotalRequestLatencyMs <= 0 {
 		writeNotificationLine(&b, "latency", formatDurationMs(e.LatencyMs))
@@ -566,7 +572,7 @@ func (e OpenAIAccountSwitchNotification) telegramTitle() string {
 		if status <= 0 {
 			status = e.UpstreamStatus
 		}
-		if e.StreamStarted || e.UpstreamWritten || (e.ClientStatus > 0 && e.ClientStatus < http.StatusBadRequest) {
+		if e.semanticStreamStarted() {
 			return "⚠️ OpenAI stream failed after start\n"
 		}
 		return compactSwitchTitle("❌", "", 0, e.failedAccountName(), e.failedAccountID(), e.Model, status)
@@ -581,6 +587,19 @@ func (e OpenAIAccountSwitchNotification) telegramTitle() string {
 		}
 		return compactSwitchTitle("➡️", "", 0, e.failedAccountName(), e.failedAccountID(), e.Model, status)
 	}
+}
+
+// semanticStreamStarted distinguishes real model output from an SSE heartbeat.
+// Pre-output requests expose authoritative transport/semantic state; older routes
+// fall back to StreamStarted because they do not populate those fields.
+func (e OpenAIAccountSwitchNotification) semanticStreamStarted() bool {
+	if e.SemanticStarted {
+		return true
+	}
+	if e.TransportStarted {
+		return false
+	}
+	return e.StreamStarted
 }
 
 func compactSwitchTitle(icon, fromName string, fromID int64, toName string, toID int64, model string, status int) string {

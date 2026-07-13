@@ -2615,8 +2615,8 @@ func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t 
 			wantOriginator: "codex-tui",
 			wantUA:         "codex-tui/0.140.2 (Mac OS X 14.0; arm64) iTerm (codex-tui; 0.140.2)",
 		},
-		{name: "official originator without ua falls back to default identity", originator: "codex_vscode", wantOriginator: "codex_cli_rs", wantUA: codexCLIUserAgent},
-		{name: "third-party ua masked to default identity", userAgent: "luna/1.2.0", wantOriginator: "codex_cli_rs", wantUA: codexCLIUserAgent},
+		{name: "official originator without ua falls back to default identity", originator: "codex_vscode", wantOriginator: codexCLIOriginator, wantUA: codexCLIUserAgent},
+		{name: "third-party ua masked to default identity", userAgent: "luna/1.2.0", wantOriginator: codexCLIOriginator, wantUA: codexCLIUserAgent},
 	}
 
 	for _, tt := range tests {
@@ -2633,10 +2633,10 @@ func TestOpenAIBuildUpstreamRequestOAuthOfficialClientOriginatorCompatibility(t 
 
 			svc := &OpenAIGatewayService{}
 			account := &Account{
-				Platform:    PlatformOpenAI,
-				Type:        AccountTypeOAuth,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
 				Credentials: map[string]any{
-					"chatgpt_account_id":        "chatgpt-acc",
+					"chatgpt_account_id":       "chatgpt-acc",
 					"smart_user_agent_enabled": tt.smartUserAgent,
 				},
 			}

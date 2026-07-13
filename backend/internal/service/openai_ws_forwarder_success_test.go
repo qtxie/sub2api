@@ -697,7 +697,7 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testi
 			wantOriginator: "codex-tui",
 			wantUA:         "codex-tui/0.140.2 (Mac OS X 14.0; arm64) iTerm (codex-tui; 0.140.2)",
 		},
-		{name: "official originator without ua falls back to default identity", originator: "codex_vscode", wantOriginator: "codex_cli_rs", wantUA: codexCLIUserAgent},
+		{name: "official originator without ua falls back to default identity", originator: "codex_vscode", wantOriginator: codexCLIOriginator, wantUA: codexCLIUserAgent},
 	}
 
 	for _, tt := range tests {
@@ -750,7 +750,7 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthOriginatorCompatibility(t *testi
 				Schedulable: true,
 				Concurrency: 1,
 				Credentials: map[string]any{
-					"access_token":            "oauth-token-1",
+					"access_token":             "oauth-token-1",
 					"smart_user_agent_enabled": tt.smartUserAgent,
 				},
 				Extra: map[string]any{

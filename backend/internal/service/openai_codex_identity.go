@@ -22,7 +22,7 @@ func ensureCodexIdentityHeaders(h http.Header) {
 		h.Set("user-agent", codexCLIUserAgent)
 	}
 	if strings.TrimSpace(h.Get("originator")) == "" {
-		h.Set("originator", "codex_cli_rs")
+		h.Set("originator", codexCLIOriginator)
 	}
 	if strings.TrimSpace(h.Get("version")) == "" {
 		h.Set("version", codexCLIVersion)
@@ -44,7 +44,7 @@ func enforceCodexIdentityHeaders(h http.Header) {
 	}
 	originator, pairedUA, ok := openai.PairCodexClientIdentity(h.Get("user-agent"))
 	if !ok {
-		originator, pairedUA = "codex_cli_rs", codexCLIUserAgent
+		originator, pairedUA = codexCLIOriginator, codexCLIUserAgent
 	}
 	h.Set("user-agent", pairedUA)
 	h.Set("originator", originator)

@@ -168,7 +168,7 @@ async function exportRequestError(response: Response): Promise<Error> {
   }
 }
 
-export async function listConversations(page = 1, pageSize = 50): Promise<PaginatedResponse<ChatConversation>> {
+export async function listConversations(page = 1, pageSize = 12): Promise<PaginatedResponse<ChatConversation>> {
   const { data } = await apiClient.get<PaginatedResponse<ChatConversation>>('/chat/conversations', {
     params: { page, page_size: pageSize }
   })

@@ -751,12 +751,9 @@ type GatewayConfig struct {
 	// OpenAIFirstOutputTimeoutSeconds bounds one ordinary HTTP /responses attempt until
 	// the first meaningful SSE event. Zero disables the pre-output controller.
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
-	// OpenAITotalPreOutputBudgetSeconds bounds scheduling, slot waits, and all
-	// attempts before meaningful output begins.
+	// OpenAITotalPreOutputBudgetSeconds bounds initial routing, slot waits, and
+	// the first attempt. Slow-account failover uses per-account deadlines instead.
 	OpenAITotalPreOutputBudgetSeconds int `mapstructure:"openai_total_pre_output_budget_seconds"`
-	// OpenAIFirstOutputMaxSwitches limits failovers caused specifically by a
-	// first-output timeout; generic upstream failovers retain MaxAccountSwitches.
-	OpenAIFirstOutputMaxSwitches int `mapstructure:"openai_first_output_max_switches"`
 	// OpenAIPreOutputDisconnectDrainSeconds is the maximum usage drain after a
 	// client disconnects before meaningful output.
 	OpenAIPreOutputDisconnectDrainSeconds int `mapstructure:"openai_pre_output_disconnect_drain_seconds"`
@@ -2036,7 +2033,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 60)
 	viper.SetDefault("gateway.openai_total_pre_output_budget_seconds", 90)
-	viper.SetDefault("gateway.openai_first_output_max_switches", 1)
 	viper.SetDefault("gateway.openai_pre_output_disconnect_drain_seconds", 15)
 	viper.SetDefault("gateway.openai_post_output_billing_drain_seconds", 120)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
@@ -2783,9 +2779,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAITotalPreOutputBudgetSeconds < 0 {
 		return fmt.Errorf("gateway.openai_total_pre_output_budget_seconds must be non-negative")
-	}
-	if c.Gateway.OpenAIFirstOutputMaxSwitches < 0 {
-		return fmt.Errorf("gateway.openai_first_output_max_switches must be non-negative")
 	}
 	if c.Gateway.OpenAIPreOutputDisconnectDrainSeconds < 0 {
 		return fmt.Errorf("gateway.openai_pre_output_disconnect_drain_seconds must be non-negative")

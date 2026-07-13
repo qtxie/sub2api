@@ -92,6 +92,22 @@ func TestOpenAIAccountSwitchNotifierSendsTelegram(t *testing.T) {
 	require.NotContains(t, text, "test-token")
 }
 
+func TestOpenAISlowFailoverNotificationShowsSwitchWithoutGenericLimit(t *testing.T) {
+	event := OpenAIAccountSwitchNotification{
+		EventName:       "openai.upstream_failover_switching",
+		Phase:           OpenAIAccountSwitchPhaseStarted,
+		Route:           "responses",
+		Model:           "gpt-5.5",
+		FailedAccountID: 2,
+		UpstreamStatus:  http.StatusGatewayTimeout,
+		SwitchCount:     2,
+	}
+
+	text := event.telegramText()
+	require.Contains(t, text, "switch: 2")
+	require.NotContains(t, text, "switch: 2/")
+}
+
 func TestOpenAIAccountSwitchNotifierRateLimitsDuplicateEvents(t *testing.T) {
 	var count atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -530,6 +546,30 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 	require.Contains(t, text, "upstream response already written: true")
 	require.Contains(t, text, "retry possible: false")
 	require.Contains(t, text, "reason: upstream response failed: Upstream request failed")
+
+	heartbeatOnlyFailed := OpenAIAccountSwitchNotification{
+		EventName:         "openai.upstream_failover_failed",
+		Phase:             OpenAIAccountSwitchPhaseFailed,
+		OccurredAt:        when,
+		FailedAccountID:   1,
+		FailedAccountName: "CIII",
+		TargetAccountID:   3,
+		TargetAccountName: "AiNX",
+		TargetPriority:    12,
+		Model:             "gpt-5.5",
+		FinalStatus:       http.StatusBadGateway,
+		ClientStatus:      http.StatusOK,
+		TransportStarted:  true,
+		SemanticStarted:   false,
+		FinalError:        "pre-output budget exhausted",
+	}
+	text = heartbeatOnlyFailed.telegramText()
+	require.Contains(t, text, "❌ 502 gpt-5.5 CIII")
+	require.NotContains(t, text, "OpenAI stream failed after start")
+	require.Contains(t, text, "client status: 200 (SSE heartbeat committed)")
+	require.Contains(t, text, "transport_started: true")
+	require.Contains(t, text, "semantic_started: false")
+	require.NotContains(t, text, "upstream response already written: true")
 
 	cancelled := OpenAIAccountSwitchNotification{
 		Phase:             OpenAIAccountSwitchPhaseCancelled,

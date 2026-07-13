@@ -139,6 +139,52 @@ func TestOpenAIPreOutputFirstOutputTimeoutIsTyped(t *testing.T) {
 	}
 }
 
+func TestOpenAIPreOutputSlowFailoverUsesFreshAccountDeadline(t *testing.T) {
+	c, _ := newPreOutputTestContext(t)
+	stop := StartOpenAIPreOutput(c, OpenAIPreOutputSettings{
+		FirstOutputTimeout: 25 * time.Millisecond,
+		TotalBudget:        3 * time.Second,
+	})
+	defer stop()
+
+	firstCtx, finishFirst, err := OpenAIPreOutputBeginAttempt(c, c.Request.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-firstCtx.Done()
+	firstErr := OpenAIPreOutputFailureError(c, firstCtx, firstCtx.Err())
+	finishFirst()
+	if !IsOpenAIFirstOutputTimeout(firstErr) {
+		t.Fatalf("expected first account timeout, got %v", firstErr)
+	}
+
+	OpenAIPreOutputEnterSlowFailover(c)
+	p := getOpenAIPreOutput(c)
+	p.mu.Lock()
+	p.deadline = time.Now().Add(-time.Second)
+	p.mu.Unlock()
+	if !OpenAIPreOutputCanFailover(c) {
+		t.Fatal("expired request budget should not stop slow-account failover")
+	}
+
+	schedulingCtx, cancelScheduling := OpenAIPreOutputSchedulingContext(c, c.Request.Context())
+	defer cancelScheduling()
+	if _, hasDeadline := schedulingCtx.Deadline(); hasDeadline {
+		t.Fatal("slow-account scheduling should not inherit the expired request budget")
+	}
+
+	secondCtx, finishSecond, err := OpenAIPreOutputBeginAttempt(c, c.Request.Context())
+	if err != nil {
+		t.Fatalf("start second account after request budget: %v", err)
+	}
+	defer finishSecond()
+	<-secondCtx.Done()
+	secondErr := OpenAIPreOutputFailureError(c, secondCtx, secondCtx.Err())
+	if !IsOpenAIFirstOutputTimeout(secondErr) {
+		t.Fatalf("expected fresh account timeout, got %v", secondErr)
+	}
+}
+
 func TestOpenAIStreamingCleanEOFAfterTimeoutRemainsTyped(t *testing.T) {
 	c, _ := newPreOutputTestContext(t)
 	stop := StartOpenAIPreOutput(c, OpenAIPreOutputSettings{
@@ -305,26 +351,34 @@ func TestOpenAIPreOutputStaleAttemptCannotWriteAfterNextAttemptStarts(t *testing
 	}
 }
 
-func TestOpenAIPreOutputAttemptEndingAtTotalBudgetIsNotAccountTimeout(t *testing.T) {
+func TestOpenAIPreOutputAttemptUsesFullAccountDeadline(t *testing.T) {
 	c, _ := newPreOutputTestContext(t)
 	stop := StartOpenAIPreOutput(c, OpenAIPreOutputSettings{
-		FirstOutputTimeout: time.Second,
-		TotalBudget:        3 * time.Second,
+		FirstOutputTimeout: 3 * time.Second,
+		TotalBudget:        5 * time.Second,
 	})
 	defer stop()
 
-	allowance, cause := openAIPreOutputAttemptTimeout(250*time.Millisecond, 80*time.Millisecond)
-	if allowance != 80*time.Millisecond || !errors.Is(cause, errOpenAIPreOutputBudget) {
-		t.Fatalf("allowance=%s cause=%v, want 80ms budget cause", allowance, cause)
-	}
 	p := getOpenAIPreOutput(c)
 	p.mu.Lock()
-	p.attemptStarted = time.Now()
+	p.deadline = time.Now().Add(2100 * time.Millisecond)
 	p.mu.Unlock()
-	timeoutErr := p.failureError(cause)
-	var failoverErr *UpstreamFailoverError
-	if !errors.As(timeoutErr, &failoverErr) || !failoverErr.PreOutputBudgetExhausted || failoverErr.FirstOutputTimeout {
-		t.Fatalf("expected request-wide budget error, got %#v (%v)", failoverErr, timeoutErr)
+
+	startedAt := time.Now()
+	_, finish, err := OpenAIPreOutputBeginAttempt(c, c.Request.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finish()
+	p.mu.Lock()
+	attemptDeadline := p.attemptDeadline
+	attemptTimeout := p.attemptTimeout
+	p.mu.Unlock()
+	if remaining := attemptDeadline.Sub(startedAt); remaining < 2900*time.Millisecond {
+		t.Fatalf("attempt deadline = %s, want full 3s account timeout", remaining)
+	}
+	if !errors.Is(attemptTimeout, errOpenAIFirstOutputTimeout) {
+		t.Fatalf("attempt timeout cause = %v, want first-output timeout", attemptTimeout)
 	}
 }
 

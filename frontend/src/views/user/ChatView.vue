@@ -29,7 +29,7 @@
           </button>
         </div>
 
-        <div v-if="!sidebarCollapsed" class="history-list">
+        <div v-if="!sidebarCollapsed" ref="historyListEl" class="history-list">
           <div class="history-section-title">{{ t('chat.recentChats') }}</div>
           <button
             v-for="conversation in conversations"
@@ -73,8 +73,30 @@
           <div v-if="!historyLoading && conversations.length === 0" class="history-empty">
             {{ t('chat.noHistory') }}
           </div>
-          <div v-if="historyLoading" class="history-empty">
+          <div v-if="historyLoading && conversations.length === 0" class="history-empty">
             {{ t('common.loading') }}
+          </div>
+          <div v-if="conversations.length > 0" class="history-pagination-actions">
+            <button
+              v-if="hasOlderConversations"
+              type="button"
+              class="history-pagination-button"
+              :disabled="historyLoadingMore"
+              @click="loadOlderConversations"
+            >
+              <Icon name="chevronDown" size="xs" />
+              <span>{{ historyLoadingMore ? t('chat.loadingOlderChats') : t('chat.loadOlderChats', { count: remainingHistoryCount }) }}</span>
+            </button>
+            <button
+              v-if="historyExpanded"
+              type="button"
+              class="history-pagination-button"
+              :disabled="historyLoadingMore"
+              @click="showFewerConversations"
+            >
+              <Icon name="chevronUp" size="xs" />
+              <span>{{ t('chat.showFewerChats') }}</span>
+            </button>
           </div>
         </div>
 
@@ -444,6 +466,10 @@ const selectedReasoningEffort = ref<ChatReasoningEffort>('')
 const systemPrompt = ref('')
 const draft = ref('')
 const historyLoading = ref(false)
+const historyLoadingMore = ref(false)
+const historyPage = ref(1)
+const historyPages = ref(1)
+const historyTotal = ref(0)
 const loadingConversation = ref(false)
 const loadingInitial = ref(false)
 const loadingModelApiKeyId = ref<number | null>(null)
@@ -451,6 +477,7 @@ const sending = ref(false)
 const exportingChats = ref(false)
 const settingsOpen = ref(false)
 const sidebarCollapsed = ref(false)
+const historyListEl = ref<HTMLElement | null>(null)
 const messagesEl = ref<HTMLElement | null>(null)
 const composerInput = ref<HTMLTextAreaElement | null>(null)
 const abortController = ref<AbortController | null>(null)
@@ -472,6 +499,7 @@ let assistantDeltaText = ''
 let assistantDeltaFrame: number | null = null
 let assistantDeltaDrainResolve: (() => void) | null = null
 let attachmentLoadToken = 0
+let historyLoadToken = 0
 
 type PendingChatAttachment = {
   id: string
@@ -489,6 +517,7 @@ const attachmentObjectURLs = new Set<string>()
 const maxChatAttachments = 8
 const maxChatImageBytes = 10 * 1024 * 1024
 const maxChatFileBytes = 256 * 1024
+const recentChatPageSize = 12
 
 const activeApiKeys = computed(() => apiKeys.value.filter((key) => key.status === 'active'))
 const modelOptions = computed(() => {
@@ -507,6 +536,10 @@ const modelSelectPlaceholder = computed(() => {
   return modelOptions.value.length === 0 ? t('chat.noModels') : t('chat.selectModel')
 })
 const availableReasoningEffortOptions = computed(() => chatReasoningEffortOptionsForModel(selectedModel.value))
+const hasOlderConversations = computed(() => historyPage.value < historyPages.value)
+const historyExpanded = computed(() => historyPage.value > 1)
+const historyVisibleCapacity = computed(() => historyPage.value * recentChatPageSize)
+const remainingHistoryCount = computed(() => Math.max(0, historyTotal.value - conversations.value.length))
 const canSend = computed(() => Boolean(
   (draft.value.trim() || pendingAttachments.value.length > 0) &&
   selectedApiKeyId.value &&
@@ -574,14 +607,91 @@ async function loadKeys() {
 }
 
 async function loadConversations() {
+  const token = ++historyLoadToken
   historyLoading.value = true
   try {
-    const page = await chatAPI.listConversations()
-    conversations.value = page.items
+    const page = await chatAPI.listConversations(1, recentChatPageSize)
+    if (token !== historyLoadToken) return
+    conversations.value = dedupeConversations(page.items).slice(0, recentChatPageSize)
+    updateHistoryPagination(page.total, page.pages, 1)
   } catch (err) {
-    appStore.showError(extractApiErrorMessage(err, t('chat.loadFailed')))
+    if (token === historyLoadToken) appStore.showError(extractApiErrorMessage(err, t('chat.loadFailed')))
   } finally {
-    historyLoading.value = false
+    if (token === historyLoadToken) historyLoading.value = false
+  }
+}
+
+async function loadOlderConversations() {
+  if (historyLoading.value || historyLoadingMore.value || !hasOlderConversations.value) return
+
+  const nextPage = historyPage.value + 1
+  const token = ++historyLoadToken
+  historyLoadingMore.value = true
+  try {
+    const page = await chatAPI.listConversations(nextPage, recentChatPageSize)
+    if (token !== historyLoadToken) return
+    conversations.value = dedupeConversations([...conversations.value, ...page.items])
+      .slice(0, nextPage * recentChatPageSize)
+    updateHistoryPagination(page.total, page.pages, nextPage)
+  } catch (err) {
+    if (token === historyLoadToken) {
+      appStore.showError(extractApiErrorMessage(err, t('chat.loadOlderFailed')))
+    }
+  } finally {
+    if (token === historyLoadToken) historyLoadingMore.value = false
+  }
+}
+
+function showFewerConversations() {
+  historyLoadToken += 1
+  historyLoadingMore.value = false
+  historyPage.value = 1
+  conversations.value = conversations.value.slice(0, recentChatPageSize)
+  historyListEl.value?.scrollTo?.({ top: 0, behavior: 'smooth' })
+}
+
+function updateHistoryPagination(total: unknown, pages: unknown, loadedPage: number) {
+  const responseTotal = typeof total === 'number' && Number.isFinite(total)
+    ? Math.max(0, total)
+    : Math.max(historyTotal.value, conversations.value.length)
+  const responsePages = typeof pages === 'number' && Number.isFinite(pages) ? Math.max(1, pages) : 1
+  historyTotal.value = responseTotal
+  historyPages.value = responseTotal > 0
+    ? Math.max(1, Math.ceil(responseTotal / recentChatPageSize))
+    : responsePages
+  historyPage.value = Math.min(Math.max(1, loadedPage), historyPages.value)
+}
+
+function syncHistoryPaginationAfterMutation() {
+  historyPages.value = Math.max(1, Math.ceil(historyTotal.value / recentChatPageSize))
+  historyPage.value = Math.min(historyPage.value, historyPages.value)
+  conversations.value = conversations.value.slice(0, historyVisibleCapacity.value)
+}
+
+function dedupeConversations(items: ChatConversation[]): ChatConversation[] {
+  const seen = new Set<number>()
+  return items.filter((conversation) => {
+    if (seen.has(conversation.id)) return false
+    seen.add(conversation.id)
+    return true
+  })
+}
+
+async function refillVisibleConversations() {
+  const visibleCount = Math.min(historyVisibleCapacity.value, historyTotal.value)
+  if (conversations.value.length >= visibleCount) return
+
+  const token = ++historyLoadToken
+  historyLoadingMore.value = true
+  try {
+    const page = await chatAPI.listConversations(1, historyVisibleCapacity.value)
+    if (token !== historyLoadToken) return
+    conversations.value = dedupeConversations(page.items).slice(0, historyVisibleCapacity.value)
+    updateHistoryPagination(page.total, page.pages, historyPage.value)
+  } catch (err) {
+    if (token === historyLoadToken) appStore.showError(extractApiErrorMessage(err, t('chat.loadFailed')))
+  } finally {
+    if (token === historyLoadToken) historyLoadingMore.value = false
   }
 }
 
@@ -991,7 +1101,7 @@ async function ensureConversation(firstMessage: string): Promise<ChatConversatio
   if (!activeConversation.value) {
     const created = await chatAPI.createConversation(payload)
     activeConversation.value = created
-    conversations.value = [created, ...conversations.value]
+    upsertConversation(created, true)
     return created
   }
   const updated = await chatAPI.updateConversation(activeConversation.value.id, payload)
@@ -1048,7 +1158,6 @@ async function sendMessage() {
     })
     await drainAssistantDeltas(assistantTemp.id)
     replaceMessage(assistantTemp.id, saved)
-    await loadConversations()
   } catch (err) {
     const aborted = abortController.value?.signal.aborted
     if (!assistantTemp && attachments.length > 0) {
@@ -1059,7 +1168,6 @@ async function sendMessage() {
       if (saved) {
         await drainAssistantDeltas(assistantTemp.id)
         replaceMessage(assistantTemp.id, saved)
-        await loadConversations()
       } else {
         await drainAssistantDeltas(assistantTemp.id)
         updateMessage(assistantTemp.id, (message) => ({
@@ -1200,13 +1308,11 @@ function resetAssistantDeltaQueue() {
   assistantDeltaDrainResolve = null
 }
 
-function upsertConversation(conversation: ChatConversation) {
-  const index = conversations.value.findIndex((item) => item.id === conversation.id)
-  if (index >= 0) {
-    conversations.value[index] = conversation
-  } else {
-    conversations.value.unshift(conversation)
-  }
+function upsertConversation(conversation: ChatConversation, isNew = false) {
+  const exists = conversations.value.some((item) => item.id === conversation.id)
+  conversations.value = [conversation, ...conversations.value.filter((item) => item.id !== conversation.id)]
+  if (isNew && !exists) historyTotal.value += 1
+  syncHistoryPaginationAfterMutation()
 }
 
 function makeTitle(content: string): string {
@@ -1282,6 +1388,9 @@ async function confirmDelete() {
       appStore.showWarning(t('chat.localAttachmentDeleteFailed'))
     }
     conversations.value = conversations.value.filter((item) => item.id !== target.id)
+    historyTotal.value = Math.max(0, historyTotal.value - 1)
+    syncHistoryPaginationAfterMutation()
+    await refillVisibleConversations()
     if (activeConversation.value?.id === target.id) await startNewChat()
   } catch (err) {
     appStore.showError(extractApiErrorMessage(err, t('chat.deleteFailed')))
@@ -1353,7 +1462,9 @@ onUnmounted(() => {
 
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-  min-height: calc(100vh - 8rem);
+  height: calc(100vh - 8rem);
+  height: calc(100dvh - 8rem);
+  min-height: 32rem;
   overflow: hidden;
   border-radius: 0.75rem;
   border: 1px solid rgb(229 231 235);
@@ -1374,6 +1485,7 @@ onUnmounted(() => {
   min-height: 0;
   flex-direction: column;
   gap: 0.25rem;
+  overflow: hidden;
   border-right: 1px solid rgb(229 231 235);
   background: rgb(249 250 251);
 }
@@ -1488,7 +1600,46 @@ onUnmounted(() => {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 0.25rem 0.5rem 0.75rem;
+}
+
+.history-pagination-actions {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.625rem 0.25rem 0;
+}
+
+.history-pagination-button {
+  display: inline-flex;
+  min-height: 2.25rem;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 0.375rem;
+  color: rgb(75 85 99);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.history-pagination-button:hover:not(:disabled) {
+  background: rgb(229 231 235);
+  color: rgb(17 24 39);
+}
+
+.history-pagination-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.dark .history-pagination-button {
+  color: rgb(209 213 219);
+}
+
+.dark .history-pagination-button:hover:not(:disabled) {
+  background: rgb(55 65 81);
+  color: rgb(243 244 246);
 }
 
 .history-section-title {
@@ -1581,7 +1732,9 @@ onUnmounted(() => {
 
 .chat-main {
   display: grid;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
@@ -2184,13 +2337,33 @@ onUnmounted(() => {
 
   .chat-shell,
   .chat-shell.sidebar-collapsed {
+    height: auto;
+    min-height: calc(100dvh - 8rem);
     grid-template-columns: 1fr;
   }
 
   .chat-history {
     max-height: 14rem;
+    overflow: hidden;
     border-right: 0;
     border-bottom: 1px solid rgb(229 231 235);
+  }
+
+  .chat-history:not(.collapsed) .history-header {
+    padding: 0.5rem 0.75rem 0.25rem;
+  }
+
+  .chat-history:not(.collapsed) .history-primary {
+    padding: 0 0.75rem 0.25rem;
+  }
+
+  .chat-history:not(.collapsed) .history-footer {
+    padding: 0.25rem 0.75rem;
+  }
+
+  .chat-history:not(.collapsed) .history-command {
+    min-height: 2.25rem;
+    padding: 0.4rem 0.6rem;
   }
 
   .chat-history.collapsed {
