@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -82,4 +83,29 @@ func TestOpsCaptureWriter_UnwrapsResponseControllerWriteDeadline(t *testing.T) {
 
 	require.NoError(t, http.NewResponseController(w).SetWriteDeadline(deadline))
 	assert.Equal(t, deadline, underlying.deadline)
+}
+
+func TestOpsCaptureWriter_CompactKeepaliveRestoresOriginalWriter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	outerStatus := -1
+	router.Use(func(c *gin.Context) {
+		c.Next()
+		outerStatus = c.Writer.Status()
+	})
+	router.Use(OpsErrorLoggerMiddleware(nil))
+	router.GET("/compact", func(c *gin.Context) {
+		service.MarkOpenAICompactClientStream(c)
+		stop := service.StartOpenAICompactSSEKeepalive(c, time.Hour)
+		defer stop()
+		c.Status(http.StatusOK)
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/compact", nil)
+	require.NotPanics(t, func() {
+		router.ServeHTTP(recorder, request)
+	})
+	require.Equal(t, http.StatusOK, outerStatus)
+	require.Equal(t, http.StatusOK, recorder.Code)
 }

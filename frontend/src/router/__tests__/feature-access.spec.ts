@@ -12,6 +12,7 @@ const routerHarness = vi.hoisted(() => ({
 
 const authStore = vi.hoisted(() => ({
   checkAuth: vi.fn(),
+  waitForInitialUserRefresh: vi.fn().mockResolvedValue(undefined),
   isAuthenticated: true,
   isAdmin: false,
   isSimpleMode: false,
