@@ -125,6 +125,44 @@ type errReadCloser struct {
 func (r errReadCloser) Read([]byte) (int, error) { return 0, r.err }
 func (r errReadCloser) Close() error             { return nil }
 
+type tailErrorReadCloser struct {
+	payload     []byte
+	offset      int
+	err         error
+	errReturned chan<- struct{}
+}
+
+func (r *tailErrorReadCloser) Read(p []byte) (int, error) {
+	if r.offset < len(r.payload) {
+		n := copy(p, r.payload[r.offset:])
+		r.offset += n
+		return n, nil
+	}
+	select {
+	case r.errReturned <- struct{}{}:
+	default:
+	}
+	return 0, r.err
+}
+
+func (r *tailErrorReadCloser) Close() error { return nil }
+
+type blockingFirstWriteGinWriter struct {
+	gin.ResponseWriter
+	writeStarted chan<- struct{}
+	releaseWrite <-chan struct{}
+	blocked      bool
+}
+
+func (w *blockingFirstWriteGinWriter) Write(p []byte) (int, error) {
+	if !w.blocked {
+		w.blocked = true
+		w.writeStarted <- struct{}{}
+		<-w.releaseWrite
+	}
+	return w.ResponseWriter.Write(p)
+}
+
 type failingGinWriter struct {
 	gin.ResponseWriter
 	failAfter int
@@ -1585,6 +1623,80 @@ func TestOpenAIStreamingPreambleKeepaliveUsesDownstreamIdle(t *testing.T) {
 	require.NotNil(t, result)
 	require.Contains(t, rec.Body.String(), ":\n\n")
 	require.Contains(t, rec.Body.String(), "response.completed")
+}
+
+func TestOpenAIStreamingPostTerminalReadErrorFlushesCompletedEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   1,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	writeStarted := make(chan struct{}, 1)
+	releaseWrite := make(chan struct{})
+	c.Writer = &blockingFirstWriteGinWriter{
+		ResponseWriter: c.Writer,
+		writeStarted:   writeStarted,
+		releaseWrite:   releaseWrite,
+	}
+
+	errReturned := make(chan struct{}, 1)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body: &tailErrorReadCloser{
+			payload: []byte(strings.Join([]string{
+				`data: {"type":"response.output_text.delta","delta":"ok"}`,
+				"",
+				`data: {"type":"response.completed","response":{"id":"resp_terminal","status":"completed","output":null,"usage":{"input_tokens":1,"output_tokens":1}}}`,
+				"",
+			}, "\n")),
+			err:         io.ErrUnexpectedEOF,
+			errReturned: errReturned,
+		},
+		Header: http.Header{"X-Request-Id": []string{"rid-post-terminal-error"}},
+	}
+
+	type streamResult struct {
+		result *openaiStreamingResult
+		err    error
+	}
+	done := make(chan streamResult, 1)
+	go func() {
+		result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "acc"}, time.Now(), "model", "model")
+		done <- streamResult{result: result, err: err}
+	}()
+
+	select {
+	case <-writeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first downstream write")
+	}
+	select {
+	case <-errReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the upstream tail error")
+	}
+	close(releaseWrite)
+
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		require.NotNil(t, got.result)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for stream completion")
+	}
+
+	terminalType, terminalPayload, ok := extractOpenAISSETerminalEvent(rec.Body.String())
+	require.True(t, ok, "client stream must contain the buffered terminal event: %q", rec.Body.String())
+	require.Equal(t, "response.completed", terminalType)
+	require.Equal(t, "resp_terminal", gjson.GetBytes(terminalPayload, "response.id").String())
 }
 
 func TestOpenAIStreamingNormalizesTerminalOutputFromDeltas(t *testing.T) {
