@@ -44,6 +44,9 @@ func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2StaysOnResponses(t *test
 
 	require.Equal(t, "/v1/responses", c.Request.URL.Path)
 	require.False(t, isOpenAIRemoteCompactPath(c))
+	require.True(t, isOpenAICompactionRequest(c, normalized))
+	subscriptionKey := &service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription}}
+	require.False(t, shouldStartOpenAIPreOutput(true, isOpenAICompactionRequest(c, normalized), false, subscriptionKey))
 	require.Equal(t, body, normalized)
 	require.True(t, gjson.GetBytes(normalized, "stream").Bool())
 	require.True(t, gjson.GetBytes(normalized, "store").Bool())
@@ -73,8 +76,24 @@ func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2PathAliasesStayOnRespons
 			require.True(t, ok)
 			require.Equal(t, path, c.Request.URL.Path)
 			require.Equal(t, body, normalized)
+			require.True(t, isOpenAICompactionRequest(c, normalized))
 		})
 	}
+}
+
+func TestIsOpenAICompactionRequest_RequiresCompactionTriggerForNativeV2(t *testing.T) {
+	h := &OpenAIGatewayHandler{}
+	body := []byte(`{"model":"gpt-5.6-sol","stream":true,"input":[{"type":"message","role":"user","content":"hello"}]}`)
+	c := newCompactBodySignalTestContext(t, "/v1/responses", body)
+	c.Request.Header.Set("x-codex-beta-features", "remote_compaction_v2")
+
+	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+	require.True(t, ok)
+	require.Equal(t, "/v1/responses", c.Request.URL.Path)
+	require.False(t, isOpenAICompactionRequest(c, normalized))
+
+	subscriptionKey := &service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription}}
+	require.True(t, shouldStartOpenAIPreOutput(true, isOpenAICompactionRequest(c, normalized), false, subscriptionKey))
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_BodySignalTrailingSlashPromoted(t *testing.T) {
@@ -82,9 +101,10 @@ func TestNormalizeOpenAIResponsesCompactRequest_BodySignalTrailingSlashPromoted(
 	body := []byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`)
 	c := newCompactBodySignalTestContext(t, "/v1/responses/", body)
 
-	_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
 	require.True(t, ok)
 	require.Equal(t, "/v1/responses/compact", c.Request.URL.Path)
+	require.True(t, isOpenAICompactionRequest(c, normalized))
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_CodexDirectAliasPromoted(t *testing.T) {
@@ -92,9 +112,10 @@ func TestNormalizeOpenAIResponsesCompactRequest_CodexDirectAliasPromoted(t *test
 	body := []byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`)
 	c := newCompactBodySignalTestContext(t, "/backend-api/codex/responses", body)
 
-	_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
+	normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
 	require.True(t, ok)
 	require.Equal(t, "/backend-api/codex/responses/compact", c.Request.URL.Path)
+	require.True(t, isOpenAICompactionRequest(c, normalized))
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_NonRemoteV2BodySignalPromoted(t *testing.T) {
@@ -144,6 +165,7 @@ func TestNormalizeOpenAIResponsesCompactRequest_NonRemoteV2BodySignalPromoted(t 
 			normalized, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), tt.body)
 			require.True(t, ok)
 			require.Equal(t, "/v1/responses/compact", c.Request.URL.Path)
+			require.True(t, isOpenAICompactionRequest(c, normalized))
 			require.False(t, gjson.GetBytes(normalized, "stream").Exists())
 
 			marked, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
@@ -164,6 +186,7 @@ func TestNormalizeOpenAIResponsesCompactRequest_NoTriggerUntouched(t *testing.T)
 	require.True(t, ok)
 	require.Equal(t, "/v1/responses", c.Request.URL.Path)
 	require.False(t, isOpenAIRemoteCompactPath(c))
+	require.False(t, isOpenAICompactionRequest(c, normalized))
 	require.Equal(t, body, normalized)
 	require.True(t, gjson.GetBytes(normalized, "stream").Bool())
 }

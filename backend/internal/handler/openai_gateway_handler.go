@@ -800,6 +800,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 
 	imageIntent := service.IsImageGenerationIntent("/v1/responses", reqModel, body)
+	compactionRequest := isOpenAICompactionRequest(c, body)
 	requireCompact := isOpenAIRemoteCompactPath(c)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
@@ -816,7 +817,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			defer imageReleaseFunc()
 		}
 	}
-	if shouldStartOpenAIPreOutput(reqStream, requireCompact, imageIntent, apiKey) {
+	if shouldStartOpenAIPreOutput(reqStream, compactionRequest, imageIntent, apiKey) {
 		stopPreOutput := service.StartOpenAIPreOutput(c, h.openAIPreOutputSettings())
 		defer stopPreOutput()
 	}
@@ -1257,9 +1258,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 }
 
-func shouldStartOpenAIPreOutput(reqStream, requireCompact, imageIntent bool, apiKey *service.APIKey) bool {
+func shouldStartOpenAIPreOutput(reqStream, compactionRequest, imageIntent bool, apiKey *service.APIKey) bool {
 	return reqStream &&
-		!requireCompact &&
+		!compactionRequest &&
 		!imageIntent &&
 		apiKey != nil &&
 		apiKey.Group != nil &&
@@ -1321,6 +1322,18 @@ func isOpenAIRemoteCompactionV2Request(c *gin.Context, body []byte) bool {
 		}
 	}
 	return false
+}
+
+// isOpenAICompactionRequest identifies compact requests before pre-output
+// control starts. Native remote_compaction_v2 stays on /responses, so the
+// beta header alone is not enough: ordinary requests may carry that header too.
+func isOpenAICompactionRequest(c *gin.Context, body []byte) bool {
+	if isOpenAIRemoteCompactPath(c) {
+		return true
+	}
+	return isBareOpenAIResponsesPath(c) &&
+		service.HasCompactionTriggerInInput(body) &&
+		isOpenAIRemoteCompactionV2Request(c, body)
 }
 
 // normalizeOpenAIResponsesCompactRequest keeps Codex remote compaction v2 on

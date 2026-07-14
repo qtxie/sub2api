@@ -308,7 +308,7 @@ func TestShouldStartOpenAIPreOutputMatchesInitialRolloutScope(t *testing.T) {
 	}{
 		{name: "ordinary subscription responses", stream: true, apiKey: subscriptionKey, want: true},
 		{name: "standard group", stream: true, apiKey: standardKey},
-		{name: "non streaming", apiKey: subscriptionKey},
+		{name: "sync responses", apiKey: subscriptionKey},
 		{name: "compact", stream: true, compact: true, apiKey: subscriptionKey},
 		{name: "image", stream: true, imageIntent: true, apiKey: subscriptionKey},
 		{name: "grok", stream: true, apiKey: grokKey},
