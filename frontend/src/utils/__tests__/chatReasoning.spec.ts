@@ -8,7 +8,7 @@ import {
 describe('chat reasoning effort options', () => {
   it('adds max for GPT-5.6 models', () => {
     const gpt55Values = chatReasoningEffortOptionsForModel('gpt-5.5').map((option) => option.value)
-    const expected = ['none', 'low', 'medium', 'high', 'max', 'xhigh']
+    const expected = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
 
     expect(gpt55Values).toEqual(['none', 'low', 'medium', 'high', 'xhigh'])
     expect(chatReasoningEffortOptionsForModel('gpt-5.6').map((option) => option.value)).toEqual(expected)

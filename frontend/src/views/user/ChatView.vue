@@ -3,9 +3,8 @@
     <div class="chat-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
       <aside class="chat-history" :class="{ collapsed: sidebarCollapsed }">
         <div class="history-header">
-          <div class="history-brand" :title="t('chat.title')">
-            <span class="history-brand-mark">S</span>
-            <span v-if="!sidebarCollapsed" class="history-brand-text">{{ t('chat.title') }}</span>
+          <div v-if="!sidebarCollapsed" class="history-brand" :title="t('chat.title')">
+            <span class="history-brand-text">{{ t('chat.title') }}</span>
           </div>
           <button
             type="button"
@@ -40,16 +39,24 @@
             @click="selectConversation(conversation.id)"
           >
             <Icon name="chatBubble" size="sm" class="history-icon" />
-            <span v-if="renamingId !== conversation.id" class="history-title">{{ conversation.title }}</span>
-            <input
-              v-else
-              v-model="renameTitle"
-              class="history-rename"
-              @click.stop
-              @keydown.enter.prevent="saveRename(conversation)"
-              @keydown.esc.prevent="cancelRename"
-              @blur="saveRename(conversation)"
-            />
+            <span class="history-content">
+              <span v-if="renamingId !== conversation.id" class="history-title">{{ conversation.title }}</span>
+              <input
+                v-else
+                v-model="renameTitle"
+                class="history-rename"
+                @click.stop
+                @keydown.enter.prevent="saveRename(conversation)"
+                @keydown.esc.prevent="cancelRename"
+                @blur="saveRename(conversation)"
+              />
+              <time
+                class="history-datetime"
+                :datetime="conversationDateTimeAttribute(conversation.updated_at)"
+              >
+                {{ formatConversationDateTime(conversation.updated_at) }}
+              </time>
+            </span>
             <span class="history-actions" @click.stop>
               <button
                 type="button"
@@ -432,6 +439,7 @@ import type { ApiKey } from '@/types'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { extractApiErrorMessage } from '@/utils/apiError'
+import { formatDateTime } from '@/utils/format'
 import { renderChatMarkdown } from '@/utils/chatMarkdown'
 import {
   chatReasoningEffortOptionsForModel,
@@ -1320,6 +1328,23 @@ function makeTitle(content: string): string {
   return normalized.length > 60 ? `${normalized.slice(0, 57)}...` : normalized || t('chat.newChat')
 }
 
+function formatConversationDateTime(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return ''
+  return formatDateTime(new Date(timestamp * 1000), {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
+function conversationDateTimeAttribute(timestamp: number): string | undefined {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return undefined
+  return new Date(timestamp * 1000).toISOString()
+}
+
 function renderMarkdown(content: string): string {
   return renderChatMarkdown(content)
 }
@@ -1513,21 +1538,6 @@ onUnmounted(() => {
   display: inline-flex;
   min-width: 0;
   align-items: center;
-  gap: 0.65rem;
-}
-
-.history-brand-mark {
-  display: inline-flex;
-  height: 2.15rem;
-  width: 2.15rem;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0.55rem;
-  background: linear-gradient(135deg, rgb(37 99 235), rgb(16 185 129));
-  color: white;
-  font-size: 1.1rem;
-  font-weight: 800;
 }
 
 .history-brand-text {
@@ -1681,11 +1691,33 @@ onUnmounted(() => {
 }
 
 .history-title {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.875rem;
+}
+
+.history-content {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.history-datetime {
+  display: block;
+  margin-top: 0.125rem;
+  overflow: hidden;
+  color: rgb(107 114 128);
+  font-size: 0.6875rem;
+  line-height: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dark .history-datetime {
+  color: rgb(156 163 175);
 }
 
 .history-actions {
@@ -1700,6 +1732,8 @@ onUnmounted(() => {
 }
 
 .history-rename {
+  display: block;
+  width: 100%;
   min-width: 0;
   border-radius: 0.375rem;
   border: 1px solid rgb(209 213 219);
@@ -2343,7 +2377,7 @@ onUnmounted(() => {
   }
 
   .chat-history {
-    max-height: 14rem;
+    max-height: 16rem;
     overflow: hidden;
     border-right: 0;
     border-bottom: 1px solid rgb(229 231 235);

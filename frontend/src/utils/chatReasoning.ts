@@ -26,8 +26,8 @@ const gpt56ReasoningEffortOptions: ReasoningEffortOption[] = [
   { value: 'low', label: 'chat.reasoningLow' },
   { value: 'medium', label: 'chat.reasoningMedium' },
   { value: 'high', label: 'chat.reasoningHigh' },
-  { value: 'max', label: 'chat.reasoningMax' },
-  { value: 'xhigh', label: 'chat.reasoningXHigh' }
+  { value: 'xhigh', label: 'chat.reasoningXHigh' },
+  { value: 'max', label: 'chat.reasoningMax' }
 ]
 
 export function normalizeChatReasoningEffort(value: string): ChatReasoningEffort {

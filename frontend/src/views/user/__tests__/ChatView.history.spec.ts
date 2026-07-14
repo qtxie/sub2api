@@ -178,6 +178,16 @@ describe('ChatView recent history', () => {
     expect(wrapper.get('.history-pagination-button').text()).toContain('chat.loadOlderChats')
   })
 
+  it('shows the last-updated date and time for every conversation', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const timestamps = wrapper.findAll('time.history-datetime')
+    expect(timestamps).toHaveLength(12)
+    expect(timestamps.every((timestamp) => timestamp.text().trim().length > 0)).toBe(true)
+    expect(timestamps[0].attributes('datetime')).toBe('1970-01-01T00:00:01.000Z')
+  })
+
   it('loads older conversations without duplicates and can collapse to recent chats', async () => {
     mocks.listConversations
       .mockResolvedValueOnce(page(Array.from({ length: 12 }, (_, index) => conversation(index + 1)), 25))
