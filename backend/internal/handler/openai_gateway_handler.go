@@ -897,6 +897,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	firstOutputRetryCount := make(map[int64]int)
+	pendingFirstOutputTimeoutMs := make(map[int64]*int)
 	usedRetryProxyIDs := make(map[int64]map[int64]struct{})
 	var retrySelection *service.AccountSelectionResult
 	var retryScheduleDecision service.OpenAIAccountScheduleDecision
@@ -1113,31 +1114,44 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							)
 						}
 					}
-					canFailover := accountOpenAIFailureBeforeFailoverDecision(
-						failoverErr,
-						func(attemptFirstTokenMs *int) {
+					var attemptFirstTokenMs *int
+					if failoverErr.FirstOutputTimeout && failoverErr.AttemptLatencyMs > 0 {
+						attemptLatencyMs := int(failoverErr.AttemptLatencyMs)
+						attemptFirstTokenMs = &attemptLatencyMs
+					}
+					reportFirstOutputTimeout := func() {
+						if failoverErr.FirstOutputTimeout {
 							h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, attemptFirstTokenMs)
-							h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
-								EventName: "openai.account_first_output_timeout", Phase: service.OpenAIAccountSwitchPhaseFailed,
-								Route: "responses", Model: reqModel, Stream: reqStream,
-								AccountID: account.ID, AccountName: account.Name,
-								FailedAccountID: account.ID, FailedAccountName: account.Name,
-								UpstreamStatus: failoverErr.StatusCode,
-								FinalError:     failoverErr.Reason, LatencyMs: failoverErr.AttemptLatencyMs,
-							}, apiKey, subject.UserID)
-						},
-						func() {
-							h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-							h.gatewayService.RecordOpenAITransientFailure(c.Request.Context(), account, failoverErr.StatusCode)
-						},
-						func() bool {
-							if service.OpenAIPreOutputEnabled(c) {
-								return service.OpenAIPreOutputCanFailover(c)
-							}
-							return service.OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward
-						},
-					)
+							delete(pendingFirstOutputTimeoutMs, account.ID)
+							return
+						}
+						if pendingFirstTokenMs, ok := pendingFirstOutputTimeoutMs[account.ID]; ok {
+							h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, pendingFirstTokenMs)
+							delete(pendingFirstOutputTimeoutMs, account.ID)
+						}
+					}
+					if failoverErr.FirstOutputTimeout {
+						h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
+							EventName: "openai.account_first_output_timeout", Phase: service.OpenAIAccountSwitchPhaseFailed,
+							Route: "responses", Model: reqModel, Stream: reqStream,
+							AccountID: account.ID, AccountName: account.Name,
+							FailedAccountID: account.ID, FailedAccountName: account.Name,
+							UpstreamStatus: failoverErr.StatusCode,
+							FinalError:     failoverErr.Reason, LatencyMs: failoverErr.AttemptLatencyMs,
+						}, apiKey, subject.UserID)
+					}
+					canFailover := func() bool {
+						if service.OpenAIPreOutputEnabled(c) {
+							return service.OpenAIPreOutputCanFailover(c)
+						}
+						return service.OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward
+					}()
+					if canFailover && !failoverErr.FirstOutputTimeout && !failoverErr.PreOutputBudgetExhausted && !failoverErr.RetryProxyTransportFailure {
+						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+						h.gatewayService.RecordOpenAITransientFailure(c.Request.Context(), account, failoverErr.StatusCode)
+					}
 					if !canFailover {
+						reportFirstOutputTimeout()
 						semanticStarted := service.OpenAIPreOutputSemanticStarted(c)
 						finalStatus, finalReason := h.openAIFailoverTerminalNotificationDetails(failoverErr, failoverErr.Error())
 						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, finalStatus, finalReason, time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
@@ -1185,6 +1199,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 								}
 							}
 							firstOutputRetryCount[account.ID] = retryNumber
+							if failoverErr.FirstOutputTimeout {
+								pendingFirstOutputTimeoutMs[account.ID] = cloneIntPtr(attemptFirstTokenMs)
+							}
 							retrySelection = h.gatewayService.NewOpenAIFirstOutputRetrySelection(account)
 							retryScheduleDecision = scheduleDecision
 							retryAttempt = &nextAttempt
@@ -1238,6 +1255,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							continue
 						}
 					}
+					reportFirstOutputTimeout()
 					if !failoverErr.RetryProxyTransportFailure && (scheduleDecision.StickySessionRebind || scheduleDecision.PreviousRebind) {
 						h.gatewayService.RecordOpenAIStickyFailbackFailure(c.Request.Context(), account.ID, failoverErr.StatusCode)
 					}
@@ -1320,6 +1338,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ClearOpenAITransientFailures(account.ID)
+			delete(pendingFirstOutputTimeoutMs, account.ID)
 			schedulerTTFT := result.AttemptFirstTokenMs
 			if schedulerTTFT == nil {
 				schedulerTTFT = result.FirstTokenMs
@@ -1327,6 +1346,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, schedulerTTFT)
 		} else {
 			h.gatewayService.ClearOpenAITransientFailures(account.ID)
+			delete(pendingFirstOutputTimeoutMs, account.ID)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
 		h.notifyOpenAIAccountFailbackToHighestPriority(c, "responses", apiKey, subject.UserID, reqModel, reqStream, account, scheduleDecision, requestPlatform, requireCompact, service.OpenAIUpstreamTransportAny, service.OpenAIEndpointCapabilityChatCompletions, "")
@@ -3287,6 +3307,14 @@ func newOpenAIFirstOutputRetrySession(sessionHash string, body []byte, accountID
 		return "", nil, err
 	}
 	return retryHash, retryBody, nil
+}
+
+func cloneIntPtr(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func openAIWSIngressFallbackSessionSeed(userID, apiKeyID int64, groupID *int64) string {
