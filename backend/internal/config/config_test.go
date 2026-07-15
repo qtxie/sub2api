@@ -307,7 +307,7 @@ func TestLoadDefaultOpenAIPreOutputLimits(t *testing.T) {
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Equal(t, 60, cfg.Gateway.OpenAIFirstOutputTimeoutSeconds)
-	require.Equal(t, 2, cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount)
+	require.Equal(t, 1, cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount)
 	require.Equal(t, 180, cfg.Gateway.OpenAITotalPreOutputBudgetSeconds)
 	require.Equal(t, 15, cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds)
 	require.Equal(t, 120, cfg.Gateway.OpenAIPostOutputBillingDrainSeconds)

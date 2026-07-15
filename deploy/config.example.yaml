@@ -158,7 +158,7 @@ gateway:
   # First meaningful output deadline per ordinary HTTP /responses account attempt (seconds, 0=disabled)
   openai_first_output_timeout_seconds: 60
   # Same-account retries after a first-output timeout
-  openai_first_output_same_account_retry_count: 2
+  openai_first_output_same_account_retry_count: 1
   # Budget for initial routing and same-account retries; normal account failover gets fresh per-account deadlines
   openai_total_pre_output_budget_seconds: 180
   # Maximum billing drain after a client disconnects before meaningful output (seconds)

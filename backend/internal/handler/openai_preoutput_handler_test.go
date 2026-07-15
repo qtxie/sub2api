@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -51,6 +52,8 @@ type preOutputFailoverHTTPUpstream struct {
 	accountIDs                     []int64
 	proxyURLs                      []string
 	attempts                       []service.OpenAIFirstOutputAttempt
+	sessionIDs                     []string
+	promptCacheKeys                []string
 	timeoutAccountIDs              map[int64]struct{}
 	failAccountIDs                 map[int64]struct{}
 	failFirstCalls                 int
@@ -107,10 +110,17 @@ func (n *recordingOpenAIAccountSwitchNotifier) notifications() []service.OpenAIA
 }
 
 func (u *preOutputFailoverHTTPUpstream) Do(req *http.Request, proxyURL string, accountID int64, _ int) (*http.Response, error) {
+	var promptCacheKey string
+	if req.Body != nil {
+		body, _ := io.ReadAll(req.Body)
+		promptCacheKey = strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
+	}
 	u.mu.Lock()
 	u.accountIDs = append(u.accountIDs, accountID)
 	u.proxyURLs = append(u.proxyURLs, proxyURL)
 	u.attempts = append(u.attempts, service.OpenAIFirstOutputAttemptFromContext(req.Context()))
+	u.sessionIDs = append(u.sessionIDs, strings.TrimSpace(req.Header.Get("session_id")))
+	u.promptCacheKeys = append(u.promptCacheKeys, promptCacheKey)
 	callCount := len(u.accountIDs)
 	u.mu.Unlock()
 	if _, shouldFail := u.failAccountIDs[accountID]; shouldFail {
@@ -172,6 +182,12 @@ func (u *preOutputFailoverHTTPUpstream) routeCalls() ([]string, []service.OpenAI
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]string(nil), u.proxyURLs...), append([]service.OpenAIFirstOutputAttempt(nil), u.attempts...)
+}
+
+func (u *preOutputFailoverHTTPUpstream) sessionCalls() ([]string, []string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.sessionIDs...), append([]string(nil), u.promptCacheKeys...)
 }
 
 func TestPreOutputFinalErrorAfterHeartbeatUsesResponsesSSE(t *testing.T) {
@@ -510,7 +526,7 @@ func TestResponsesFirstOutputTimeoutSkipsRetriesWhenRetryBudgetCannotContinue(t 
 	require.False(t, strings.HasPrefix(strings.TrimSpace(rec.Body.String()), `{"error":`))
 }
 
-func TestResponsesFirstOutputTimeoutRetriesSameAccountTwiceWithFreshProxyRoutes(t *testing.T) {
+func TestResponsesFirstOutputTimeoutRetriesSameAccountOnceWithFreshProxyRouteAndSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(46)
 	accounts := []service.Account{{
@@ -519,7 +535,7 @@ func TestResponsesFirstOutputTimeoutRetriesSameAccountTwiceWithFreshProxyRoutes(
 		Credentials: map[string]any{"access_token": "retry-token"},
 	}}
 	repo := preOutputFailoverAccountRepo{accounts: accounts}
-	upstream := &preOutputFailoverHTTPUpstream{failFirstCalls: 2}
+	upstream := &preOutputFailoverHTTPUpstream{failFirstCalls: 1}
 	proxyRepo := preOutputRetryProxyRepo{proxies: []service.Proxy{
 		{ID: 101, Name: "proxy-slower", Protocol: "http", Host: "127.0.0.1", Port: 9101, Status: service.StatusActive},
 		{ID: 102, Name: "proxy-faster", Protocol: "http", Host: "127.0.0.1", Port: 9102, Status: service.StatusActive},
@@ -532,7 +548,7 @@ func TestResponsesFirstOutputTimeoutRetriesSameAccountTwiceWithFreshProxyRoutes(
 	}}
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
-	cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount = 2
+	cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount = 1
 	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 5
 	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
 	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
@@ -553,7 +569,7 @@ func TestResponsesFirstOutputTimeoutRetriesSameAccountTwiceWithFreshProxyRoutes(
 	notifier := &recordingOpenAIAccountSwitchNotifier{}
 	h.accountSwitchNotifier = notifier
 
-	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+	body := []byte(`{"model":"gpt-5","stream":true,"prompt_cache_key":"original-session","input":"hello"}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
@@ -567,20 +583,29 @@ func TestResponsesFirstOutputTimeoutRetriesSameAccountTwiceWithFreshProxyRoutes(
 
 	h.Responses(c)
 
-	require.Equal(t, []int64{11, 11, 11}, upstream.calls(), "status=%d body=%s", rec.Code, rec.Body.String())
+	require.Equal(t, []int64{11, 11}, upstream.calls(), "status=%d body=%s", rec.Code, rec.Body.String())
 	proxyURLs, attempts := upstream.routeCalls()
-	require.Equal(t, []string{"", "http://127.0.0.1:9102", "http://127.0.0.1:9101"}, proxyURLs)
-	require.Equal(t, []int{1, 2, 3}, []int{attempts[0].Attempt, attempts[1].Attempt, attempts[2].Attempt})
-	require.Equal(t, []int{0, 1, 2}, []int{attempts[0].Retry, attempts[1].Retry, attempts[2].Retry})
+	require.Equal(t, []string{"", "http://127.0.0.1:9102"}, proxyURLs)
+	require.Equal(t, []int{1, 2}, []int{attempts[0].Attempt, attempts[1].Attempt})
+	require.Equal(t, []int{0, 1}, []int{attempts[0].Retry, attempts[1].Retry})
 	require.False(t, attempts[0].FreshTransport)
 	require.True(t, attempts[1].FreshTransport)
-	require.True(t, attempts[2].FreshTransport)
+	sessionIDs, promptCacheKeys := upstream.sessionCalls()
+	require.Len(t, sessionIDs, 2)
+	require.NotEmpty(t, sessionIDs[0])
+	require.NotEmpty(t, sessionIDs[1])
+	require.NotEqual(t, sessionIDs[0], sessionIDs[1])
+	require.Equal(t, "original-session", promptCacheKeys[0])
+	require.NotEmpty(t, promptCacheKeys[1])
+	require.NotEqual(t, promptCacheKeys[0], promptCacheKeys[1])
+	require.Contains(t, promptCacheKeys[1], "first-output-retry:")
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "response.output_text.delta")
 	events := notifier.notifications()
-	require.Len(t, events, 2)
+	require.Len(t, events, 1)
 	require.Equal(t, "openai.account_first_output_timeout", events[0].EventName)
-	require.Equal(t, "openai.account_first_output_timeout", events[1].EventName)
+	require.Equal(t, http.StatusGatewayTimeout, events[0].UpstreamStatus)
+	require.Zero(t, events[0].FinalStatus, "an attempt timeout is not the final request status")
 }
 
 func TestResponsesRetryProxyTransportFailureRetriesSameAccountDirect(t *testing.T) {

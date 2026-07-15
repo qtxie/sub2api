@@ -901,6 +901,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var retrySelection *service.AccountSelectionResult
 	var retryScheduleDecision service.OpenAIAccountScheduleDecision
 	var retryAttempt *service.OpenAIFirstOutputAttempt
+	retrySessionHash := ""
+	var retryForwardBody []byte
+	activeForwardBody := forwardBody
 	normalFirstOutputFailover := false
 	var lastFailoverErr *service.UpstreamFailoverError
 	var failoverAttempt openAIAccountSwitchAttempt
@@ -924,6 +927,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			currentAttempt = *retryAttempt
 			retrySelection = nil
 			retryAttempt = nil
+			if retrySessionHash != "" {
+				sessionHash = retrySessionHash
+				activeForwardBody = retryForwardBody
+			}
 			reqLog.Debug("openai.same_account_retry_selected",
 				zap.Int64("account_id", selection.Account.ID),
 				zap.Int("attempt", currentAttempt.Attempt),
@@ -1041,6 +1048,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// Forward request
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
+		attemptForwardBody := activeForwardBody
 		// 用扣除 compact 心跳字节的口径快照：心跳注释不构成语义响应，
 		// 不能因心跳字节变化而放弃 failover 换号（#3887）。
 		writerSizeBeforeForward := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
@@ -1054,7 +1062,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					}
 				}()
 				forwardCtx := service.WithOpenAIFirstOutputAttempt(c.Request.Context(), currentAttempt)
-				return h.gatewayService.Forward(forwardCtx, c, account, forwardBody)
+				return h.gatewayService.Forward(forwardCtx, c, account, attemptForwardBody)
 			}()
 		}
 		cyberBlockKeyHTTP := ""
@@ -1114,8 +1122,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 								Route: "responses", Model: reqModel, Stream: reqStream,
 								AccountID: account.ID, AccountName: account.Name,
 								FailedAccountID: account.ID, FailedAccountName: account.Name,
-								UpstreamStatus: failoverErr.StatusCode, FinalStatus: http.StatusGatewayTimeout,
-								FinalError: failoverErr.Reason, LatencyMs: failoverErr.AttemptLatencyMs,
+								UpstreamStatus: failoverErr.StatusCode,
+								FinalError:     failoverErr.Reason, LatencyMs: failoverErr.AttemptLatencyMs,
 							}, apiKey, subject.UserID)
 						},
 						func() {
@@ -1144,6 +1152,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						if firstOutputRetryCount[account.ID] < retryLimit {
 							retryNumber := firstOutputRetryCount[account.ID] + 1
 							nextAttempt := service.NewOpenAIFirstOutputDirectRetryAttempt(retryNumber)
+							nextSessionHash, nextForwardBody, sessionErr := newOpenAIFirstOutputRetrySession(sessionHash, attemptForwardBody, account.ID, retryNumber)
+							if sessionErr != nil {
+								reqLog.Warn("openai.first_output_retry_session_hash_failed",
+									zap.Int64("account_id", account.ID),
+									zap.Int("retry", retryNumber),
+									zap.Error(sessionErr),
+								)
+							}
 							if !failoverErr.RetryProxyTransportFailure {
 								used := usedRetryProxyIDs[account.ID]
 								if used == nil {
@@ -1172,10 +1188,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							retrySelection = h.gatewayService.NewOpenAIFirstOutputRetrySelection(account)
 							retryScheduleDecision = scheduleDecision
 							retryAttempt = &nextAttempt
+							if nextSessionHash != "" {
+								retrySessionHash = nextSessionHash
+								retryForwardBody = nextForwardBody
+							} else {
+								retrySessionHash = sessionHash
+								retryForwardBody = attemptForwardBody
+							}
 							reqLog.Warn("openai.first_output_same_account_retry",
 								zap.Int64("account_id", account.ID),
 								zap.Int("retry", retryNumber),
 								zap.Int("retry_limit", retryLimit),
+								zap.Bool("fresh_session_hash", nextSessionHash != ""),
 								zap.String("route", nextAttempt.Route),
 								zap.Int64("proxy_id", nextAttempt.ProxyID),
 								zap.String("proxy_name", nextAttempt.ProxyName),
@@ -3236,6 +3260,33 @@ func ensureOpenAIPoolModeSessionHash(sessionHash string, account *service.Accoun
 	}
 	// 为当前请求生成一次性粘性会话键，确保同账号重试不会重新负载均衡到其他账号。
 	return "openai-pool-retry-" + uuid.NewString()
+}
+
+func newOpenAIFirstOutputRetrySession(sessionHash string, body []byte, accountID int64, retryNumber int) (string, []byte, error) {
+	seedBase := strings.TrimSpace(sessionHash)
+	if seedBase == "" {
+		seedBase = service.HashUsageRequestPayload(body)
+	}
+	if seedBase == "" || accountID <= 0 || retryNumber <= 0 {
+		return "", nil, nil
+	}
+
+	retrySeed := fmt.Sprintf("first-output-retry:%s:%d:%d", seedBase, accountID, retryNumber)
+	retryHash := service.DeriveSessionHashFromSeed(retrySeed)
+	if retryHash == "" {
+		return "", nil, nil
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", nil, err
+	}
+	payload["prompt_cache_key"] = retrySeed
+	retryBody, err := json.Marshal(payload)
+	if err != nil {
+		return "", nil, err
+	}
+	return retryHash, retryBody, nil
 }
 
 func openAIWSIngressFallbackSessionSeed(userID, apiKeyID int64, groupID *int64) string {

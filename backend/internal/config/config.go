@@ -2043,7 +2043,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 60)
-	viper.SetDefault("gateway.openai_first_output_same_account_retry_count", 2)
+	viper.SetDefault("gateway.openai_first_output_same_account_retry_count", 1)
 	viper.SetDefault("gateway.openai_total_pre_output_budget_seconds", 180)
 	viper.SetDefault("gateway.openai_pre_output_disconnect_drain_seconds", 15)
 	viper.SetDefault("gateway.openai_post_output_billing_drain_seconds", 120)
