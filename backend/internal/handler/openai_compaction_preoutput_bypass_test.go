@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,31 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+type delayedOpenAIAccountRepo struct {
+	service.AccountRepository
+	accounts []service.Account
+}
+
+func (r delayedOpenAIAccountRepo) GetByID(_ context.Context, id int64) (*service.Account, error) {
+	for i := range r.accounts {
+		if r.accounts[i].ID == id {
+			account := r.accounts[i]
+			return &account, nil
+		}
+	}
+	return nil, service.ErrNoAvailableAccounts
+}
+
+func (r delayedOpenAIAccountRepo) ListSchedulableByPlatform(_ context.Context, platform string) ([]service.Account, error) {
+	accounts := make([]service.Account, 0, len(r.accounts))
+	for _, account := range r.accounts {
+		if account.Platform == platform {
+			accounts = append(accounts, account)
+		}
+	}
+	return accounts, nil
+}
 
 type delayedOpenAIUpstreamRequest struct {
 	path string
@@ -79,10 +105,9 @@ func (u *delayedOpenAIUpstream) lastRequest() (delayedOpenAIUpstreamRequest, boo
 
 func newDelayedOpenAIBypassHandler(t *testing.T, account service.Account, upstream service.HTTPUpstream) *OpenAIGatewayHandler {
 	t.Helper()
-	repo := preOutputFailoverAccountRepo{accounts: []service.Account{account}}
+	repo := delayedOpenAIAccountRepo{accounts: []service.Account{account}}
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
-	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 3
 	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
 	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
 

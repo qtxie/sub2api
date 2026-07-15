@@ -2054,23 +2054,9 @@ data: {"type":"response.failed","error":{"message":"This content was flagged"}}
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
-		stop := service.StartOpenAIPreOutput(c, service.OpenAIPreOutputSettings{
-			FirstOutputTimeout: time.Second,
-			TotalBudget:        5 * time.Second,
-			HeartbeatInterval:  time.Hour,
-		})
-		defer stop()
-		attemptCtx, finish, err := service.OpenAIPreOutputBeginAttempt(c, c.Request.Context())
-		require.NoError(t, err)
-		defer finish()
-
 		before := c.Writer.Size()
-		_, _, transitioned, err := service.OpenAIPreOutputCommitSemantic(c, attemptCtx, func() error {
-			_, writeErr := c.Writer.WriteString("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
-			return writeErr
-		})
+		_, err := c.Writer.WriteString("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
 		require.NoError(t, err)
-		require.True(t, transitioned)
 		require.False(t, openAIForwardErrorAlreadyCommunicated(c, before, errors.New("stream usage incomplete: missing terminal event")))
 
 		h := &OpenAIGatewayHandler{}
@@ -2083,12 +2069,6 @@ data: {"type":"response.failed","error":{"message":"This content was flagged"}}
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
-		stop := service.StartOpenAIPreOutput(c, service.OpenAIPreOutputSettings{
-			FirstOutputTimeout: time.Second,
-			TotalBudget:        2 * time.Second,
-			HeartbeatInterval:  time.Hour,
-		})
-		defer stop()
 		service.MarkResponseCommitted(c)
 
 		require.True(t, openAIForwardErrorAlreadyCommunicated(c, c.Writer.Size(), errors.New("local validation failed")))

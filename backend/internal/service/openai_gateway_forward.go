@@ -23,26 +23,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if shouldBypassOpenAIFirstOutputTimeout(c, body) {
 		markOpenAIFirstOutputTimeoutBypass(c)
 	}
-	clientCtx := ctx
-	workCtx, cancelWork := OpenAIPreOutputSchedulingContext(c, ctx)
-	defer cancelWork()
-	ctx = workCtx
-	preOutputWorkError := func() error {
-		if !OpenAIPreOutputEnabled(c) || ctx.Err() == nil {
-			return nil
-		}
-		if !OpenAIPreOutputClientConnected(c) {
-			return ctx.Err()
-		}
-		return OpenAIPreOutputBudgetError(c)
-	}
 	// 固定渠道映射后的请求级 canonical body；账号 normalize/strip 不得改写跨 failover hint。
 	canonicalImageIntentBody := body
 
 	restrictionResult := s.detectCodexClientRestriction(ctx, c, account, body)
-	if err := preOutputWorkError(); err != nil {
-		return nil, err
-	}
 	apiKeyID := getAPIKeyIDFromContext(c)
 	logCodexCLIOnlyDetection(ctx, c, account, apiKeyID, restrictionResult, body)
 	if restrictionResult.Enabled && !restrictionResult.Matched {
@@ -90,26 +74,17 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
-	runWithPreOutputAttempt := func(_ context.Context, fn func(context.Context) (*OpenAIForwardResult, error)) (*OpenAIForwardResult, error) {
-		attemptCtx, finishAttempt, attemptErr := OpenAIPreOutputBeginAttempt(c, clientCtx)
-		if attemptErr != nil {
-			if !OpenAIPreOutputClientConnected(c) {
-				return nil, attemptErr
-			}
-			return nil, OpenAIPreOutputBudgetError(c)
-		}
-		defer finishAttempt()
-		return fn(attemptCtx)
+	runWithForwardContext := func(fn func(context.Context) (*OpenAIForwardResult, error)) (*OpenAIForwardResult, error) {
+		return fn(ctx)
 	}
 
 	if account.Platform == PlatformGrok {
-		DisableOpenAIPreOutput(c)
 		_ = promptCacheKey
-		return s.forwardGrokResponses(clientCtx, c, account, body, originalModel, reqStream, startTime)
+		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
 	}
 
 	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
-		return runWithPreOutputAttempt(ctx, func(attemptCtx context.Context) (*OpenAIForwardResult, error) {
+		return runWithForwardContext(func(attemptCtx context.Context) (*OpenAIForwardResult, error) {
 			return s.forwardResponsesViaRawChatCompletions(attemptCtx, c, account, body)
 		})
 	}
@@ -164,7 +139,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, mappedModel)
 		// 国产模型默认 effort 补充：也要用 mappedModel 判定是否是 passback-required 上游。
 		reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, mappedModel)
-		return runWithPreOutputAttempt(ctx, func(attemptCtx context.Context) (*OpenAIForwardResult, error) {
+		return runWithForwardContext(func(attemptCtx context.Context) (*OpenAIForwardResult, error) {
 			return s.forwardOpenAIPassthrough(
 				attemptCtx,
 				c,
@@ -241,9 +216,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageGenerationAllowed &&
 		codexImageGenerationExplicitToolPolicy != codexImageGenerationExplicitToolPolicyStrip &&
 		s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
-	if err := preOutputWorkError(); err != nil {
-		return nil, err
-	}
 	var imageIntent bool
 	canonicalImageIntent := resolveOpenAIImageIntentHint(c, reqModel, canonicalImageIntentBody, IsImageGenerationIntent)
 	if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {
@@ -464,9 +436,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if rawTier := requestView.ServiceTier; rawTier != "" {
 		if normTier := normalizedOpenAIServiceTierValue(rawTier); normTier != "" {
 			action, errMsg := s.evaluateOpenAIFastPolicy(ctx, account, upstreamModel, normTier)
-			if err := preOutputWorkError(); err != nil {
-				return nil, err
-			}
 			switch action {
 			case BetaPolicyActionBlock:
 				msg := errMsg
@@ -533,25 +502,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageInputSize = imageCfg.InputSize
 	}
 
-	// WebSocket transport and image-generation responses keep their existing
-	// cancellation behavior. HTTP streaming paths share the coordinator.
-	if imageIntent || wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 {
-		DisableOpenAIPreOutput(c)
-	}
-	attemptCtx, finishAttempt, attemptErr := OpenAIPreOutputBeginAttempt(c, clientCtx)
-	if attemptErr != nil {
-		if !OpenAIPreOutputClientConnected(c) {
-			return nil, attemptErr
-		}
-		return nil, OpenAIPreOutputBudgetError(c)
-	}
-	defer finishAttempt()
-	ctx = attemptCtx
-
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
-		return nil, OpenAIPreOutputFailureError(c, ctx, err)
+		return nil, err
 	}
 
 	// 命中 WS 时仅走 WebSocket Mode；不再自动回退 HTTP。
@@ -785,7 +739,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		reasoningEffortValue = *reasoningEffort
 	}
 	firstOutputTimeout := time.Duration(0)
-	if reqStream && account.Platform == PlatformOpenAI && !OpenAIPreOutputEnabled(c) && !openAIFirstOutputTimeoutBypassed(c) {
+	if reqStream && account.Platform == PlatformOpenAI && !openAIFirstOutputTimeoutBypassed(c) {
 		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffortValue)
 	}
 
@@ -811,7 +765,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, err
 		}
 
-		proxyURL := s.openAIProxyURLForAttempt(ctx, account)
+		proxyURL := ""
+		if account.ProxyID != nil && account.Proxy != nil {
+			proxyURL = account.Proxy.URL()
+		}
 
 		// Send request
 		upstreamStart := time.Now()
@@ -849,8 +806,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if headerGuard != nil {
 			resp.Body = &openAIRequestContextReadCloser{ReadCloser: resp.Body, cleanup: headerGuard.close}
 		}
-		logOpenAIFirstOutputResponseHeaders(ctx, account, resp, headerLatency)
-
 		// Handle error response
 		if resp.StatusCode >= 400 {
 			respBody := s.readUpstreamErrorBody(resp)

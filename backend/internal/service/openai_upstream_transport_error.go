@@ -124,16 +124,13 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		return err
 	}
 
-	attempt := OpenAIFirstOutputAttemptFromContext(ctx)
-	retryProxyFailure := attempt.Retry > 0 && attempt.Route == "proxy"
-	if classifyOpenAITransportError(err).Persistent && !retryProxyFailure {
+	if classifyOpenAITransportError(err).Persistent {
 		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)
 	}
 
 	return &UpstreamFailoverError{
-		StatusCode:                 http.StatusBadGateway,
-		ResponseBody:               openAITransportFailoverBody,
-		RetryProxyTransportFailure: retryProxyFailure,
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: openAITransportFailoverBody,
 	}
 }
 

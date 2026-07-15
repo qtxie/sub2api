@@ -188,26 +188,13 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 		profile = service.HTTPUpstreamProfileFromContext(req.Context())
 	}
 
-	// First-output retries deliberately bypass the shared pool. This avoids
-	// replaying on the same stale HTTP/2 connection while leaving concurrent
-	// streams on that pooled transport untouched.
-	freshTransport := req != nil && service.HTTPUpstreamFreshTransport(req.Context())
-	var entry *upstreamClientEntry
-	var err error
-	if freshTransport {
-		entry, err = s.newEphemeralClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
-	} else {
-		entry, err = s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
-	}
+	entry, err := s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
 	if err != nil {
 		return nil, err
 	}
 	release := func() {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
-		if freshTransport && entry.client != nil {
-			entry.client.CloseIdleConnections()
-		}
 	}
 
 	// 执行请求
@@ -451,33 +438,6 @@ func (s *httpUpstreamService) acquireClient(proxyURL string, accountID int64, ac
 // acquireClientWithProfile 获取或创建客户端，并按请求 profile 选择协议策略。
 func (s *httpUpstreamService) acquireClientWithProfile(proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile) (*upstreamClientEntry, error) {
 	return s.getClientEntry(proxyURL, accountID, accountConcurrency, profile, true, true)
-}
-
-func (s *httpUpstreamService) newEphemeralClientWithProfile(proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile) (*upstreamClientEntry, error) {
-	isolation := s.getIsolationMode()
-	proxyKey, parsedProxy, err := normalizeProxyURL(proxyURL)
-	if err != nil {
-		return nil, err
-	}
-	protocolMode := s.resolveProtocolMode(profile, proxyKey, parsedProxy)
-	settings := s.applyProfilePoolSettings(s.resolvePoolSettings(isolation, accountConcurrency), profile)
-	transport, err := buildUpstreamTransport(settings, parsedProxy, protocolMode)
-	if err != nil {
-		return nil, fmt.Errorf("build ephemeral transport: %w", err)
-	}
-	client := &http.Client{Transport: transport}
-	if s.shouldValidateResolvedIP() {
-		client.CheckRedirect = s.redirectChecker
-	}
-	entry := &upstreamClientEntry{
-		client:       client,
-		proxyKey:     proxyKey,
-		poolKey:      buildPoolKey(settings, protocolMode),
-		protocolMode: protocolMode,
-	}
-	atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
-	atomic.StoreInt64(&entry.inFlight, 1)
-	return entry, nil
 }
 
 // getOrCreateClient 获取或创建客户端

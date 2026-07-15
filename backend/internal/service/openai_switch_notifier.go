@@ -480,8 +480,18 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 	writeNotificationLine(&b, "time", e.eventTime().Format("2006-01-02 15:04:05 -0700"))
 	writeNotificationLine(&b, "route", e.Route)
 	writeNotificationLine(&b, "model", e.Model)
-	switch e.phase() {
-	case OpenAIAccountSwitchPhaseCompleted:
+	switch {
+	case e.isFirstOutputTimeoutAttempt():
+		writeNotificationLine(&b, "account", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
+		status := e.UpstreamStatus
+		if status <= 0 {
+			status = e.FinalStatus
+		}
+		writeNotificationLine(&b, "attempt status", strconv.Itoa(status))
+		writeNotificationLine(&b, "request outcome", "pending")
+		writeNotificationLine(&b, "next action", "retry/failover evaluation")
+		writeNotificationLine(&b, "reason", e.FinalError)
+	case e.phase() == OpenAIAccountSwitchPhaseCompleted:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "to", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
 		status := e.UpstreamStatus
@@ -489,7 +499,7 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 			status = e.FinalStatus
 		}
 		writeNotificationLine(&b, "error status", strconv.Itoa(status))
-	case OpenAIAccountSwitchPhaseFailed:
+	case e.phase() == OpenAIAccountSwitchPhaseFailed:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "attempted", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
 		writeNotificationLine(&b, "final status", strconv.Itoa(e.FinalStatus))
@@ -509,11 +519,11 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 			}
 		}
 		writeNotificationLine(&b, "reason", e.FinalError)
-	case OpenAIAccountSwitchPhaseCancelled:
+	case e.phase() == OpenAIAccountSwitchPhaseCancelled:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "to", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
 		writeNotificationLine(&b, "reason", e.FinalError)
-	case OpenAIAccountSwitchPhaseFailback:
+	case e.phase() == OpenAIAccountSwitchPhaseFailback:
 		writeNotificationLine(&b, "from", displayAccountNameIDPriority(e.failedAccountName(), e.failedAccountID(), e.failedPriority()))
 		writeNotificationLine(&b, "to", displayAccountNameIDPriority(e.TargetAccountName, e.TargetAccountID, e.TargetPriority))
 		writeNotificationLine(&b, "reason", e.FinalError)
@@ -531,7 +541,11 @@ func (e OpenAIAccountSwitchNotification) telegramText() string {
 	}
 	writeNotificationLine(&b, "attempt_latency", formatDurationMs(e.AttemptLatencyMs))
 	writeNotificationLine(&b, "switch_latency", formatDurationMs(e.SwitchLatencyMs))
-	writeNotificationLine(&b, "total_request_latency", formatDurationMs(e.TotalRequestLatencyMs))
+	if e.isFirstOutputTimeoutAttempt() {
+		writeNotificationLine(&b, "request_elapsed", formatDurationMs(e.TotalRequestLatencyMs))
+	} else {
+		writeNotificationLine(&b, "total_request_latency", formatDurationMs(e.TotalRequestLatencyMs))
+	}
 	writeNotificationLine(&b, "budget_remaining", formatDurationMs(e.BudgetRemainingMs))
 	writeNotificationLine(&b, "client_connected", strconv.FormatBool(e.ClientConnected))
 	writeNotificationLine(&b, "transport_started", strconv.FormatBool(e.TransportStarted))
@@ -564,6 +578,16 @@ func (e OpenAIAccountSwitchNotification) phase() string {
 }
 
 func (e OpenAIAccountSwitchNotification) telegramTitle() string {
+	if e.isFirstOutputTimeoutAttempt() {
+		parts := []string{"⚠️", "first-output timeout"}
+		if model := strings.TrimSpace(e.Model); model != "" {
+			parts = append(parts, model)
+		}
+		if account := titleAccountName(e.failedAccountName(), e.failedAccountID()); account != "" {
+			parts = append(parts, account)
+		}
+		return strings.Join(parts, " ") + "\n"
+	}
 	switch e.phase() {
 	case OpenAIAccountSwitchPhaseCompleted:
 		return compactSwitchTitle("✅", e.failedAccountName(), e.failedAccountID(), e.TargetAccountName, e.TargetAccountID, "", 0)
@@ -587,6 +611,10 @@ func (e OpenAIAccountSwitchNotification) telegramTitle() string {
 		}
 		return compactSwitchTitle("➡️", "", 0, e.failedAccountName(), e.failedAccountID(), e.Model, status)
 	}
+}
+
+func (e OpenAIAccountSwitchNotification) isFirstOutputTimeoutAttempt() bool {
+	return strings.TrimSpace(e.EventName) == "openai.account_first_output_timeout"
 }
 
 // semanticStreamStarted distinguishes real model output from an SSE heartbeat.

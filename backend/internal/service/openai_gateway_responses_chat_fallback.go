@@ -220,6 +220,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		}
 		err = commit()
 		if err == nil {
+			MarkOpenAIStreamDrainSemantic(c)
 			totalMs = int(time.Since(startTime).Milliseconds())
 			attemptMs = totalMs
 			transitioned = true

@@ -345,41 +345,27 @@ func TestLoadOpenAIResponseHeaderTimeoutFromEnv(t *testing.T) {
 	require.Equal(t, 1800, cfg.Gateway.OpenAIResponseHeaderTimeout)
 }
 
-func TestLoadDefaultOpenAIPreOutputRetryLimits(t *testing.T) {
+func TestLoadDefaultOpenAIStreamDrainLimits(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Zero(t, cfg.Gateway.OpenAIFirstOutputTimeoutSeconds)
-	require.Equal(t, 1, cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount)
-	require.Equal(t, 180, cfg.Gateway.OpenAITotalPreOutputBudgetSeconds)
 	require.Equal(t, 15, cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds)
 	require.Equal(t, 120, cfg.Gateway.OpenAIPostOutputBillingDrainSeconds)
 }
 
-func TestLoadOpenAIPreOutputLimitsFromEnv(t *testing.T) {
+func TestLoadOpenAIStreamDrainLimitsFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_SECONDS", "45")
-	t.Setenv("GATEWAY_OPENAI_FIRST_OUTPUT_SAME_ACCOUNT_RETRY_COUNT", "1")
-	t.Setenv("GATEWAY_OPENAI_TOTAL_PRE_OUTPUT_BUDGET_SECONDS", "75")
 	t.Setenv("GATEWAY_OPENAI_PRE_OUTPUT_DISCONNECT_DRAIN_SECONDS", "8")
 	t.Setenv("GATEWAY_OPENAI_POST_OUTPUT_BILLING_DRAIN_SECONDS", "100")
 
 	cfg, err := Load()
 	require.NoError(t, err)
 	require.Equal(t, 45, cfg.Gateway.OpenAIFirstOutputTimeoutSeconds)
-	require.Equal(t, 1, cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount)
-	require.Equal(t, 75, cfg.Gateway.OpenAITotalPreOutputBudgetSeconds)
 	require.Equal(t, 8, cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds)
 	require.Equal(t, 100, cfg.Gateway.OpenAIPostOutputBillingDrainSeconds)
-}
-
-func TestLoadRejectsMoreThanTwoOpenAIFirstOutputRetries(t *testing.T) {
-	resetViperWithJWTSecret(t)
-	t.Setenv("GATEWAY_OPENAI_FIRST_OUTPUT_SAME_ACCOUNT_RETRY_COUNT", "3")
-
-	_, err := Load()
-	require.ErrorContains(t, err, "must not exceed 2")
 }
 
 func TestLoadOpenAISwitchNotifyTelegramFromEnv(t *testing.T) {

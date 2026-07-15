@@ -45,8 +45,6 @@ func TestNormalizeOpenAIResponsesCompactRequest_RemoteV2StaysOnResponses(t *test
 	require.Equal(t, "/v1/responses", c.Request.URL.Path)
 	require.False(t, isOpenAIRemoteCompactPath(c))
 	require.True(t, isOpenAICompactionRequest(c, normalized))
-	subscriptionKey := &service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription}}
-	require.False(t, shouldStartOpenAIPreOutput(true, isOpenAICompactionRequest(c, normalized), false, subscriptionKey))
 	require.Equal(t, body, normalized)
 	require.True(t, gjson.GetBytes(normalized, "stream").Bool())
 	require.True(t, gjson.GetBytes(normalized, "store").Bool())
@@ -91,9 +89,6 @@ func TestIsOpenAICompactionRequest_RequiresCompactionTriggerForNativeV2(t *testi
 	require.True(t, ok)
 	require.Equal(t, "/v1/responses", c.Request.URL.Path)
 	require.False(t, isOpenAICompactionRequest(c, normalized))
-
-	subscriptionKey := &service.APIKey{Group: &service.Group{Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription}}
-	require.True(t, shouldStartOpenAIPreOutput(true, isOpenAICompactionRequest(c, normalized), false, subscriptionKey))
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_BodySignalTrailingSlashPromoted(t *testing.T) {

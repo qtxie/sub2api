@@ -107,26 +107,18 @@ func TestHandleOpenAIUpstreamTransportError_TransientFailsOverWithoutEviction(t 
 	require.Equal(t, 0, rec.Body.Len())
 }
 
-func TestHandleOpenAIUpstreamTransportError_RetryProxyFailureDoesNotPenalizeAccount(t *testing.T) {
+func TestHandleOpenAIUpstreamTransportError_PersistentProxyFailurePenalizesAccount(t *testing.T) {
 	repo := &openaiTransportAccountRepoStub{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{ID: 100, Name: "healthy-upstream", Platform: PlatformOpenAI}
 	c, rec := newOpenAITransportErrTestContext()
-	ctx := WithOpenAIFirstOutputAttempt(context.Background(), OpenAIFirstOutputAttempt{
-		Attempt: 2,
-		Retry:   1,
-		Route:   "proxy",
-		ProxyID: 123,
-	})
-
-	err := svc.handleOpenAIUpstreamTransportError(ctx, c, account,
+	err := svc.handleOpenAIUpstreamTransportError(context.Background(), c, account,
 		errors.New(`proxyconnect tcp: dial tcp 127.0.0.1:9999: connect: connection refused`), false)
 
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
-	require.True(t, failoverErr.RetryProxyTransportFailure)
-	require.Empty(t, repo.tempUnschedCalls)
-	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.Len(t, repo.tempUnschedCalls, 1)
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	require.Equal(t, 0, rec.Body.Len())
 }
 

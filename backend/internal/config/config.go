@@ -761,19 +761,12 @@ type GatewayConfig struct {
 	// OpenAIResponseHeaderTimeout: OpenAI/Codex 上游等待响应头的超时时间（秒），0表示无超时
 	// OpenAI/Codex 请求可能在上游排队较久；默认不使用通用响应头超时截断。
 	OpenAIResponseHeaderTimeout int `mapstructure:"openai_response_header_timeout"`
-	// OpenAIFirstOutputTimeoutSeconds bounds one ordinary HTTP /responses attempt until
-	// the first meaningful SSE event. Zero disables the pre-output controller.
+	// OpenAIFirstOutputTimeoutSeconds bounds one ordinary HTTP /responses account
+	// attempt until the first meaningful SSE event. Zero disables the guard.
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
 	// OpenAIHighEffortFirstOutputTimeoutSeconds overrides the first-output timeout
 	// for high/xhigh/max reasoning. Zero falls back to the standard timeout.
 	OpenAIHighEffortFirstOutputTimeoutSeconds int `mapstructure:"openai_high_effort_first_output_timeout_seconds"`
-	// OpenAIFirstOutputSameAccountRetryCount controls how many times a timed-out
-	// ordinary HTTP /responses request is replayed on the same account.
-	OpenAIFirstOutputSameAccountRetryCount int `mapstructure:"openai_first_output_same_account_retry_count"`
-	// OpenAITotalPreOutputBudgetSeconds bounds initial routing, slot waits, and
-	// the same-account retry phase. Normal account failover uses fresh per-account
-	// first-output deadlines after this phase is exhausted.
-	OpenAITotalPreOutputBudgetSeconds int `mapstructure:"openai_total_pre_output_budget_seconds"`
 	// OpenAIPreOutputDisconnectDrainSeconds is the maximum usage drain after a
 	// client disconnects before meaningful output.
 	OpenAIPreOutputDisconnectDrainSeconds int `mapstructure:"openai_pre_output_disconnect_drain_seconds"`
@@ -2065,8 +2058,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 0)
-	viper.SetDefault("gateway.openai_first_output_same_account_retry_count", 1)
-	viper.SetDefault("gateway.openai_total_pre_output_budget_seconds", 180)
 	viper.SetDefault("gateway.openai_pre_output_disconnect_drain_seconds", 15)
 	viper.SetDefault("gateway.openai_post_output_billing_drain_seconds", 120)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
@@ -2824,23 +2815,11 @@ func (c *Config) Validate() error {
 		(c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_high_effort_first_output_timeout_seconds must be 0 or between 30-1800 seconds")
 	}
-	if c.Gateway.OpenAIFirstOutputSameAccountRetryCount < 0 {
-		return fmt.Errorf("gateway.openai_first_output_same_account_retry_count must be non-negative")
-	}
-	if c.Gateway.OpenAIFirstOutputSameAccountRetryCount > 2 {
-		return fmt.Errorf("gateway.openai_first_output_same_account_retry_count must not exceed 2")
-	}
-	if c.Gateway.OpenAITotalPreOutputBudgetSeconds < 0 {
-		return fmt.Errorf("gateway.openai_total_pre_output_budget_seconds must be non-negative")
-	}
 	if c.Gateway.OpenAIPreOutputDisconnectDrainSeconds < 0 {
 		return fmt.Errorf("gateway.openai_pre_output_disconnect_drain_seconds must be non-negative")
 	}
 	if c.Gateway.OpenAIPostOutputBillingDrainSeconds < 0 {
 		return fmt.Errorf("gateway.openai_post_output_billing_drain_seconds must be non-negative")
-	}
-	if c.Gateway.OpenAIFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAITotalPreOutputBudgetSeconds == 0 {
-		return fmt.Errorf("gateway.openai_total_pre_output_budget_seconds must be positive when first-output timeout is enabled")
 	}
 	if strings.TrimSpace(c.Gateway.ConnectionPoolIsolation) != "" {
 		switch c.Gateway.ConnectionPoolIsolation {

@@ -46,7 +46,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (*openaiStreamingResult, error) {
 	firstOutputTimeout := time.Duration(0)
-	if !OpenAIPreOutputEnabled(c) && !openAIFirstOutputTimeoutBypassed(c) && account != nil && account.Platform == PlatformOpenAI {
+	if !openAIFirstOutputTimeoutBypassed(c) && account != nil && account.Platform == PlatformOpenAI {
 		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffort)
 	}
 	guardFirstOutput := firstOutputTimeout > 0
@@ -149,6 +149,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 		err = commit()
 		if err == nil {
+			MarkOpenAIStreamDrainSemantic(c)
 			totalMs = int(time.Since(startTime).Milliseconds())
 			attemptMs = totalMs
 			transitioned = true
@@ -252,7 +253,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	sawFailedEvent := false
 	failedMessage := ""
 	clientOutputStarted := false
-	rawEventLogged := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	var streamEarlyErr error
 	markClientDisconnected := func(logMessage string) {
@@ -304,7 +304,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	var pendingLineBytes int64
 	pendingSemantic := false
 	pendingTerminal := false
-	pendingSemanticEventType := ""
 	queuePendingLine := func(line string) error {
 		if firstTokenMs == nil {
 			if guardFirstOutput {
@@ -361,7 +360,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				attemptFirstTokenMs = &semanticAttemptMs
 				firstOutputScanGuard.Store(false)
 				stopFirstOutputTimer()
-				logOpenAIFirstOutputSemantic(ctx, account, pendingSemanticEventType, semanticAttemptMs, semanticTotalMs)
 			}
 		} else if err := writeBuffered(writeLines, true); err != nil {
 			return err
@@ -370,7 +368,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		pendingLineBytes = 0
 		pendingSemantic = false
 		pendingTerminal = false
-		pendingSemanticEventType = ""
 		if flushedSemantic {
 			clientOutputStarted = true
 		}
@@ -519,11 +516,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				sawTerminalEvent = true
 			}
 			eventType := strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
-			if !rawEventLogged {
-				attemptMs, totalMs := OpenAIPreOutputLatencySnapshot(c)
-				logOpenAIFirstOutputRawEvent(ctx, account, eventType, attemptMs, totalMs)
-				rawEventLogged = true
-			}
 			if responseID == "" {
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
@@ -651,7 +643,6 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				}
 				if startsClientOutput && !lineIsDone {
 					pendingSemantic = true
-					pendingSemanticEventType = eventType
 				}
 				pendingTerminal = pendingTerminal || lineIsDone || lineIsTerminal
 			}

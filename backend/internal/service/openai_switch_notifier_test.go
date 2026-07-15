@@ -617,6 +617,34 @@ func TestOpenAIAccountSwitchNotificationTelegramTextPhasesAndFallbacks(t *testin
 	require.Contains(t, text, "group: GPT subscription (#2)")
 }
 
+func TestOpenAIAccountSwitchNotificationFirstOutputTimeoutIsNotFinal(t *testing.T) {
+	event := OpenAIAccountSwitchNotification{
+		EventName:             "openai.account_first_output_timeout",
+		Phase:                 OpenAIAccountSwitchPhaseFailed,
+		OccurredAt:            time.Date(2026, 7, 15, 10, 0, 39, 0, time.FixedZone("CST", 8*3600)),
+		Route:                 "responses",
+		Model:                 "gpt-5.5",
+		FailedAccountID:       3,
+		FailedAccountName:     "AiNX",
+		UpstreamStatus:        http.StatusGatewayTimeout,
+		FinalError:            "first_output_timeout",
+		AttemptLatencyMs:      60_000,
+		TotalRequestLatencyMs: 60_200,
+		BudgetRemainingMs:     119_800,
+	}
+
+	text := event.telegramText()
+	require.Contains(t, text, "⚠️ first-output timeout gpt-5.5 AiNX")
+	require.Contains(t, text, "account: AiNX (#3)")
+	require.Contains(t, text, "attempt status: 504")
+	require.Contains(t, text, "request outcome: pending")
+	require.Contains(t, text, "next action: retry/failover evaluation")
+	require.Contains(t, text, "request_elapsed: 60.2s")
+	require.NotContains(t, text, "❌")
+	require.NotContains(t, text, "final status:")
+	require.NotContains(t, text, "total_request_latency:")
+}
+
 func TestNewOpenAIAccountSwitchNotifierDisabledOrIncomplete(t *testing.T) {
 	require.Nil(t, NewOpenAIAccountSwitchNotifier(nil))
 	require.Nil(t, NewOpenAIAccountSwitchNotifier(&config.Config{}))

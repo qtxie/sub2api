@@ -40,9 +40,3 @@ func HTTPUpstreamProfileFromContext(ctx context.Context) HTTPUpstreamProfile {
 		return HTTPUpstreamProfileDefault
 	}
 }
-
-// HTTPUpstreamFreshTransport reports whether this attempt must use an
-// ephemeral transport instead of a cached connection pool.
-func HTTPUpstreamFreshTransport(ctx context.Context) bool {
-	return OpenAIFirstOutputAttemptFromContext(ctx).FreshTransport
-}
