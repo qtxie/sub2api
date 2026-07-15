@@ -139,7 +139,7 @@ func TestOpenAIPreOutputFirstOutputTimeoutIsTyped(t *testing.T) {
 	}
 }
 
-func TestOpenAIPreOutputSlowFailoverUsesFreshAccountDeadline(t *testing.T) {
+func TestOpenAIPreOutputSlowFailoverUsesFreshAccountDeadlineAfterRetryBudget(t *testing.T) {
 	c, _ := newPreOutputTestContext(t)
 	stop := StartOpenAIPreOutput(c, OpenAIPreOutputSettings{
 		FirstOutputTimeout: 25 * time.Millisecond,
@@ -158,30 +158,44 @@ func TestOpenAIPreOutputSlowFailoverUsesFreshAccountDeadline(t *testing.T) {
 		t.Fatalf("expected first account timeout, got %v", firstErr)
 	}
 
-	OpenAIPreOutputEnterSlowFailover(c)
 	p := getOpenAIPreOutput(c)
 	p.mu.Lock()
 	p.deadline = time.Now().Add(-time.Second)
 	p.mu.Unlock()
-	if !OpenAIPreOutputCanFailover(c) {
-		t.Fatal("expired request budget should not stop slow-account failover")
+	if OpenAIPreOutputCanFailover(c) {
+		t.Fatal("expired retry budget must stop failover before slow mode starts")
 	}
 
+	expiredCtx, cancelExpired := OpenAIPreOutputSchedulingContext(c, c.Request.Context())
+	if deadline, hasDeadline := expiredCtx.Deadline(); !hasDeadline || time.Until(deadline) > 0 {
+		cancelExpired()
+		t.Fatal("retry-phase scheduling must retain the expired budget")
+	}
+	cancelExpired()
+
+	if _, _, err := OpenAIPreOutputBeginAttempt(c, c.Request.Context()); !errors.Is(err, errOpenAIPreOutputBudget) {
+		t.Fatalf("expected total budget error, got %v", err)
+	}
+
+	OpenAIPreOutputEnterSlowFailover(c)
+	if !OpenAIPreOutputCanFailover(c) {
+		t.Fatal("normal account failover must remain available after the retry budget")
+	}
 	schedulingCtx, cancelScheduling := OpenAIPreOutputSchedulingContext(c, c.Request.Context())
 	defer cancelScheduling()
 	if _, hasDeadline := schedulingCtx.Deadline(); hasDeadline {
-		t.Fatal("slow-account scheduling should not inherit the expired request budget")
+		t.Fatal("normal account failover scheduling must not inherit the expired retry budget")
 	}
 
 	secondCtx, finishSecond, err := OpenAIPreOutputBeginAttempt(c, c.Request.Context())
 	if err != nil {
-		t.Fatalf("start second account after request budget: %v", err)
+		t.Fatalf("start normal failover attempt: %v", err)
 	}
 	defer finishSecond()
 	<-secondCtx.Done()
 	secondErr := OpenAIPreOutputFailureError(c, secondCtx, secondCtx.Err())
 	if !IsOpenAIFirstOutputTimeout(secondErr) {
-		t.Fatalf("expected fresh account timeout, got %v", secondErr)
+		t.Fatalf("expected fresh first-output timeout, got %v", secondErr)
 	}
 }
 

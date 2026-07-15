@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 type preOutputFailoverAccountRepo struct {
@@ -46,9 +47,42 @@ func (r preOutputFailoverAccountRepo) ListSchedulableByPlatform(_ context.Contex
 
 type preOutputFailoverHTTPUpstream struct {
 	service.HTTPUpstream
-	mu                sync.Mutex
-	accountIDs        []int64
-	timeoutAccountIDs map[int64]struct{}
+	mu                             sync.Mutex
+	accountIDs                     []int64
+	proxyURLs                      []string
+	attempts                       []service.OpenAIFirstOutputAttempt
+	timeoutAccountIDs              map[int64]struct{}
+	failAccountIDs                 map[int64]struct{}
+	failFirstCalls                 int
+	budgetExhaustCall              int
+	retryProxyTransportFailureCall int
+}
+
+type preOutputRetryProxyRepo struct {
+	service.ProxyRepository
+	proxies []service.Proxy
+}
+
+func (r preOutputRetryProxyRepo) ListActive(context.Context) ([]service.Proxy, error) {
+	return append([]service.Proxy(nil), r.proxies...), nil
+}
+
+type preOutputRetryProxyLatencyCache struct {
+	service.ProxyLatencyCache
+	latencies map[int64]*service.ProxyLatencyInfo
+}
+
+func (c preOutputRetryProxyLatencyCache) GetProxyLatencies(context.Context, []int64) (map[int64]*service.ProxyLatencyInfo, error) {
+	return c.latencies, nil
+}
+
+type preOutputDeadlineConcurrencyCache struct {
+	service.ConcurrencyCache
+}
+
+func (preOutputDeadlineConcurrencyCache) AcquireAccountSlot(ctx context.Context, _ int64, _ int, _ string) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
 }
 
 type recordingOpenAIAccountSwitchNotifier struct {
@@ -72,10 +106,43 @@ func (n *recordingOpenAIAccountSwitchNotifier) notifications() []service.OpenAIA
 	return append([]service.OpenAIAccountSwitchNotification(nil), n.events...)
 }
 
-func (u *preOutputFailoverHTTPUpstream) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
+func (u *preOutputFailoverHTTPUpstream) Do(req *http.Request, proxyURL string, accountID int64, _ int) (*http.Response, error) {
 	u.mu.Lock()
 	u.accountIDs = append(u.accountIDs, accountID)
+	u.proxyURLs = append(u.proxyURLs, proxyURL)
+	u.attempts = append(u.attempts, service.OpenAIFirstOutputAttemptFromContext(req.Context()))
+	callCount := len(u.accountIDs)
 	u.mu.Unlock()
+	if _, shouldFail := u.failAccountIDs[accountID]; shouldFail {
+		return nil, &service.UpstreamFailoverError{
+			StatusCode:         http.StatusGatewayTimeout,
+			Reason:             "first_output_timeout",
+			FirstOutputTimeout: true,
+			AttemptLatencyMs:   1000,
+		}
+	}
+	if callCount <= u.failFirstCalls {
+		return nil, &service.UpstreamFailoverError{
+			StatusCode:         http.StatusGatewayTimeout,
+			Reason:             "first_output_timeout",
+			FirstOutputTimeout: true,
+			AttemptLatencyMs:   1000,
+		}
+	}
+	if callCount == u.retryProxyTransportFailureCall {
+		return nil, &service.UpstreamFailoverError{
+			StatusCode:                 http.StatusBadGateway,
+			RetryProxyTransportFailure: true,
+		}
+	}
+	if callCount == u.budgetExhaustCall {
+		return nil, &service.UpstreamFailoverError{
+			StatusCode:               http.StatusGatewayTimeout,
+			Reason:                   "pre_output_budget_exhausted",
+			PreOutputBudgetExhausted: true,
+			AttemptLatencyMs:         1000,
+		}
+	}
 	shouldTimeout := accountID == 1
 	if u.timeoutAccountIDs != nil {
 		_, shouldTimeout = u.timeoutAccountIDs[accountID]
@@ -99,6 +166,12 @@ func (u *preOutputFailoverHTTPUpstream) calls() []int64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]int64(nil), u.accountIDs...)
+}
+
+func (u *preOutputFailoverHTTPUpstream) routeCalls() ([]string, []service.OpenAIFirstOutputAttempt) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.proxyURLs...), append([]service.OpenAIFirstOutputAttempt(nil), u.attempts...)
 }
 
 func TestPreOutputFinalErrorAfterHeartbeatUsesResponsesSSE(t *testing.T) {
@@ -188,6 +261,47 @@ func TestAcquireResponsesAccountSlotKeepsReleaseThroughBillingDrain(t *testing.T
 	}
 }
 
+func TestAcquireResponsesAccountSlotPropagatesPreOutputBudgetForFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	stop := service.StartOpenAIPreOutput(c, service.OpenAIPreOutputSettings{
+		FirstOutputTimeout: time.Second,
+		TotalBudget:        25 * time.Millisecond,
+	})
+	defer stop()
+
+	concurrencyService := service.NewConcurrencyService(preOutputDeadlineConcurrencyCache{})
+	h := &OpenAIGatewayHandler{
+		concurrencyHelper: NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, 0),
+	}
+	release, acquired, err := h.acquireResponsesAccountSlotForFailover(
+		c,
+		nil,
+		"",
+		&service.AccountSelectionResult{
+			Account: &service.Account{ID: 2, Name: "busy", Concurrency: 1},
+			WaitPlan: &service.AccountWaitPlan{
+				AccountID:      2,
+				MaxConcurrency: 1,
+				Timeout:        time.Second,
+				MaxWaiting:     1,
+			},
+		},
+		true,
+		new(bool),
+		zap.NewNop(),
+	)
+
+	var failoverErr *service.UpstreamFailoverError
+	require.False(t, acquired)
+	require.Nil(t, release)
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.PreOutputBudgetExhausted)
+	require.False(t, c.Writer.Written(), "slot helper must leave the response to the failover state machine")
+}
+
 func TestOpenAIFailoverFailedEventNameMapsAllRoutes(t *testing.T) {
 	if got := openAIFailoverFailedEventName("openai.upstream_failover_switching"); got != "openai.upstream_failover_failed" {
 		t.Fatalf("responses event name = %q", got)
@@ -244,6 +358,19 @@ func TestPreOutputBudgetExhaustionDoesNotPenalizeAccount(t *testing.T) {
 	)
 	if canFailover || timeoutReports != 0 || genericReports != 0 {
 		t.Fatalf("canFailover=%v timeoutReports=%d genericReports=%d, want false/0/0", canFailover, timeoutReports, genericReports)
+	}
+}
+
+func TestRetryProxyTransportFailureDoesNotPenalizeAccount(t *testing.T) {
+	var timeoutReports, genericReports int
+	canFailover := accountOpenAIFailureBeforeFailoverDecision(
+		&service.UpstreamFailoverError{RetryProxyTransportFailure: true},
+		func(*int) { timeoutReports++ },
+		func() { genericReports++ },
+		func() bool { return true },
+	)
+	if !canFailover || timeoutReports != 0 || genericReports != 0 {
+		t.Fatalf("canFailover=%v timeoutReports=%d genericReports=%d, want true/0/0", canFailover, timeoutReports, genericReports)
 	}
 }
 
@@ -323,7 +450,7 @@ func TestShouldStartOpenAIPreOutputMatchesInitialRolloutScope(t *testing.T) {
 	}
 }
 
-func TestResponsesFirstOutputTimeoutFailsOverToSecondAccount(t *testing.T) {
+func TestResponsesFirstOutputTimeoutSkipsRetriesWhenRetryBudgetCannotContinue(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(44)
 	accounts := []service.Account{
@@ -334,7 +461,8 @@ func TestResponsesFirstOutputTimeoutFailsOverToSecondAccount(t *testing.T) {
 	upstream := &preOutputFailoverHTTPUpstream{}
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
-	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 4
+	cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount = 2
+	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 3
 	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
 	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
 
@@ -343,7 +471,7 @@ func TestResponsesFirstOutputTimeoutFailsOverToSecondAccount(t *testing.T) {
 	t.Cleanup(billingCache.Stop)
 	gatewayService := service.NewOpenAIGatewayService(
 		repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
-		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	h := NewOpenAIGatewayHandler(
 		gatewayService,
@@ -382,6 +510,145 @@ func TestResponsesFirstOutputTimeoutFailsOverToSecondAccount(t *testing.T) {
 	require.False(t, strings.HasPrefix(strings.TrimSpace(rec.Body.String()), `{"error":`))
 }
 
+func TestResponsesFirstOutputTimeoutRetriesSameAccountTwiceWithFreshProxyRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(46)
+	accounts := []service.Account{{
+		ID: 11, Name: "retry-account", Platform: service.PlatformOpenAI,
+		Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"access_token": "retry-token"},
+	}}
+	repo := preOutputFailoverAccountRepo{accounts: accounts}
+	upstream := &preOutputFailoverHTTPUpstream{failFirstCalls: 2}
+	proxyRepo := preOutputRetryProxyRepo{proxies: []service.Proxy{
+		{ID: 101, Name: "proxy-slower", Protocol: "http", Host: "127.0.0.1", Port: 9101, Status: service.StatusActive},
+		{ID: 102, Name: "proxy-faster", Protocol: "http", Host: "127.0.0.1", Port: 9102, Status: service.StatusActive},
+	}}
+	fastLatency := int64(20)
+	slowLatency := int64(40)
+	latencyCache := preOutputRetryProxyLatencyCache{latencies: map[int64]*service.ProxyLatencyInfo{
+		101: {Success: true, LatencyMs: &slowLatency, QualityStatus: "healthy"},
+		102: {Success: true, LatencyMs: &fastLatency, QualityStatus: "healthy"},
+	}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+	cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount = 2
+	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 5
+	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
+	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
+
+	concurrencyService := service.NewConcurrencyService(nil)
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCache.Stop)
+	gatewayService := service.NewOpenAIGatewayService(
+		repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
+		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+		proxyRepo, latencyCache,
+	)
+	h := NewOpenAIGatewayHandler(
+		gatewayService, concurrencyService, billingCache,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		nil, nil, nil, nil, cfg,
+	)
+	notifier := &recordingOpenAIAccountSwitchNotifier{}
+	h.accountSwitchNotifier = notifier
+
+	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID: 12, GroupID: &groupID,
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription},
+		User:  &service.User{ID: 9},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 9})
+
+	h.Responses(c)
+
+	require.Equal(t, []int64{11, 11, 11}, upstream.calls(), "status=%d body=%s", rec.Code, rec.Body.String())
+	proxyURLs, attempts := upstream.routeCalls()
+	require.Equal(t, []string{"", "http://127.0.0.1:9102", "http://127.0.0.1:9101"}, proxyURLs)
+	require.Equal(t, []int{1, 2, 3}, []int{attempts[0].Attempt, attempts[1].Attempt, attempts[2].Attempt})
+	require.Equal(t, []int{0, 1, 2}, []int{attempts[0].Retry, attempts[1].Retry, attempts[2].Retry})
+	require.False(t, attempts[0].FreshTransport)
+	require.True(t, attempts[1].FreshTransport)
+	require.True(t, attempts[2].FreshTransport)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "response.output_text.delta")
+	events := notifier.notifications()
+	require.Len(t, events, 2)
+	require.Equal(t, "openai.account_first_output_timeout", events[0].EventName)
+	require.Equal(t, "openai.account_first_output_timeout", events[1].EventName)
+}
+
+func TestResponsesRetryProxyTransportFailureRetriesSameAccountDirect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(49)
+	accounts := []service.Account{{
+		ID: 41, Name: "retry-direct-account", Platform: service.PlatformOpenAI,
+		Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"access_token": "retry-token"},
+	}}
+	repo := preOutputFailoverAccountRepo{accounts: accounts}
+	upstream := &preOutputFailoverHTTPUpstream{
+		failFirstCalls:                 1,
+		retryProxyTransportFailureCall: 2,
+	}
+	proxyRepo := preOutputRetryProxyRepo{proxies: []service.Proxy{{
+		ID: 103, Name: "retry-proxy", Protocol: "http", Host: "127.0.0.1", Port: 9103, Status: service.StatusActive,
+	}}}
+	latency := int64(10)
+	latencyCache := preOutputRetryProxyLatencyCache{latencies: map[int64]*service.ProxyLatencyInfo{
+		103: {Success: true, LatencyMs: &latency, QualityStatus: "healthy"},
+	}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+	cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount = 2
+	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 5
+	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
+	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
+
+	concurrencyService := service.NewConcurrencyService(nil)
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCache.Stop)
+	gatewayService := service.NewOpenAIGatewayService(
+		repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
+		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+		proxyRepo, latencyCache,
+	)
+	h := NewOpenAIGatewayHandler(
+		gatewayService, concurrencyService, billingCache,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		nil, nil, nil, nil, cfg,
+	)
+
+	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID: 15, GroupID: &groupID,
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription},
+		User:  &service.User{ID: 12},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 12})
+
+	h.Responses(c)
+
+	require.Equal(t, []int64{41, 41, 41}, upstream.calls(), "status=%d body=%s", rec.Code, rec.Body.String())
+	proxyURLs, attempts := upstream.routeCalls()
+	require.Equal(t, []string{"", "http://127.0.0.1:9103", ""}, proxyURLs)
+	require.Equal(t, []string{"direct", "proxy", "direct"}, []string{attempts[0].Route, attempts[1].Route, attempts[2].Route})
+	require.False(t, attempts[0].FreshTransport)
+	require.True(t, attempts[1].FreshTransport)
+	require.True(t, attempts[2].FreshTransport)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "response.output_text.delta")
+}
+
 func TestResponsesFirstOutputTimeoutUsesSlowAccountFailoverUntilSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(45)
@@ -394,7 +661,7 @@ func TestResponsesFirstOutputTimeoutUsesSlowAccountFailoverUntilSuccess(t *testi
 	upstream := &preOutputFailoverHTTPUpstream{timeoutAccountIDs: map[int64]struct{}{1: {}, 2: {}}}
 	cfg := &config.Config{RunMode: config.RunModeSimple}
 	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
-	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 3
+	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 5
 	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
 	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
 	cfg.Gateway.MaxAccountSwitches = 1
@@ -404,7 +671,7 @@ func TestResponsesFirstOutputTimeoutUsesSlowAccountFailoverUntilSuccess(t *testi
 	t.Cleanup(billingCache.Stop)
 	gatewayService := service.NewOpenAIGatewayService(
 		repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
-		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	h := NewOpenAIGatewayHandler(
 		gatewayService,
@@ -457,4 +724,114 @@ func TestResponsesFirstOutputTimeoutUsesSlowAccountFailoverUntilSuccess(t *testi
 		service.OpenAIAccountSwitchPhaseFailed,
 		service.OpenAIAccountSwitchPhaseCompleted,
 	}, []string{events[0].Phase, events[1].Phase, events[2].Phase})
+}
+
+func TestResponsesFirstOutputTimeoutUsesNormalFailoverAfterTwoSameAccountRetries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(47)
+	accounts := []service.Account{
+		{ID: 21, Name: "always-timeout", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 0, Credentials: map[string]any{"access_token": "slow-token"}},
+		{ID: 22, Name: "failover-timeout", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 1, Credentials: map[string]any{"access_token": "second-slow-token"}},
+		{ID: 23, Name: "healthy", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 2, Credentials: map[string]any{"access_token": "healthy-token"}},
+	}
+	repo := preOutputFailoverAccountRepo{accounts: accounts}
+	upstream := &preOutputFailoverHTTPUpstream{failAccountIDs: map[int64]struct{}{21: {}, 22: {}}}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+	cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount = 2
+	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 5
+	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
+	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
+
+	concurrencyService := service.NewConcurrencyService(nil)
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCache.Stop)
+	gatewayService := service.NewOpenAIGatewayService(
+		repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
+		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	h := NewOpenAIGatewayHandler(
+		gatewayService, concurrencyService, billingCache,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		nil, nil, nil, nil, cfg,
+	)
+
+	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID: 13, GroupID: &groupID,
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription},
+		User:  &service.User{ID: 10},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 10})
+
+	h.Responses(c)
+
+	require.Equal(t, []int64{21, 21, 21, 22, 23}, upstream.calls(), "status=%d body=%s", rec.Code, rec.Body.String())
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "response.output_text.delta")
+}
+
+func TestResponsesRetryBudgetExhaustionEntersNormalAccountFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name              string
+		failFirstCalls    int
+		budgetExhaustCall int
+		wantCalls         []int64
+	}{
+		{name: "budget ends during first retry", failFirstCalls: 1, budgetExhaustCall: 2, wantCalls: []int64{31, 31, 32}},
+		{name: "budget ends after two retries", failFirstCalls: 2, budgetExhaustCall: 3, wantCalls: []int64{31, 31, 31, 32}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			groupID := int64(48)
+			accounts := []service.Account{
+				{ID: 31, Name: "retry-budget", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 0, Credentials: map[string]any{"access_token": "slow-token"}},
+				{ID: 32, Name: "healthy", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 1, Credentials: map[string]any{"access_token": "healthy-token"}},
+			}
+			repo := preOutputFailoverAccountRepo{accounts: accounts}
+			upstream := &preOutputFailoverHTTPUpstream{failFirstCalls: tt.failFirstCalls, budgetExhaustCall: tt.budgetExhaustCall}
+			cfg := &config.Config{RunMode: config.RunModeSimple}
+			cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+			cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount = 2
+			cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 5
+			cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
+			cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
+
+			concurrencyService := service.NewConcurrencyService(nil)
+			billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+			t.Cleanup(billingCache.Stop)
+			gatewayService := service.NewOpenAIGatewayService(
+				repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
+				nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			)
+			h := NewOpenAIGatewayHandler(
+				gatewayService, concurrencyService, billingCache,
+				service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+				nil, nil, nil, nil, cfg,
+			)
+
+			body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", "application/json")
+			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+				ID: 14, GroupID: &groupID,
+				Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription},
+				User:  &service.User{ID: 11},
+			})
+			c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 11})
+
+			h.Responses(c)
+
+			require.Equal(t, tt.wantCalls, upstream.calls(), "status=%d body=%s", rec.Code, rec.Body.String())
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Contains(t, rec.Body.String(), "response.output_text.delta")
+		})
+	}
 }

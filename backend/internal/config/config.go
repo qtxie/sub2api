@@ -752,8 +752,12 @@ type GatewayConfig struct {
 	// OpenAIFirstOutputTimeoutSeconds bounds one ordinary HTTP /responses attempt until
 	// the first meaningful SSE event. Zero disables the pre-output controller.
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
+	// OpenAIFirstOutputSameAccountRetryCount controls how many times a timed-out
+	// ordinary HTTP /responses request is replayed on the same account.
+	OpenAIFirstOutputSameAccountRetryCount int `mapstructure:"openai_first_output_same_account_retry_count"`
 	// OpenAITotalPreOutputBudgetSeconds bounds initial routing, slot waits, and
-	// the first attempt. Slow-account failover uses per-account deadlines instead.
+	// the same-account retry phase. Normal account failover uses fresh per-account
+	// first-output deadlines after this phase is exhausted.
 	OpenAITotalPreOutputBudgetSeconds int `mapstructure:"openai_total_pre_output_budget_seconds"`
 	// OpenAIPreOutputDisconnectDrainSeconds is the maximum usage drain after a
 	// client disconnects before meaningful output.
@@ -2039,7 +2043,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 60)
-	viper.SetDefault("gateway.openai_total_pre_output_budget_seconds", 90)
+	viper.SetDefault("gateway.openai_first_output_same_account_retry_count", 2)
+	viper.SetDefault("gateway.openai_total_pre_output_budget_seconds", 180)
 	viper.SetDefault("gateway.openai_pre_output_disconnect_drain_seconds", 15)
 	viper.SetDefault("gateway.openai_post_output_billing_drain_seconds", 120)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
@@ -2784,6 +2789,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIFirstOutputTimeoutSeconds < 0 {
 		return fmt.Errorf("gateway.openai_first_output_timeout_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIFirstOutputSameAccountRetryCount < 0 {
+		return fmt.Errorf("gateway.openai_first_output_same_account_retry_count must be non-negative")
+	}
+	if c.Gateway.OpenAIFirstOutputSameAccountRetryCount > 2 {
+		return fmt.Errorf("gateway.openai_first_output_same_account_retry_count must not exceed 2")
 	}
 	if c.Gateway.OpenAITotalPreOutputBudgetSeconds < 0 {
 		return fmt.Errorf("gateway.openai_total_pre_output_budget_seconds must be non-negative")

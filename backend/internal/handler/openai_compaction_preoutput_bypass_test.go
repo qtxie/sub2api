@@ -91,7 +91,7 @@ func newDelayedOpenAIBypassHandler(t *testing.T, account service.Account, upstre
 	t.Cleanup(billingCache.Stop)
 	gatewayService := service.NewOpenAIGatewayService(
 		repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
-		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 	)
 	return NewOpenAIGatewayHandler(
 		gatewayService,

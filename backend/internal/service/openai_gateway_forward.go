@@ -749,16 +749,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, err
 		}
 
-		// Get proxy URL
-		proxyURL := ""
-		if account.ProxyID != nil && account.Proxy != nil {
-			proxyURL = account.Proxy.URL()
-		}
+		proxyURL := s.openAIProxyURLForAttempt(ctx, account)
 
 		// Send request
 		upstreamStart := time.Now()
 		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		headerLatency := time.Since(upstreamStart)
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, headerLatency.Milliseconds())
 		if err != nil {
 			if timeoutErr := OpenAIPreOutputFailureError(c, upstreamReq.Context(), err); IsOpenAIPreOutputFailure(timeoutErr) {
 				return nil, timeoutErr
@@ -771,6 +768,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			// unschedule the account on durable faults (e.g. rejected proxy credentials).
 			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 		}
+		logOpenAIFirstOutputResponseHeaders(ctx, account, resp, headerLatency)
 
 		// Handle error response
 		if resp.StatusCode >= 400 {

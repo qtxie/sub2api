@@ -164,6 +164,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	sawFailedEvent := false
 	failedMessage := ""
 	clientOutputStarted := false
+	rawEventLogged := false
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	var streamEarlyErr error
 	markClientDisconnected := func(logMessage string) {
@@ -307,6 +308,11 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 				sawTerminalEvent = true
 			}
 			eventType := strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+			if !rawEventLogged {
+				attemptMs, totalMs := OpenAIPreOutputLatencySnapshot(c)
+				logOpenAIFirstOutputRawEvent(ctx, account, eventType, attemptMs, totalMs)
+				rawEventLogged = true
+			}
 			if responseID == "" {
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
@@ -462,6 +468,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 						if semanticTransitioned {
 							firstTokenMs = &semanticTotalMs
 							attemptFirstTokenMs = &semanticAttemptMs
+							logOpenAIFirstOutputSemantic(ctx, account, eventType, semanticAttemptMs, semanticTotalMs)
 						}
 						clientOutputStarted = true
 						lastDownstreamWriteAt = time.Now()
@@ -495,6 +502,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 						if firstMeaningfulOutput && semanticTransitioned {
 							firstTokenMs = &semanticTotalMs
 							attemptFirstTokenMs = &semanticAttemptMs
+							logOpenAIFirstOutputSemantic(ctx, account, eventType, semanticAttemptMs, semanticTotalMs)
 						}
 						clientOutputStarted = true
 						lastDownstreamWriteAt = time.Now()

@@ -550,8 +550,9 @@ func OpenAIPreOutputMarkClientDisconnected(c *gin.Context) {
 	}
 }
 
-// OpenAIPreOutputEnterSlowFailover moves timeout recovery to account-driven
-// failover. Each remaining account receives its own first-output deadline.
+// OpenAIPreOutputEnterSlowFailover ends the bounded same-account retry phase.
+// Normal account failover then gives each remaining account its own first-output
+// deadline, matching the behavior that predates same-account retries.
 func OpenAIPreOutputEnterSlowFailover(c *gin.Context) {
 	if p := getOpenAIPreOutput(c); p != nil {
 		p.mu.Lock()

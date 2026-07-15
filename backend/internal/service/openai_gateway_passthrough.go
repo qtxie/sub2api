@@ -152,10 +152,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	proxyURL := s.openAIProxyURLForAttempt(ctx, account)
 
 	if c != nil {
 		c.Set("openai_passthrough", true)
@@ -163,7 +160,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	upstreamStart := time.Now()
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+	headerLatency := time.Since(upstreamStart)
+	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, headerLatency.Milliseconds())
 	if err != nil {
 		if timeoutErr := OpenAIPreOutputFailureError(c, upstreamReq.Context(), err); IsOpenAIPreOutputFailure(timeoutErr) {
 			return nil, timeoutErr
@@ -176,6 +174,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		// unschedule the account on durable faults (e.g. rejected proxy credentials).
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
 	}
+	logOpenAIFirstOutputResponseHeaders(ctx, account, resp, headerLatency)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
@@ -907,6 +906,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	failedMessage := ""
 	clientOutputStarted := false
 	semanticOutputCommitted := false
+	rawEventLogged := false
 	var streamEarlyErr error
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
 	var preambleBuffer []byte
@@ -945,6 +945,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		line := scanner.Text()
 		lineStartsClientOutput := false
 		lineIsDone := false
+		lineEventType := ""
 		forceFlushFailedEvent := false
 		if OpenAIPreOutputEnabled(c) && !OpenAIPreOutputClientConnected(c) {
 			markClientDisconnected()
@@ -981,6 +982,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 			eventType := strings.TrimSpace(gjson.Get(trimmedData, "type").String())
+			lineEventType = eventType
+			if !rawEventLogged {
+				attemptMs, totalMs := OpenAIPreOutputLatencySnapshot(c)
+				logOpenAIFirstOutputRawEvent(ctx, account, eventType, attemptMs, totalMs)
+				rawEventLogged = true
+			}
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析
@@ -1094,6 +1101,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					if semanticTransitioned {
 						firstTokenMs = &semanticTotalMs
 						attemptFirstTokenMs = &semanticAttemptMs
+						logOpenAIFirstOutputSemantic(ctx, account, lineEventType, semanticAttemptMs, semanticTotalMs)
 					}
 					clientOutputStarted = true
 					semanticOutputCommitted = true
@@ -1138,6 +1146,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				if firstMeaningfulOutput && semanticTransitioned {
 					firstTokenMs = &semanticTotalMs
 					attemptFirstTokenMs = &semanticAttemptMs
+					logOpenAIFirstOutputSemantic(ctx, account, lineEventType, semanticAttemptMs, semanticTotalMs)
 				}
 				clientOutputStarted = true
 				if lineStartsClientOutput {

@@ -69,6 +69,23 @@ func TestHTTPUpstreamDoAppliesGrokCLIIdentityBeforeOAuthRoundTrip(t *testing.T) 
 	}
 }
 
+func TestHTTPUpstreamFreshTransportCreatesUncachedClients(t *testing.T) {
+	upstream := NewHTTPUpstream(nil)
+	svc, ok := upstream.(*httpUpstreamService)
+	require.True(t, ok)
+
+	first, err := svc.newEphemeralClientWithProfile("", 42, 1, service.HTTPUpstreamProfileOpenAI)
+	require.NoError(t, err)
+	second, err := svc.newEphemeralClientWithProfile("", 42, 1, service.HTTPUpstreamProfileOpenAI)
+	require.NoError(t, err)
+	t.Cleanup(first.client.CloseIdleConnections)
+	t.Cleanup(second.client.CloseIdleConnections)
+
+	require.NotSame(t, first.client, second.client)
+	require.NotSame(t, first.client.Transport, second.client.Transport)
+	require.Empty(t, svc.clients)
+}
+
 func TestApplyGrokCLIProxyHeaders(t *testing.T) {
 	t.Run("uses pinned stable version for the CLI proxy", func(t *testing.T) {
 		t.Setenv("XAI_GROK_CLI_VERSION", "")

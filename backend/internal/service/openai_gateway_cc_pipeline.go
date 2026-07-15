@@ -206,11 +206,10 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		applyGrokCacheHeaders(upstreamReq.Header, grokCacheIdentity)
 	}
 
-	proxyURL := ""
-	if account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
+	proxyURL := s.openAIProxyURLForAttempt(ctx, account)
+	upstreamStart := time.Now()
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	headerLatency := time.Since(upstreamStart)
 	if err != nil {
 		if timeoutErr := OpenAIPreOutputFailureError(c, upstreamReq.Context(), err); IsOpenAIPreOutputFailure(timeoutErr) {
 			return nil, timeoutErr
@@ -220,6 +219,7 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		}
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
+	logOpenAIFirstOutputResponseHeaders(ctx, account, resp, headerLatency)
 	return resp, nil
 }
 
