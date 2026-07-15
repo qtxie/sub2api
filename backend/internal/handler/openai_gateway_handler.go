@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -897,14 +898,46 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	firstOutputRetryCount := make(map[int64]int)
-	pendingFirstOutputTimeoutMs := make(map[int64]*int)
+	type pendingFirstOutputTimeout struct {
+		account             *service.Account
+		attemptFirstTokenMs *int
+	}
+	pendingFirstOutputTimeouts := make(map[int64]pendingFirstOutputTimeout)
+	reportPendingFirstOutputTimeout := func(accountID int64) {
+		pending, ok := pendingFirstOutputTimeouts[accountID]
+		if !ok {
+			return
+		}
+		h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), pending.account, pending.attemptFirstTokenMs)
+		delete(pendingFirstOutputTimeouts, accountID)
+	}
+	defer func() {
+		for accountID := range pendingFirstOutputTimeouts {
+			reportPendingFirstOutputTimeout(accountID)
+		}
+	}()
 	usedRetryProxyIDs := make(map[int64]map[int64]struct{})
 	var retrySelection *service.AccountSelectionResult
 	var retryScheduleDecision service.OpenAIAccountScheduleDecision
 	var retryAttempt *service.OpenAIFirstOutputAttempt
 	retrySessionHash := ""
 	var retryForwardBody []byte
+	retryRestoreSessionHash := ""
+	var retryRestoreForwardBody []byte
+	retrySessionChainActive := false
 	activeForwardBody := forwardBody
+	restoreFirstOutputRetrySession := func() {
+		if !retrySessionChainActive {
+			return
+		}
+		sessionHash = retryRestoreSessionHash
+		activeForwardBody = retryRestoreForwardBody
+		retrySessionHash = ""
+		retryForwardBody = nil
+		retryRestoreSessionHash = ""
+		retryRestoreForwardBody = nil
+		retrySessionChainActive = false
+	}
 	normalFirstOutputFailover := false
 	var lastFailoverErr *service.UpstreamFailoverError
 	var failoverAttempt openAIAccountSwitchAttempt
@@ -928,7 +961,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			currentAttempt = *retryAttempt
 			retrySelection = nil
 			retryAttempt = nil
-			if retrySessionHash != "" {
+			if retrySessionChainActive {
 				sessionHash = retrySessionHash
 				activeForwardBody = retryForwardBody
 			}
@@ -1122,13 +1155,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					reportFirstOutputTimeout := func() {
 						if failoverErr.FirstOutputTimeout {
 							h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, attemptFirstTokenMs)
-							delete(pendingFirstOutputTimeoutMs, account.ID)
+							delete(pendingFirstOutputTimeouts, account.ID)
 							return
 						}
-						if pendingFirstTokenMs, ok := pendingFirstOutputTimeoutMs[account.ID]; ok {
-							h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, pendingFirstTokenMs)
-							delete(pendingFirstOutputTimeoutMs, account.ID)
-						}
+						reportPendingFirstOutputTimeout(account.ID)
 					}
 					if failoverErr.FirstOutputTimeout {
 						h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
@@ -1166,7 +1196,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						if firstOutputRetryCount[account.ID] < retryLimit {
 							retryNumber := firstOutputRetryCount[account.ID] + 1
 							nextAttempt := service.NewOpenAIFirstOutputDirectRetryAttempt(retryNumber)
-							nextSessionHash, nextForwardBody, sessionErr := newOpenAIFirstOutputRetrySession(sessionHash, attemptForwardBody, account.ID, retryNumber)
+							nextSessionHash, nextForwardBody, sessionErr := newOpenAIFirstOutputRetrySession(attemptForwardBody, account.ID, retryNumber)
 							if sessionErr != nil {
 								reqLog.Warn("openai.first_output_retry_session_hash_failed",
 									zap.Int64("account_id", account.ID),
@@ -1200,11 +1230,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							}
 							firstOutputRetryCount[account.ID] = retryNumber
 							if failoverErr.FirstOutputTimeout {
-								pendingFirstOutputTimeoutMs[account.ID] = cloneIntPtr(attemptFirstTokenMs)
+								pendingFirstOutputTimeouts[account.ID] = pendingFirstOutputTimeout{
+									account:             account,
+									attemptFirstTokenMs: cloneIntPtr(attemptFirstTokenMs),
+								}
 							}
 							retrySelection = h.gatewayService.NewOpenAIFirstOutputRetrySelection(account)
 							retryScheduleDecision = scheduleDecision
 							retryAttempt = &nextAttempt
+							if !retrySessionChainActive {
+								retryRestoreSessionHash = sessionHash
+								retryRestoreForwardBody = attemptForwardBody
+								retrySessionChainActive = true
+							}
 							if nextSessionHash != "" {
 								retrySessionHash = nextSessionHash
 								retryForwardBody = nextForwardBody
@@ -1227,6 +1265,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							)
 							continue
 						}
+					}
+					if currentAttempt.Retry > 0 {
+						restoreFirstOutputRetrySession()
 					}
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
@@ -1338,15 +1379,28 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ClearOpenAITransientFailures(account.ID)
-			delete(pendingFirstOutputTimeoutMs, account.ID)
 			schedulerTTFT := result.AttemptFirstTokenMs
 			if schedulerTTFT == nil {
 				schedulerTTFT = result.FirstTokenMs
 			}
+			if _, pending := pendingFirstOutputTimeouts[account.ID]; pending {
+				if schedulerTTFT == nil && !result.Stream {
+					attemptLatencyMs := int(forwardDurationMs)
+					if attemptLatencyMs <= 0 {
+						attemptLatencyMs = 1
+					}
+					schedulerTTFT = &attemptLatencyMs
+				}
+				if schedulerTTFT != nil {
+					delete(pendingFirstOutputTimeouts, account.ID)
+				} else {
+					reportPendingFirstOutputTimeout(account.ID)
+				}
+			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, schedulerTTFT)
 		} else {
 			h.gatewayService.ClearOpenAITransientFailures(account.ID)
-			delete(pendingFirstOutputTimeoutMs, account.ID)
+			reportPendingFirstOutputTimeout(account.ID)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
 		h.notifyOpenAIAccountFailbackToHighestPriority(c, "responses", apiKey, subject.UserID, reqModel, reqStream, account, scheduleDecision, requestPlatform, requireCompact, service.OpenAIUpstreamTransportAny, service.OpenAIEndpointCapabilityChatCompletions, "")
@@ -3282,27 +3336,18 @@ func ensureOpenAIPoolModeSessionHash(sessionHash string, account *service.Accoun
 	return "openai-pool-retry-" + uuid.NewString()
 }
 
-func newOpenAIFirstOutputRetrySession(sessionHash string, body []byte, accountID int64, retryNumber int) (string, []byte, error) {
-	seedBase := strings.TrimSpace(sessionHash)
-	if seedBase == "" {
-		seedBase = service.HashUsageRequestPayload(body)
-	}
-	if seedBase == "" || accountID <= 0 || retryNumber <= 0 {
+func newOpenAIFirstOutputRetrySession(body []byte, accountID int64, retryNumber int) (string, []byte, error) {
+	if len(body) == 0 || accountID <= 0 || retryNumber <= 0 {
 		return "", nil, nil
 	}
 
-	retrySeed := fmt.Sprintf("first-output-retry:%s:%d:%d", seedBase, accountID, retryNumber)
+	retrySeed := "first-output-retry:" + uuid.NewString()
 	retryHash := service.DeriveSessionHashFromSeed(retrySeed)
 	if retryHash == "" {
 		return "", nil, nil
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", nil, err
-	}
-	payload["prompt_cache_key"] = retrySeed
-	retryBody, err := json.Marshal(payload)
+	retryBody, err := sjson.SetBytes(body, "prompt_cache_key", retrySeed)
 	if err != nil {
 		return "", nil, err
 	}

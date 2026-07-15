@@ -58,6 +58,7 @@ type preOutputFailoverHTTPUpstream struct {
 	failAccountIDs                 map[int64]struct{}
 	failFirstCalls                 int
 	failAttemptLatencyMs           int64
+	successDelay                   time.Duration
 	budgetExhaustCall              int
 	retryProxyTransportFailureCall int
 }
@@ -170,6 +171,15 @@ func (u *preOutputFailoverHTTPUpstream) Do(req *http.Request, proxyURL string, a
 		<-req.Context().Done()
 		return nil, req.Context().Err()
 	}
+	if u.successDelay > 0 {
+		timer := time.NewTimer(u.successDelay)
+		defer timer.Stop()
+		select {
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-timer.C:
+		}
+	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "X-Request-Id": []string{"req_second"}},
@@ -197,6 +207,26 @@ func (u *preOutputFailoverHTTPUpstream) sessionCalls() ([]string, []string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return append([]string(nil), u.sessionIDs...), append([]string(nil), u.promptCacheKeys...)
+}
+
+func TestNewOpenAIFirstOutputRetrySessionIsUniqueAndPreservesPayload(t *testing.T) {
+	body := []byte(`{"model":"gpt-5","prompt_cache_key":"original","tools":[{"parameters":{"properties":{"id":{"const":9007199254740993}}}}]}`)
+
+	firstHash, firstBody, err := newOpenAIFirstOutputRetrySession(body, 11, 1)
+	require.NoError(t, err)
+	secondHash, secondBody, err := newOpenAIFirstOutputRetrySession(body, 11, 1)
+	require.NoError(t, err)
+
+	firstKey := gjson.GetBytes(firstBody, "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(secondBody, "prompt_cache_key").String()
+	require.NotEmpty(t, firstHash)
+	require.NotEqual(t, firstHash, secondHash)
+	require.Equal(t, service.DeriveSessionHashFromSeed(firstKey), firstHash)
+	require.Equal(t, service.DeriveSessionHashFromSeed(secondKey), secondHash)
+	require.NotEqual(t, firstKey, secondKey)
+	require.Equal(t, "9007199254740993", gjson.GetBytes(firstBody, "tools.0.parameters.properties.id.const").Raw)
+	require.Equal(t, "9007199254740993", gjson.GetBytes(secondBody, "tools.0.parameters.properties.id.const").Raw)
+	require.Equal(t, "original", gjson.GetBytes(body, "prompt_cache_key").String())
 }
 
 func TestPreOutputFinalErrorAfterHeartbeatUsesResponsesSSE(t *testing.T) {
@@ -823,7 +853,7 @@ func TestResponsesFirstOutputTimeoutUsesNormalFailoverAfterTwoSameAccountRetries
 		nil, nil, nil, nil, cfg,
 	)
 
-	body := []byte(`{"model":"gpt-5","stream":true,"input":"hello"}`)
+	body := []byte(`{"model":"gpt-5","stream":true,"prompt_cache_key":"original-session","input":"hello"}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
@@ -838,8 +868,81 @@ func TestResponsesFirstOutputTimeoutUsesNormalFailoverAfterTwoSameAccountRetries
 	h.Responses(c)
 
 	require.Equal(t, []int64{21, 21, 21, 22, 23}, upstream.calls(), "status=%d body=%s", rec.Code, rec.Body.String())
+	sessionIDs, promptCacheKeys := upstream.sessionCalls()
+	require.Equal(t, "original-session", promptCacheKeys[0])
+	require.NotEqual(t, promptCacheKeys[0], promptCacheKeys[1])
+	require.NotEqual(t, promptCacheKeys[1], promptCacheKeys[2])
+	require.Equal(t, "original-session", promptCacheKeys[3])
+	require.Equal(t, "original-session", promptCacheKeys[4])
+	require.Equal(t, sessionIDs[0], sessionIDs[3])
+	require.Equal(t, sessionIDs[0], sessionIDs[4])
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "response.output_text.delta")
+}
+
+func TestResponsesSlowNonStreamingRetryStillMarksAccountSlow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(49)
+	accounts := []service.Account{
+		{ID: 41, Name: "slow-retry", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 0, Credentials: map[string]any{"access_token": "slow-token"}},
+		{ID: 42, Name: "fallback", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 1, Credentials: map[string]any{"access_token": "fallback-token"}},
+	}
+	repo := preOutputFailoverAccountRepo{accounts: accounts}
+	upstream := &preOutputFailoverHTTPUpstream{
+		failFirstCalls:       1,
+		failAttemptLatencyMs: 60000,
+		successDelay:         25 * time.Millisecond,
+	}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+	cfg.Gateway.OpenAIFirstOutputSameAccountRetryCount = 1
+	cfg.Gateway.OpenAITotalPreOutputBudgetSeconds = 5
+	cfg.Gateway.OpenAIPreOutputDisconnectDrainSeconds = 1
+	cfg.Gateway.OpenAIPostOutputBillingDrainSeconds = 1
+	cfg.Gateway.OpenAIScheduler.SlowAccountEscapeEnabled = true
+	cfg.Gateway.OpenAIScheduler.SlowTTFTThresholdMs = 10
+	cfg.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs = 5
+	cfg.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs = 2
+	cfg.Gateway.OpenAIScheduler.SlowMinSamples = 1
+	cfg.Gateway.OpenAIScheduler.SlowScoreMarkThreshold = 3
+	cfg.Gateway.OpenAIScheduler.SlowScoreSkipThreshold = 3
+	cfg.Gateway.OpenAIScheduler.SlowScoreMax = 10
+	cfg.Gateway.OpenAIScheduler.SlowCooldownSeconds = 60
+
+	concurrencyService := service.NewConcurrencyService(nil)
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCache.Stop)
+	gatewayService := service.NewOpenAIGatewayService(
+		repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService,
+		nil, nil, billingCache, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	h := NewOpenAIGatewayHandler(
+		gatewayService, concurrencyService, billingCache,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		nil, nil, nil, nil, cfg,
+	)
+
+	request := func(promptCacheKey string) *httptest.ResponseRecorder {
+		body := []byte(`{"model":"gpt-5","stream":false,"prompt_cache_key":"` + promptCacheKey + `","input":"hello"}`)
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+			ID: 15, GroupID: &groupID,
+			Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, SubscriptionType: service.SubscriptionTypeSubscription},
+			User:  &service.User{ID: 12},
+		})
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 12})
+		h.Responses(c)
+		return rec
+	}
+
+	firstRec := request("first-session")
+	require.Equal(t, http.StatusOK, firstRec.Code, firstRec.Body.String())
+	secondRec := request("second-session")
+	require.Equal(t, http.StatusOK, secondRec.Code, secondRec.Body.String())
+	require.Equal(t, []int64{41, 41, 42}, upstream.calls())
 }
 
 func TestResponsesRetryBudgetExhaustionEntersNormalAccountFailover(t *testing.T) {
