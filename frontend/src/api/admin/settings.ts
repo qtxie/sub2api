@@ -610,6 +610,7 @@ export interface SystemSettings {
   openai_advanced_scheduler_enabled?: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled?: boolean;
   openai_advanced_scheduler_subscription_priority_enabled?: boolean;
+  openai_priority_dominant_enabled?: boolean;
   openai_advanced_scheduler_lb_top_k?: string;
   openai_advanced_scheduler_weight_priority?: string;
   openai_advanced_scheduler_weight_load?: string;
@@ -633,6 +634,11 @@ export interface SystemSettings {
   openai_sticky_prefer_higher_priority_enabled?: boolean;
   openai_sticky_prefer_higher_priority_min_interval_seconds?: number;
   openai_sticky_failback_failure_cooldown_seconds?: number;
+  openai_sticky_failback_relapse_window_seconds?: number;
+  openai_sticky_failback_cooldown_increment_seconds?: number;
+  openai_sticky_failback_cooldown_max_seconds?: number;
+  openai_sticky_failback_recovery_fast_count?: number;
+  openai_production_ttft_freshness_seconds?: number;
   openai_previous_response_rebind_enabled?: boolean;
   openai_previous_response_rebind_only_when_current_unhealthy?: boolean;
 
@@ -888,6 +894,7 @@ export interface UpdateSettingsRequest {
   openai_advanced_scheduler_enabled?: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled?: boolean;
   openai_advanced_scheduler_subscription_priority_enabled?: boolean;
+  openai_priority_dominant_enabled?: boolean;
   openai_advanced_scheduler_lb_top_k?: string;
   openai_advanced_scheduler_weight_priority?: string;
   openai_advanced_scheduler_weight_load?: string;
@@ -901,6 +908,11 @@ export interface UpdateSettingsRequest {
   openai_sticky_prefer_higher_priority_enabled?: boolean;
   openai_sticky_prefer_higher_priority_min_interval_seconds?: number;
   openai_sticky_failback_failure_cooldown_seconds?: number;
+  openai_sticky_failback_relapse_window_seconds?: number;
+  openai_sticky_failback_cooldown_increment_seconds?: number;
+  openai_sticky_failback_cooldown_max_seconds?: number;
+  openai_sticky_failback_recovery_fast_count?: number;
+  openai_production_ttft_freshness_seconds?: number;
   openai_previous_response_rebind_enabled?: boolean;
   openai_previous_response_rebind_only_when_current_unhealthy?: boolean;
   // 余额、订阅到期与账号限额通知

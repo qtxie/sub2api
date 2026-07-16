@@ -212,6 +212,7 @@ type SystemSettings struct {
 	OpenAIAdvancedSchedulerEnabled                         bool   `json:"openai_advanced_scheduler_enabled"`
 	OpenAIAdvancedSchedulerStickyWeightedEnabled           bool   `json:"openai_advanced_scheduler_sticky_weighted_enabled"`
 	OpenAIAdvancedSchedulerSubscriptionPriorityEnabled     bool   `json:"openai_advanced_scheduler_subscription_priority_enabled"`
+	OpenAIPriorityDominantEnabled                          bool   `json:"openai_priority_dominant_enabled"`
 	OpenAIAdvancedSchedulerLBTopK                          string `json:"openai_advanced_scheduler_lb_top_k"`
 	OpenAIAdvancedSchedulerWeightPriority                  string `json:"openai_advanced_scheduler_weight_priority"`
 	OpenAIAdvancedSchedulerWeightLoad                      string `json:"openai_advanced_scheduler_weight_load"`
@@ -235,6 +236,11 @@ type SystemSettings struct {
 	OpenAIStickyPreferHigherPriorityEnabled                bool   `json:"openai_sticky_prefer_higher_priority_enabled"`
 	OpenAIStickyPreferHigherPriorityMinIntervalSeconds     int    `json:"openai_sticky_prefer_higher_priority_min_interval_seconds"`
 	OpenAIStickyFailbackFailureCooldownSeconds             int    `json:"openai_sticky_failback_failure_cooldown_seconds"`
+	OpenAIStickyFailbackRelapseWindowSeconds               int    `json:"openai_sticky_failback_relapse_window_seconds"`
+	OpenAIStickyFailbackCooldownIncrementSeconds           int    `json:"openai_sticky_failback_cooldown_increment_seconds"`
+	OpenAIStickyFailbackCooldownMaxSeconds                 int    `json:"openai_sticky_failback_cooldown_max_seconds"`
+	OpenAIStickyFailbackRecoveryFastCount                  int    `json:"openai_sticky_failback_recovery_fast_count"`
+	OpenAIProductionTTFTFreshnessSeconds                   int    `json:"openai_production_ttft_freshness_seconds"`
 	OpenAIPreviousResponseRebindEnabled                    bool   `json:"openai_previous_response_rebind_enabled"`
 	OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy   bool   `json:"openai_previous_response_rebind_only_when_current_unhealthy"`
 

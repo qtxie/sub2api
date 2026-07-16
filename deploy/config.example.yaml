@@ -157,6 +157,9 @@ gateway:
   openai_response_header_timeout: 0
   # First meaningful output deadline per ordinary HTTP /responses account attempt (seconds, 0=disabled)
   openai_first_output_timeout_seconds: 0
+  # Replay-safe same-account retries after a first-output timeout. Each retry uses a fresh upstream session.
+  # Cancellation cannot prove the timed-out attempt stopped upstream; duplicate work or billing is possible.
+  openai_first_output_same_account_retries: 1
   # Optional high/xhigh/max override (seconds, 0=use the standard timeout)
   openai_high_effort_first_output_timeout_seconds: 0
   # Maximum billing drain after a client disconnects before meaningful output (seconds)
@@ -349,12 +352,34 @@ gateway:
       quota_headroom: 0.0
   # OpenAI 高级调度器补充配置
   openai_scheduler:
+    # Priority is a hard tier boundary. Advanced weights only order accounts inside a tier.
+    priority_dominant_enabled: true
+    # Promptly probe and return sticky sessions to a healthy, fast higher-priority account.
+    sticky_prefer_higher_priority_enabled: true
+    sticky_prefer_higher_priority_min_interval_seconds: 5
+    sticky_failback_failure_cooldown_seconds: 300
+    sticky_failback_relapse_window_seconds: 300
+    sticky_failback_cooldown_increment_seconds: 300
+    sticky_failback_cooldown_max_seconds: 1800
+    sticky_failback_recovery_fast_count: 3
+    production_ttft_freshness_seconds: 300
+    sticky_failback_probe_enabled: true
+    sticky_failback_probe_timeout_seconds: 15
+    sticky_failback_probe_success_ttl_seconds: 10
+    sticky_failback_probe_failure_ttl_seconds: 60
     # 是否允许 session_hash sticky 在账号健康度恶化时临时逃逸；false 可一键回退旧行为
     sticky_escape_enabled: true
-    # TTFT EWMA 超过该阈值（毫秒）时跳过 sticky，默认 15s，避免轻微抖动就逃逸
+    # Sticky 慢响应硬阈值的兼容配置；实际逃逸仍要求连续三次超过 slow_ttft_threshold_ms。
     sticky_escape_ttft_ms: 15000
     # 错误率 EWMA 超过该阈值时跳过 sticky，默认 0.5，仅在明显降级时触发
     sticky_escape_error_rate: 0.5
+    # Only three consecutive TTFT samples above the hard threshold mark an account slow.
+    slow_account_escape_enabled: true
+    slow_ttft_threshold_ms: 30000
+    slow_soft_ttft_threshold_ms: 15000
+    slow_recovery_ttft_ms: 10000
+    slow_ttft_consecutive_count: 3
+    slow_cooldown_seconds: 300
     # 重复 502/503/504 等瞬时上游失败时，对账号做进程内临时冷却；有替代账号时跳过
     transient_failure_cooldown_enabled: true
     # 参与瞬时失败冷却计数的状态码，逗号分隔

@@ -408,8 +408,10 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
 	openaiAccountRuntimeBlockUntil      sync.Map // key: int64(accountID), value: time.Time
-	openaiStickyFailbackLastAttempt     sync.Map // key: string(kind:group:key), value: int64(unix nano)
-	openaiStickyFailbackCooldownUntil   sync.Map // key: int64(accountID), value: time.Time
+	openaiStickyFailbackLastAttempt     sync.Map // key: string(kind:group:key), value: openAIStickyFailbackAttemptEntry
+	openaiStickyFailbackAttemptOps      atomic.Uint64
+	openaiStickyFailbackStates          sync.Map // key: int64(accountID), value: *openAIFailbackRuntimeState
+	openaiStickyFailbackPending         sync.Map // key: int64(accountID), value: struct{} after a recovery probe until a slot is acquired
 	openaiTransientFailureStates        sync.Map // key: int64(accountID), value: *openAITransientFailureState
 	openaiStickyFailbackProbeCache      sync.Map // key: string(account/model/transport/capability), value: openAIStickyFailbackProbeCacheEntry
 	openaiStickyFailbackProbeRunner     func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult

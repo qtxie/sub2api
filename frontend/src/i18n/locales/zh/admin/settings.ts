@@ -1098,12 +1098,15 @@ export default {
         sourceRequiredError: '{title} 已启用，请先选择支付来源。'
       },
       openaiExperimentalScheduler: {
+        priorityDominantTitle: '账号优先级主导选择',
+        priorityDominantDescription: '在健康且速度达标的账号中，数值最小的账号优先级始终胜出。高级调度器可选，并且只能在同一优先级层内重新排序。',
         title: 'OpenAI 实验调度策略',
         description: '默认关闭。开启后仅影响本网关在 OpenAI 账号间的实验性调度选择逻辑，不代表上游 OpenAI 官方能力。',
         stickyWeightedTitle: '粘性加权',
         stickyWeightedDescription: '开启后 previous_response_id 和 session_hash 粘性进入高级调度打分；关闭时仍按旧逻辑硬命中粘性账号。',
         subscriptionPriorityTitle: '订阅优先',
         subscriptionPriorityDescription: '开启后先在 ChatGPT 订阅账号池中按权值选取；订阅池拿不到席位时再回退到非订阅账号池。',
+        subscriptionPriorityBlocked: '已禁用，因为订阅池优先会覆盖全局账号数值优先级。',
         weightsTitle: '调度权值覆盖',
         weightsDescription: '留空时使用配置/环境变量值；配置未设置时使用内置默认值。页面非空设置优先。',
         defaultPlaceholder: '配置/默认：{value}',

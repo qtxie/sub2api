@@ -1103,12 +1103,15 @@ export default {
         sourceRequiredError: 'Select a payment source before enabling {title}.'
       },
       openaiExperimentalScheduler: {
+        priorityDominantTitle: 'Priority-dominant account selection',
+        priorityDominantDescription: 'Among healthy, fast-enough accounts, the lowest numeric account priority always wins. Advanced Scheduler is optional and can only reorder accounts within that priority tier.',
         title: 'OpenAI experimental scheduler policy',
         description: "Disabled by default. When enabled, this only changes the gateway's experimental account-selection policy for OpenAI traffic; it does not indicate an upstream OpenAI capability.",
         stickyWeightedTitle: 'Sticky weighting',
         stickyWeightedDescription: 'When enabled, previous_response_id and session_hash affinity are scored by the advanced scheduler. When disabled, sticky accounts keep the legacy hard-hit behavior.',
         subscriptionPriorityTitle: 'Subscription priority',
         subscriptionPriorityDescription: 'When enabled, the scheduler scores ChatGPT subscription accounts first and falls back to non-subscription accounts only if no subscription slot can be acquired.',
+        subscriptionPriorityBlocked: 'Disabled because subscription precedence can override numeric account priority.',
         weightsTitle: 'Scheduler weight overrides',
         weightsDescription: 'Blank values use config/environment values; when config is not set, built-in defaults apply. Non-blank page settings take priority.',
         defaultPlaceholder: 'config/default: {value}',

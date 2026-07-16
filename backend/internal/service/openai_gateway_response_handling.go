@@ -756,6 +756,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if time.Since(lastRead) < streamInterval {
 				continue
 			}
+			// Before semantic output, the configured first-output deadline owns the
+			// retry/failover decision. The generic idle timeout still applies after
+			// the first semantic event (or when first-output guarding is disabled).
+			if guardFirstOutput && firstTokenMs == nil {
+				continue
+			}
 			if clientDisconnected {
 				return resultWithUsage(), fmt.Errorf("stream usage incomplete after timeout")
 			}

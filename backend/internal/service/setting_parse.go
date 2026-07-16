@@ -793,6 +793,14 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.OpenAIAdvancedSchedulerEnabled = settings[openAIAdvancedSchedulerSettingKey] == "true"
 	result.OpenAIAdvancedSchedulerStickyWeightedEnabled = settings[SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled] == "true"
 	result.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled = settings[SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled] == "true"
+	priorityDominantDefault := true
+	if s != nil && s.cfg != nil && openAISchedulerConfigLoaded(s.cfg.Gateway.OpenAIScheduler) {
+		priorityDominantDefault = s.cfg.Gateway.OpenAIScheduler.PriorityDominantEnabled
+	}
+	result.OpenAIPriorityDominantEnabled = parseOpenAIBoolSetting(settings[SettingKeyOpenAIPriorityDominantEnabled], priorityDominantDefault)
+	if result.OpenAIPriorityDominantEnabled {
+		result.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled = false
+	}
 	result.OpenAIAdvancedSchedulerLBTopK = strings.TrimSpace(settings[SettingKeyOpenAIAdvancedSchedulerLBTopK])
 	result.OpenAIAdvancedSchedulerWeightPriority = strings.TrimSpace(settings[SettingKeyOpenAIAdvancedSchedulerWeightPriority])
 	result.OpenAIAdvancedSchedulerWeightLoad = strings.TrimSpace(settings[SettingKeyOpenAIAdvancedSchedulerWeightLoad])
@@ -818,6 +826,11 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.OpenAIStickyPreferHigherPriorityEnabled = parseOpenAIBoolSetting(settings[openAIStickyPreferHigherPrioritySettingKey], stickyFailbackDefaults.stickyEnabled)
 	result.OpenAIStickyPreferHigherPriorityMinIntervalSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyPreferHigherPriorityMinIntervalSettingKey], int(stickyFailbackDefaults.minInterval/time.Second))
 	result.OpenAIStickyFailbackFailureCooldownSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyFailbackFailureCooldownSettingKey], int(stickyFailbackDefaults.failureCooldown/time.Second))
+	result.OpenAIStickyFailbackRelapseWindowSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyFailbackRelapseWindowSettingKey], int(stickyFailbackDefaults.relapseWindow/time.Second))
+	result.OpenAIStickyFailbackCooldownIncrementSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyFailbackCooldownIncrementSettingKey], int(stickyFailbackDefaults.cooldownIncrement/time.Second))
+	result.OpenAIStickyFailbackCooldownMaxSeconds = parseOpenAINonNegativeIntSetting(settings[openAIStickyFailbackCooldownMaxSettingKey], int(stickyFailbackDefaults.cooldownMax/time.Second))
+	result.OpenAIStickyFailbackRecoveryFastCount = parseOpenAINonNegativeIntSetting(settings[openAIStickyFailbackRecoveryFastCountSettingKey], stickyFailbackDefaults.recoveryFastCount)
+	result.OpenAIProductionTTFTFreshnessSeconds = parseOpenAINonNegativeIntSetting(settings[openAIProductionTTFTFreshnessSettingKey], int(stickyFailbackDefaults.productionTTFTFreshness/time.Second))
 	result.OpenAIPreviousResponseRebindEnabled = parseOpenAIBoolSetting(settings[openAIPreviousResponseRebindSettingKey], stickyFailbackDefaults.previousResponseEnabled)
 	result.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy = parseOpenAIBoolSetting(settings[openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey], stickyFailbackDefaults.previousResponseOnlyWhenUnhealthy)
 

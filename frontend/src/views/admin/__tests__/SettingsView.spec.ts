@@ -431,6 +431,7 @@ const baseSettingsResponse = {
   openai_advanced_scheduler_enabled: false,
   openai_advanced_scheduler_sticky_weighted_enabled: false,
   openai_advanced_scheduler_subscription_priority_enabled: false,
+  openai_priority_dominant_enabled: true,
   openai_advanced_scheduler_lb_top_k: "",
   openai_advanced_scheduler_weight_priority: "",
   openai_advanced_scheduler_weight_load: "",
@@ -452,8 +453,13 @@ const baseSettingsResponse = {
   openai_advanced_scheduler_effective_weight_previous_response: "5",
   openai_advanced_scheduler_effective_weight_session_sticky: "3",
   openai_sticky_prefer_higher_priority_enabled: false,
-  openai_sticky_prefer_higher_priority_min_interval_seconds: 60,
+  openai_sticky_prefer_higher_priority_min_interval_seconds: 5,
   openai_sticky_failback_failure_cooldown_seconds: 300,
+  openai_sticky_failback_relapse_window_seconds: 300,
+  openai_sticky_failback_cooldown_increment_seconds: 300,
+  openai_sticky_failback_cooldown_max_seconds: 1800,
+  openai_sticky_failback_recovery_fast_count: 3,
+  openai_production_ttft_freshness_seconds: 300,
   openai_previous_response_rebind_enabled: false,
   openai_previous_response_rebind_only_when_current_unhealthy: true,
   balance_low_notify_enabled: false,
@@ -841,6 +847,30 @@ describe("admin SettingsView payment visible method controls", () => {
       "默认关闭。开启后仅影响本网关在 OpenAI 账号间的实验性调度选择逻辑",
     );
     expect(wrapper.text()).not.toContain("OpenAI 高级调度器");
+  });
+
+  it("keeps numeric priority dominant without enabling the advanced scheduler", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      openai_advanced_scheduler_enabled: false,
+      openai_advanced_scheduler_subscription_priority_enabled: true,
+      openai_priority_dominant_enabled: true,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        openai_advanced_scheduler_enabled: false,
+        openai_priority_dominant_enabled: true,
+        openai_advanced_scheduler_subscription_priority_enabled: false,
+        openai_sticky_failback_cooldown_increment_seconds: 300,
+        openai_sticky_failback_cooldown_max_seconds: 1800,
+      }),
+    );
   });
 
   it("passes translated upload and remove labels to the payment help image uploader", async () => {

@@ -764,6 +764,9 @@ type GatewayConfig struct {
 	// OpenAIFirstOutputTimeoutSeconds bounds one ordinary HTTP /responses account
 	// attempt until the first meaningful SSE event. Zero disables the guard.
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
+	// OpenAIFirstOutputSameAccountRetries retries a replay-safe first-output timeout
+	// on the same account with a fresh upstream session before normal failover.
+	OpenAIFirstOutputSameAccountRetries int `mapstructure:"openai_first_output_same_account_retries"`
 	// OpenAIHighEffortFirstOutputTimeoutSeconds overrides the first-output timeout
 	// for high/xhigh/max reasoning. Zero falls back to the standard timeout.
 	OpenAIHighEffortFirstOutputTimeoutSeconds int `mapstructure:"openai_high_effort_first_output_timeout_seconds"`
@@ -1086,9 +1089,12 @@ type GatewayOpenAIWSSchedulerScoreWeights struct {
 
 // GatewayOpenAISchedulerConfig OpenAI 高级调度器配置。
 type GatewayOpenAISchedulerConfig struct {
+	// PriorityDominantEnabled makes account priority a hard scheduling tier.
+	// Load, queue, latency and weighted selection only order accounts inside a tier.
+	PriorityDominantEnabled bool `mapstructure:"priority_dominant_enabled"`
 	// StickyEscapeEnabled: 是否允许 session_hash sticky 在账号健康度劣化时临时逃逸
 	StickyEscapeEnabled bool `mapstructure:"sticky_escape_enabled"`
-	// StickyEscapeTTFTMs: TTFT EWMA 超过该阈值时跳过 sticky
+	// StickyEscapeTTFTMs: sticky 账号慢响应硬阈值的兼容配置值。
 	StickyEscapeTTFTMs int `mapstructure:"sticky_escape_ttft_ms"`
 	// StickyEscapeErrorRate: 错误率 EWMA 超过该阈值时跳过 sticky
 	StickyEscapeErrorRate float64 `mapstructure:"sticky_escape_error_rate"`
@@ -1098,6 +1104,16 @@ type GatewayOpenAISchedulerConfig struct {
 	StickyPreferHigherPriorityMinIntervalSeconds int `mapstructure:"sticky_prefer_higher_priority_min_interval_seconds"`
 	// StickyFailbackFailureCooldownSeconds: 高优先级 failback 账号再次失败后的临时冷却时间
 	StickyFailbackFailureCooldownSeconds int `mapstructure:"sticky_failback_failure_cooldown_seconds"`
+	// StickyFailbackRelapseWindowSeconds: failback 后在该窗口内复发会线性增加冷却。
+	StickyFailbackRelapseWindowSeconds int `mapstructure:"sticky_failback_relapse_window_seconds"`
+	// StickyFailbackCooldownIncrementSeconds: 每次快速复发增加的冷却时长。
+	StickyFailbackCooldownIncrementSeconds int `mapstructure:"sticky_failback_cooldown_increment_seconds"`
+	// StickyFailbackCooldownMaxSeconds: 自适应冷却上限。
+	StickyFailbackCooldownMaxSeconds int `mapstructure:"sticky_failback_cooldown_max_seconds"`
+	// StickyFailbackRecoveryFastCount: 连续快速生产响应达到该数量后重置冷却。
+	StickyFailbackRecoveryFastCount int `mapstructure:"sticky_failback_recovery_fast_count"`
+	// ProductionTTFTFreshnessSeconds: 生产 TTFT 可作为速度门禁证据的最长时间。
+	ProductionTTFTFreshnessSeconds int `mapstructure:"production_ttft_freshness_seconds"`
 	// StickyFailbackProbeEnabled: 切回高优先级账号前，是否先用轻量 /responses 请求探测上游健康
 	StickyFailbackProbeEnabled bool `mapstructure:"sticky_failback_probe_enabled"`
 	// StickyFailbackProbeTimeoutSeconds: failback 健康探测请求总超时
@@ -2057,6 +2073,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 0)
+	viper.SetDefault("gateway.openai_first_output_same_account_retries", 1)
 	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.openai_pre_output_disconnect_drain_seconds", 15)
 	viper.SetDefault("gateway.openai_post_output_billing_drain_seconds", 120)
@@ -2126,12 +2143,17 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.quota_headroom", 0.0)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.previous_response", 5.0)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.session_sticky", 3.0)
-	viper.SetDefault("gateway.openai_scheduler.sticky_prefer_higher_priority_enabled", false)
-	viper.SetDefault("gateway.openai_scheduler.sticky_prefer_higher_priority_min_interval_seconds", 60)
+	viper.SetDefault("gateway.openai_scheduler.sticky_prefer_higher_priority_enabled", true)
+	viper.SetDefault("gateway.openai_scheduler.sticky_prefer_higher_priority_min_interval_seconds", 5)
 	viper.SetDefault("gateway.openai_scheduler.sticky_failback_failure_cooldown_seconds", 300)
+	viper.SetDefault("gateway.openai_scheduler.sticky_failback_relapse_window_seconds", 300)
+	viper.SetDefault("gateway.openai_scheduler.sticky_failback_cooldown_increment_seconds", 300)
+	viper.SetDefault("gateway.openai_scheduler.sticky_failback_cooldown_max_seconds", 1800)
+	viper.SetDefault("gateway.openai_scheduler.sticky_failback_recovery_fast_count", 3)
+	viper.SetDefault("gateway.openai_scheduler.production_ttft_freshness_seconds", 300)
 	viper.SetDefault("gateway.openai_scheduler.sticky_failback_probe_enabled", true)
-	viper.SetDefault("gateway.openai_scheduler.sticky_failback_probe_timeout_seconds", 5)
-	viper.SetDefault("gateway.openai_scheduler.sticky_failback_probe_success_ttl_seconds", 30)
+	viper.SetDefault("gateway.openai_scheduler.sticky_failback_probe_timeout_seconds", 15)
+	viper.SetDefault("gateway.openai_scheduler.sticky_failback_probe_success_ttl_seconds", 10)
 	viper.SetDefault("gateway.openai_scheduler.sticky_failback_probe_failure_ttl_seconds", 60)
 	viper.SetDefault("gateway.openai_scheduler.previous_response_rebind_enabled", false)
 	viper.SetDefault("gateway.openai_scheduler.previous_response_rebind_only_when_current_unhealthy", true)
@@ -2139,7 +2161,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.slow_ttft_threshold_ms", 30000)
 	viper.SetDefault("gateway.openai_scheduler.slow_soft_ttft_threshold_ms", 15000)
 	viper.SetDefault("gateway.openai_scheduler.slow_recovery_ttft_ms", 10000)
-	viper.SetDefault("gateway.openai_scheduler.slow_ttft_consecutive_count", 2)
+	viper.SetDefault("gateway.openai_scheduler.priority_dominant_enabled", true)
+	viper.SetDefault("gateway.openai_scheduler.slow_ttft_consecutive_count", 3)
 	viper.SetDefault("gateway.openai_scheduler.slow_min_samples", 3)
 	viper.SetDefault("gateway.openai_scheduler.slow_cooldown_seconds", 300)
 	viper.SetDefault("gateway.openai_scheduler.slow_recovery_fast_count", 2)
@@ -2811,6 +2834,9 @@ func (c *Config) Validate() error {
 		(c.Gateway.OpenAIFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_first_output_timeout_seconds must be 0 or between 30-600 seconds")
 	}
+	if c.Gateway.OpenAIFirstOutputSameAccountRetries < 0 || c.Gateway.OpenAIFirstOutputSameAccountRetries > 3 {
+		return fmt.Errorf("gateway.openai_first_output_same_account_retries must be between 0-3")
+	}
 	if c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 1800 ||
 		(c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_high_effort_first_output_timeout_seconds must be 0 or between 30-1800 seconds")
@@ -3059,6 +3085,22 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIScheduler.StickyFailbackFailureCooldownSeconds < 0 {
 		return fmt.Errorf("gateway.openai_scheduler.sticky_failback_failure_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIScheduler.StickyFailbackRelapseWindowSeconds < 0 {
+		return fmt.Errorf("gateway.openai_scheduler.sticky_failback_relapse_window_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIScheduler.StickyFailbackCooldownIncrementSeconds < 0 {
+		return fmt.Errorf("gateway.openai_scheduler.sticky_failback_cooldown_increment_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIScheduler.StickyFailbackCooldownMaxSeconds <= 0 ||
+		c.Gateway.OpenAIScheduler.StickyFailbackCooldownMaxSeconds < c.Gateway.OpenAIScheduler.StickyFailbackFailureCooldownSeconds {
+		return fmt.Errorf("gateway.openai_scheduler.sticky_failback_cooldown_max_seconds must be positive and at least sticky_failback_failure_cooldown_seconds")
+	}
+	if c.Gateway.OpenAIScheduler.StickyFailbackRecoveryFastCount <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.sticky_failback_recovery_fast_count must be positive")
+	}
+	if c.Gateway.OpenAIScheduler.ProductionTTFTFreshnessSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_scheduler.production_ttft_freshness_seconds must be positive")
 	}
 	if c.Gateway.OpenAIScheduler.StickyFailbackProbeTimeoutSeconds < 0 {
 		return fmt.Errorf("gateway.openai_scheduler.sticky_failback_probe_timeout_seconds must be non-negative")

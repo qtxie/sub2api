@@ -222,6 +222,7 @@ type SystemSettings struct {
 	OpenAIAdvancedSchedulerEnabled                         bool
 	OpenAIAdvancedSchedulerStickyWeightedEnabled           bool
 	OpenAIAdvancedSchedulerSubscriptionPriorityEnabled     bool
+	OpenAIPriorityDominantEnabled                          bool
 	OpenAIAdvancedSchedulerLBTopK                          string
 	OpenAIAdvancedSchedulerWeightPriority                  string
 	OpenAIAdvancedSchedulerWeightLoad                      string
@@ -245,6 +246,11 @@ type SystemSettings struct {
 	OpenAIStickyPreferHigherPriorityEnabled                bool
 	OpenAIStickyPreferHigherPriorityMinIntervalSeconds     int
 	OpenAIStickyFailbackFailureCooldownSeconds             int
+	OpenAIStickyFailbackRelapseWindowSeconds               int
+	OpenAIStickyFailbackCooldownIncrementSeconds           int
+	OpenAIStickyFailbackCooldownMaxSeconds                 int
+	OpenAIStickyFailbackRecoveryFastCount                  int
+	OpenAIProductionTTFTFreshnessSeconds                   int
 	OpenAIPreviousResponseRebindEnabled                    bool
 	OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy   bool
 

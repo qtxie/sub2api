@@ -445,6 +445,30 @@ type GatewayCache interface {
 	DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error
 }
 
+type OpenAIFailbackState struct {
+	CooldownSeconds int
+	CooldownUntil   time.Time
+	LastFailbackAt  time.Time
+	FastCount       int
+}
+
+// OpenAIFailbackStateCache is an optional GatewayCache extension. The Redis
+// implementation performs each state transition atomically; services without
+// it use the process-local fallback.
+type OpenAIFailbackStateCache interface {
+	GetOpenAIFailbackState(ctx context.Context, accountID int64) (OpenAIFailbackState, error)
+	RecordOpenAIFailback(ctx context.Context, accountID int64, at time.Time, baseCooldown, ttl time.Duration) (OpenAIFailbackState, error)
+	RecordOpenAIFailbackFailure(ctx context.Context, accountID int64, at time.Time, baseCooldown, increment, maxCooldown, relapseWindow, ttl time.Duration) (OpenAIFailbackState, error)
+	RecordOpenAIFailbackProductionResult(ctx context.Context, accountID int64, at time.Time, fast bool, recoveryFastCount int, baseCooldown, ttl time.Duration) (OpenAIFailbackState, bool, error)
+}
+
+// OpenAIFailbackStateReconciler is implemented by distributed caches that can
+// merge process-local fallback state after a temporary cache outage. Keeping it
+// separate preserves compatibility with lightweight GatewayCache test doubles.
+type OpenAIFailbackStateReconciler interface {
+	ReconcileOpenAIFailbackState(ctx context.Context, accountID int64, local OpenAIFailbackState, ttl time.Duration) (OpenAIFailbackState, error)
+}
+
 // derefGroupID safely dereferences *int64 to int64, returning 0 if nil
 func derefGroupID(groupID *int64) int64 {
 	if groupID == nil {

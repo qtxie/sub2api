@@ -176,8 +176,8 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs != 10000 {
 		t.Fatalf("Gateway.OpenAIScheduler.SlowRecoveryTTFTMs = %d, want 10000", cfg.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs)
 	}
-	if cfg.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount != 2 {
-		t.Fatalf("Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount = %d, want 2", cfg.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount)
+	if cfg.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount != 3 {
+		t.Fatalf("Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount = %d, want 3", cfg.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount)
 	}
 	if cfg.Gateway.OpenAIScheduler.SlowCooldownSeconds != 300 {
 		t.Fatalf("Gateway.OpenAIScheduler.SlowCooldownSeconds = %d, want 300", cfg.Gateway.OpenAIScheduler.SlowCooldownSeconds)

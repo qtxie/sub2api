@@ -948,10 +948,35 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			stickyAccountID = accountID
 		}
 	}
+	scheduleReq := OpenAIAccountScheduleRequest{
+		GroupID:                 groupID,
+		Platform:                platform,
+		SessionHash:             sessionHash,
+		StickyAccountID:         stickyAccountID,
+		RequestedModel:          requestedModel,
+		RequiredTransport:       requiredTransport,
+		RequiredCapability:      requiredCapability,
+		RequiredImageCapability: requiredImageCapability,
+		RequireCompact:          requireCompact,
+		ExcludedIDs:             excludedIDs,
+	}
 	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
-		account, err := s.selectAccountForModelWithExclusions(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability)
-		if err != nil {
-			return nil, err
+		effectiveExcluded := make(map[int64]struct{}, len(excludedIDs))
+		for accountID := range excludedIDs {
+			effectiveExcluded[accountID] = struct{}{}
+		}
+		var account *Account
+		for {
+			var err error
+			account, err = s.selectAccountForModelWithExclusions(ctx, groupID, platform, sessionHash, requestedModel, effectiveExcluded, requireCompact, stickyAccountID, requiredCapability)
+			if err != nil {
+				return nil, err
+			}
+			scheduleReq.ExcludedIDs = effectiveExcluded
+			if s.isOpenAIAccountFastEnoughForSelection(ctx, scheduleReq, account) {
+				break
+			}
+			effectiveExcluded[account.ID] = struct{}{}
 		}
 		result, err := s.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
 		if err == nil && result != nil && result.Acquired {
@@ -1238,6 +1263,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
 				continue
 			}
+			if !s.isOpenAIAccountFastEnoughForSelection(ctx, scheduleReq, fresh) {
+				continue
+			}
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 			if err == nil && result != nil && result.Acquired {
 				selection, selectErr := s.newAcquiredSelectionResult(ctx, fresh, result.ReleaseFunc)
@@ -1270,6 +1298,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				continue
 			}
 			if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
+				continue
+			}
+			if !s.isOpenAIAccountFastEnoughForSelection(ctx, scheduleReq, fresh) {
 				continue
 			}
 			result, err := s.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
@@ -1317,6 +1348,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel, requireCompact) {
 			continue
 		}
+		if !s.isOpenAIAccountFastEnoughForSelection(ctx, scheduleReq, fresh) {
+			continue
+		}
 		return s.newSelectionResult(ctx, fresh, false, nil, &AccountWaitPlan{
 			AccountID:      fresh.ID,
 			MaxConcurrency: fresh.Concurrency,
@@ -1353,10 +1387,19 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 }
 
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
+	var (
+		result *AcquireResult
+		err    error
+	)
 	if s.concurrencyService == nil {
-		return &AcquireResult{Acquired: true, ReleaseFunc: func() {}}, nil
+		result = &AcquireResult{Acquired: true, ReleaseFunc: func() {}}
+	} else {
+		result, err = s.concurrencyService.AcquireAccountSlot(ctx, accountID, maxConcurrency)
 	}
-	return s.concurrencyService.AcquireAccountSlot(ctx, accountID, maxConcurrency)
+	if err == nil && result != nil && result.Acquired {
+		s.RecordOpenAIStickyFailbackAfterSlotAcquired(ctx, accountID)
+	}
+	return result, err
 }
 
 func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.Context, account *Account, platform string, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) *Account {

@@ -4011,6 +4011,24 @@
                   <label
                     class="text-sm font-medium text-gray-700 dark:text-gray-300"
                   >
+                    {{ t("admin.settings.openaiExperimentalScheduler.priorityDominantTitle") }}
+                  </label>
+                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{
+                      t(
+                        "admin.settings.openaiExperimentalScheduler.priorityDominantDescription",
+                      )
+                    }}
+                  </p>
+                </div>
+                <Toggle v-model="form.openai_priority_dominant_enabled" />
+              </div>
+
+              <div class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700">
+                <div>
+                  <label
+                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
                     {{ t("admin.settings.scheduling.allowUngroupedKey") }}
                   </label>
                   <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
@@ -4063,7 +4081,7 @@
                   />
                 </div>
 
-                <div class="mt-4 grid gap-4 md:grid-cols-2">
+                <div class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   <div>
                     <label
                       class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
@@ -4115,8 +4133,118 @@
                     <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                       {{
                         localText(
-                          "failback 账号再次返回 5xx 后，临时跳过该账号的时间。",
-                          "Temporarily skips a failback account after it returns another 5xx.",
+                          "failback 账号发生账号错误或达到三次慢响应后，临时跳过该账号的基础时间。",
+                          "Base skip time after a failback account has an account-attributable error or reaches three slow responses.",
+                        )
+                      }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ localText("复发窗口（秒）", "Relapse window (seconds)") }}
+                    </label>
+                    <input
+                      v-model.number="form.openai_sticky_failback_relapse_window_seconds"
+                      type="number"
+                      min="0"
+                      class="input w-40"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "切回后在此窗口内再次失败会增加冷却。",
+                          "A failure inside this window after failback increases the cooldown.",
+                        )
+                      }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ localText("冷却增量（秒）", "Cooldown increment (seconds)") }}
+                    </label>
+                    <input
+                      v-model.number="form.openai_sticky_failback_cooldown_increment_seconds"
+                      type="number"
+                      min="0"
+                      class="input w-40"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "每次快速复发在线性冷却上增加的时间。",
+                          "Time added to the linear cooldown for each quick relapse.",
+                        )
+                      }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ localText("最大冷却（秒）", "Maximum cooldown (seconds)") }}
+                    </label>
+                    <input
+                      v-model.number="form.openai_sticky_failback_cooldown_max_seconds"
+                      type="number"
+                      min="0"
+                      class="input w-40"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "线性增加的冷却不会超过此值。",
+                          "The linearly increased cooldown never exceeds this value.",
+                        )
+                      }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ localText("稳定快速次数", "Stable fast responses") }}
+                    </label>
+                    <input
+                      v-model.number="form.openai_sticky_failback_recovery_fast_count"
+                      type="number"
+                      min="1"
+                      class="input w-40"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "达到此连续快速生产响应数后，将冷却重置为基础值。",
+                          "Resets cooldown to its base after this many consecutive fast production responses.",
+                        )
+                      }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ localText("生产 TTFT 新鲜度（秒）", "Production TTFT freshness (seconds)") }}
+                    </label>
+                    <input
+                      v-model.number="form.openai_production_ttft_freshness_seconds"
+                      type="number"
+                      min="1"
+                      class="input w-40"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        localText(
+                          "生产响应速度证据的有效期；切回仍需要真实语义输出探测。",
+                          "Freshness of production speed evidence; failback still requires a real semantic-output probe.",
                         )
                       }}
                     </p>
@@ -4213,7 +4341,22 @@
                     }}
                   </p>
                 </div>
-                <Toggle v-model="form.openai_advanced_scheduler_subscription_priority_enabled" />
+                <div class="flex flex-col items-end gap-1">
+                  <Toggle
+                    v-model="form.openai_advanced_scheduler_subscription_priority_enabled"
+                    :disabled="form.openai_priority_dominant_enabled"
+                  />
+                  <span
+                    v-if="form.openai_priority_dominant_enabled"
+                    class="max-w-64 text-right text-xs text-amber-600 dark:text-amber-400"
+                  >
+                    {{
+                      t(
+                        "admin.settings.openaiExperimentalScheduler.subscriptionPriorityBlocked",
+                      )
+                    }}
+                  </span>
+                </div>
               </div>
 
               <div
@@ -8184,6 +8327,7 @@ type SettingsForm = Omit<
   openai_advanced_scheduler_enabled: boolean;
   openai_advanced_scheduler_sticky_weighted_enabled: boolean;
   openai_advanced_scheduler_subscription_priority_enabled: boolean;
+  openai_priority_dominant_enabled: boolean;
   openai_advanced_scheduler_lb_top_k: string;
   openai_advanced_scheduler_weight_priority: string;
   openai_advanced_scheduler_weight_load: string;
@@ -8197,6 +8341,11 @@ type SettingsForm = Omit<
   openai_sticky_prefer_higher_priority_enabled: boolean;
   openai_sticky_prefer_higher_priority_min_interval_seconds: number;
   openai_sticky_failback_failure_cooldown_seconds: number;
+  openai_sticky_failback_relapse_window_seconds: number;
+  openai_sticky_failback_cooldown_increment_seconds: number;
+  openai_sticky_failback_cooldown_max_seconds: number;
+  openai_sticky_failback_recovery_fast_count: number;
+  openai_production_ttft_freshness_seconds: number;
   openai_previous_response_rebind_enabled: boolean;
   openai_previous_response_rebind_only_when_current_unhealthy: boolean;
   // 系统全局平台限额 map；form 内始终归一化为全 4 平台对象（模板非空绑定依赖此不变量）
@@ -8394,6 +8543,7 @@ const form = reactive<SettingsForm>({
   openai_advanced_scheduler_enabled: false,
   openai_advanced_scheduler_sticky_weighted_enabled: false,
   openai_advanced_scheduler_subscription_priority_enabled: false,
+  openai_priority_dominant_enabled: true,
   openai_advanced_scheduler_lb_top_k: "",
   openai_advanced_scheduler_weight_priority: "",
   openai_advanced_scheduler_weight_load: "",
@@ -8405,8 +8555,13 @@ const form = reactive<SettingsForm>({
   openai_advanced_scheduler_weight_previous_response: "",
   openai_advanced_scheduler_weight_session_sticky: "",
   openai_sticky_prefer_higher_priority_enabled: false,
-  openai_sticky_prefer_higher_priority_min_interval_seconds: 60,
+  openai_sticky_prefer_higher_priority_min_interval_seconds: 5,
   openai_sticky_failback_failure_cooldown_seconds: 300,
+  openai_sticky_failback_relapse_window_seconds: 300,
+  openai_sticky_failback_cooldown_increment_seconds: 300,
+  openai_sticky_failback_cooldown_max_seconds: 1800,
+  openai_sticky_failback_recovery_fast_count: 3,
+  openai_production_ttft_freshness_seconds: 300,
   openai_previous_response_rebind_enabled: false,
   openai_previous_response_rebind_only_when_current_unhealthy: true,
   // Gateway forwarding behavior
@@ -8445,6 +8600,15 @@ const form = reactive<SettingsForm>({
   // Allow user view error requests
   allow_user_view_error_requests: false,
 });
+
+watch(
+  () => form.openai_priority_dominant_enabled,
+  (enabled) => {
+    if (enabled) {
+      form.openai_advanced_scheduler_subscription_priority_enabled = false;
+    }
+  },
+);
 
 type OpenAIAdvancedSchedulerOverrideKey =
   | "openai_advanced_scheduler_lb_top_k"
@@ -9778,7 +9942,10 @@ async function saveSettings() {
       openai_advanced_scheduler_sticky_weighted_enabled:
         form.openai_advanced_scheduler_sticky_weighted_enabled,
       openai_advanced_scheduler_subscription_priority_enabled:
+        !form.openai_priority_dominant_enabled &&
         form.openai_advanced_scheduler_subscription_priority_enabled,
+      openai_priority_dominant_enabled:
+        form.openai_priority_dominant_enabled,
       openai_advanced_scheduler_lb_top_k:
         form.openai_advanced_scheduler_lb_top_k.trim(),
       openai_advanced_scheduler_weight_priority:
@@ -9811,6 +9978,26 @@ async function saveSettings() {
       openai_sticky_failback_failure_cooldown_seconds: Math.max(
         0,
         Number(form.openai_sticky_failback_failure_cooldown_seconds) || 0,
+      ),
+      openai_sticky_failback_relapse_window_seconds: Math.max(
+        0,
+        Number(form.openai_sticky_failback_relapse_window_seconds) || 0,
+      ),
+      openai_sticky_failback_cooldown_increment_seconds: Math.max(
+        0,
+        Number(form.openai_sticky_failback_cooldown_increment_seconds) || 0,
+      ),
+      openai_sticky_failback_cooldown_max_seconds: Math.max(
+        0,
+        Number(form.openai_sticky_failback_cooldown_max_seconds) || 0,
+      ),
+      openai_sticky_failback_recovery_fast_count: Math.max(
+        1,
+        Number(form.openai_sticky_failback_recovery_fast_count) || 1,
+      ),
+      openai_production_ttft_freshness_seconds: Math.max(
+        1,
+        Number(form.openai_production_ttft_freshness_seconds) || 1,
       ),
       openai_previous_response_rebind_enabled:
         form.openai_previous_response_rebind_enabled,

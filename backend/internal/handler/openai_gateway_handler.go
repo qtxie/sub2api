@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -47,7 +48,15 @@ type openAIAccountSwitchNotifier interface {
 	Close(context.Context) error
 }
 
-const maxOpenAIFirstOutputTimeoutSwitches = 1
+type openAIFirstOutputRetryAttempt struct {
+	selection       *service.AccountSelectionResult
+	schedule        service.OpenAIAccountScheduleDecision
+	sessionHash     string
+	forwardBody     []byte
+	sessionSeed     string
+	retryNumber     int
+	deferredFailure *service.UpstreamFailoverError
+}
 
 func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedModel string) string {
 	if apiKey == nil || apiKey.Group == nil {
@@ -875,9 +884,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	genericSwitchCount := 0
-	firstOutputTimeoutSwitchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
+	firstOutputRetryCount := make(map[int64]int)
+	var firstOutputRetry *openAIFirstOutputRetryAttempt
 	var lastFailoverErr *service.UpstreamFailoverError
 	var failoverAttempt openAIAccountSwitchAttempt
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
@@ -890,21 +900,46 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 			return
 		}
-		// Select account supporting the requested model.
-		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
-			apiKey.GroupID,
-			previousResponseID,
-			sessionHash,
-			reqModel,
-			failedAccountIDs,
-			service.OpenAIUpstreamTransportAny,
-			service.OpenAIEndpointCapabilityChatCompletions,
-			requireCompact,
-			false,
-			requestPlatform,
+		var (
+			selection              *service.AccountSelectionResult
+			scheduleDecision       service.OpenAIAccountScheduleDecision
+			err                    error
+			attemptSessionHash     = sessionHash
+			attemptForwardBody     = forwardBody
+			retrySessionSeed       string
+			activeFirstOutputRetry int
+			deferredFirstOutputErr *service.UpstreamFailoverError
 		)
+		if firstOutputRetry != nil {
+			selection = firstOutputRetry.selection
+			scheduleDecision = firstOutputRetry.schedule
+			attemptSessionHash = firstOutputRetry.sessionHash
+			attemptForwardBody = firstOutputRetry.forwardBody
+			retrySessionSeed = firstOutputRetry.sessionSeed
+			activeFirstOutputRetry = firstOutputRetry.retryNumber
+			deferredFirstOutputErr = firstOutputRetry.deferredFailure
+			firstOutputRetry = nil
+			reqLog.Debug("openai.first_output_same_account_retry_selected",
+				zap.Int64("account_id", selection.Account.ID),
+				zap.Int("retry", activeFirstOutputRetry),
+			)
+		} else {
+			// Select account supporting the requested model.
+			reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+			selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapability(
+				c.Request.Context(),
+				apiKey.GroupID,
+				previousResponseID,
+				sessionHash,
+				reqModel,
+				failedAccountIDs,
+				service.OpenAIUpstreamTransportAny,
+				service.OpenAIEndpointCapabilityChatCompletions,
+				requireCompact,
+				false,
+				requestPlatform,
+			)
+		}
 		if c.Request.Context().Err() != nil {
 			if failoverAttempt.started() {
 				failoverAttempt.EventName = "openai.upstream_failover_skipped"
@@ -974,13 +1009,51 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		)
 		account := selection.Account
 		failoverAttempt = failoverAttempt.withTarget(account)
-		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
+		if activeFirstOutputRetry == 0 {
+			sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
+			attemptSessionHash = sessionHash
+		}
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
+		reqLog.Debug("openai.priority_tier_selected",
+			zap.Int64("account_id", account.ID),
+			zap.Int("priority", account.Priority),
+			zap.String("scheduler_layer", scheduleDecision.Layer),
+		)
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
-		accountReleaseFunc, acquired := h.acquireResponsesAccountSlotForFailover(c, apiKey.GroupID, sessionHash, selection, slotWaitStream, &streamStarted, reqLog)
+		var accountReleaseFunc func()
+		var acquired bool
+		if activeFirstOutputRetry > 0 {
+			accountReleaseFunc, acquired = h.acquireResponsesAccountSlotForFirstOutputRetry(c, apiKey.GroupID, attemptSessionHash, selection, slotWaitStream, &streamStarted, reqLog)
+		} else {
+			accountReleaseFunc, acquired = h.acquireResponsesAccountSlotForFailover(c, apiKey.GroupID, attemptSessionHash, selection, slotWaitStream, &streamStarted, reqLog)
+		}
 		if !acquired {
-			return
+			if activeFirstOutputRetry <= 0 || deferredFirstOutputErr == nil || c.Request.Context().Err() != nil {
+				return
+			}
+			var attemptFirstTokenMs *int
+			if deferredFirstOutputErr.AttemptLatencyMs > 0 {
+				attemptLatencyMs := int(deferredFirstOutputErr.AttemptLatencyMs)
+				attemptFirstTokenMs = &attemptLatencyMs
+			}
+			h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, reqModel, attemptFirstTokenMs)
+			h.gatewayService.RecordOpenAIStickyFailbackSlowFailure(c.Request.Context(), account.ID, deferredFirstOutputErr.StatusCode)
+			if openAIAccountSwitchBudgetExhausted(switchCount, maxAccountSwitches) {
+				h.handleFailoverExhausted(c, deferredFirstOutputErr, streamStarted)
+				return
+			}
+			failedAccountIDs[account.ID] = struct{}{}
+			lastFailoverErr = deferredFirstOutputErr
+			switchCount++
+			h.gatewayService.RecordOpenAIAccountSwitch()
+			reqLog.Warn("openai.first_output_retry_slot_unavailable",
+				zap.Int64("account_id", account.ID),
+				zap.Int("retry", activeFirstOutputRetry),
+				zap.Int("switch_count", switchCount),
+			)
+			failoverAttempt = newOpenAIAccountSwitchAttempt("openai.upstream_failover_switching", "responses", reqModel, reqStream, account, deferredFirstOutputErr.StatusCode, switchCount, maxAccountSwitches)
+			continue
 		}
 
 		// Forward request
@@ -992,12 +1065,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		var result *service.OpenAIForwardResult
 		result, err = func() (*service.OpenAIForwardResult, error) {
 			defer func() {
+				if retrySessionSeed != "" {
+					service.ClearOpenAIFirstOutputRetrySession(c)
+				}
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
+			if retrySessionSeed != "" {
+				service.SetOpenAIFirstOutputRetrySession(c, retrySessionSeed)
+			}
 			forwardCtx := service.OpenAIStreamDrainContext(c, c.Request.Context())
-			return h.gatewayService.Forward(forwardCtx, c, account, forwardBody)
+			return h.gatewayService.Forward(forwardCtx, c, account, attemptForwardBody)
 		}()
 		cyberBlockKeyHTTP := ""
 		if service.GetOpsCyberPolicy(c) != nil {
@@ -1024,6 +1103,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					if activeFirstOutputRetry > 0 {
+						reqLog.Info("openai.first_output_same_account_retry_completed",
+							zap.Int64("account_id", account.ID),
+							zap.Int("retry", activeFirstOutputRetry),
+							zap.Bool("success", false),
+							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.Int64("attempt_latency_ms", failoverErr.AttemptLatencyMs),
+						)
+					}
 					if failoverClientGone(c) {
 						if failoverAttempt.started() {
 							failoverAttempt.EventName = "openai.upstream_failover_skipped"
@@ -1037,7 +1125,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						attemptFirstTokenMs = &attemptLatencyMs
 					}
 					if failoverErr.FirstOutputTimeout {
-						h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, attemptFirstTokenMs)
 						h.notifyOpenAIAccountSwitchDetailed(c, service.OpenAIAccountSwitchNotification{
 							EventName: "openai.account_first_output_timeout", Phase: service.OpenAIAccountSwitchPhaseFailed,
 							Route: "responses", Model: reqModel, Stream: reqStream,
@@ -1055,6 +1142,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						}
 					}
 					if !canFailover {
+						if failoverErr.FirstOutputTimeout {
+							h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, reqModel, attemptFirstTokenMs)
+						}
 						responseStarted := streamStarted || c.Writer.Written()
 						finalStatus, finalReason := h.openAIFailoverTerminalNotificationDetails(failoverErr, failoverErr.Error())
 						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, finalStatus, finalReason, time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
@@ -1068,6 +1158,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						streamStarted = true
 					}
 					if !failoverErr.ShouldRetryNextAccount() {
+						if failoverErr.FirstOutputTimeout {
+							h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, reqModel, attemptFirstTokenMs)
+						}
 						finalStatus, finalReason := h.openAIFailoverTerminalNotificationDetails(failoverErr, failoverErr.Error())
 						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, finalStatus, finalReason, time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
 							StreamStarted: streamStarted,
@@ -1075,9 +1168,40 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
-					if openAIFirstOutputFailoverExhausted(failoverErr, &firstOutputTimeoutSwitchCount) {
-						h.handleFailoverExhausted(c, failoverErr, streamStarted)
-						return
+					if failoverErr.FirstOutputTimeout &&
+						openAIRequestAllowsFirstOutputRetry(c, attemptForwardBody) &&
+						h.cfg != nil &&
+						firstOutputRetryCount[account.ID] < h.cfg.Gateway.OpenAIFirstOutputSameAccountRetries {
+						retryNumber := firstOutputRetryCount[account.ID] + 1
+						retryHash, retryBody, retrySeed, retryErr := newOpenAIFirstOutputRetrySession(attemptForwardBody, retryNumber)
+						if retryErr == nil && retryHash != "" {
+							firstOutputRetryCount[account.ID] = retryNumber
+							firstOutputRetry = &openAIFirstOutputRetryAttempt{
+								selection:       h.gatewayService.NewOpenAIFirstOutputRetrySelection(account),
+								schedule:        scheduleDecision,
+								sessionHash:     retryHash,
+								forwardBody:     retryBody,
+								sessionSeed:     retrySeed,
+								retryNumber:     retryNumber,
+								deferredFailure: failoverErr,
+							}
+							reqLog.Warn("openai.first_output_same_account_retry_started",
+								zap.Int64("account_id", account.ID),
+								zap.Int("retry", retryNumber),
+								zap.Int("retry_limit", h.cfg.Gateway.OpenAIFirstOutputSameAccountRetries),
+								zap.Bool("fresh_session", true),
+								zap.Bool("duplicate_upstream_work_possible", true),
+								zap.Bool("duplicate_billing_possible", true),
+							)
+							continue
+						}
+						reqLog.Warn("openai.first_output_retry_session_failed",
+							zap.Int64("account_id", account.ID),
+							zap.Error(retryErr),
+						)
+					}
+					if failoverErr.FirstOutputTimeout {
+						h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, reqModel, attemptFirstTokenMs)
 					}
 					// 池模式：同账号重试
 					if failoverErr.RetryableOnSameAccount {
@@ -1098,13 +1222,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							continue
 						}
 					}
-					if scheduleDecision.StickySessionRebind || scheduleDecision.PreviousRebind {
+					if failoverErr.FirstOutputTimeout {
+						h.gatewayService.RecordOpenAIStickyFailbackSlowFailure(c.Request.Context(), account.ID, failoverErr.StatusCode)
+					} else {
 						h.gatewayService.RecordOpenAIStickyFailbackFailure(c.Request.Context(), account.ID, failoverErr.StatusCode)
 					}
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					timeoutFailover := failoverErr.SafeToFailoverAfterWrite
-					if !timeoutFailover && genericSwitchCount >= maxAccountSwitches {
+					if openAIAccountSwitchBudgetExhausted(switchCount, maxAccountSwitches) {
 						h.notifyOpenAIAccountSwitchFailedWithDetails(c, failoverAttempt, apiKey, subject.UserID, h.openAIFailoverFinalStatus(failoverErr.StatusCode), failoverErr.Error(), time.Since(requestStart).Milliseconds(), openAIAccountSwitchFailureDetails{
 							StreamStarted: streamStarted,
 						})
@@ -1132,9 +1258,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						zap.Bool("slow_account_failover", timeoutFailover),
 					)
 					if timeoutFailover {
-						failoverAttempt = newOpenAIAccountSwitchAttempt("openai.upstream_failover_switching", "responses", reqModel, reqStream, account, failoverErr.StatusCode, switchCount, 0)
+						failoverAttempt = newOpenAIAccountSwitchAttempt("openai.upstream_failover_switching", "responses", reqModel, reqStream, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					} else {
-						failoverAttempt = h.advanceOpenAIAccountSwitch(c, failoverAttempt, "openai.upstream_failover_switching", "responses", apiKey, subject.UserID, reqModel, reqStream, account, failoverErr.StatusCode, genericSwitchCount, maxAccountSwitches)
+						failoverAttempt = h.advanceOpenAIAccountSwitch(c, failoverAttempt, "openai.upstream_failover_switching", "responses", apiKey, subject.UserID, reqModel, reqStream, account, failoverErr.StatusCode, switchCount, maxAccountSwitches)
 					}
 					continue
 				}
@@ -1175,6 +1301,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 		}
 		if result != nil {
+			if activeFirstOutputRetry > 0 {
+				reqLog.Info("openai.first_output_same_account_retry_completed",
+					zap.Int64("account_id", account.ID),
+					zap.Int("retry", activeFirstOutputRetry),
+					zap.Bool("success", true),
+					zap.Intp("attempt_first_token_ms", result.AttemptFirstTokenMs),
+				)
+			}
 			// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
 			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
@@ -1185,9 +1319,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				schedulerTTFT = result.FirstTokenMs
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, schedulerTTFT)
+			h.gatewayService.RecordOpenAIStickyFailbackProductionResult(c.Request.Context(), account.ID, schedulerTTFT)
+			h.gatewayService.RecordOpenAIStickyFailbackProductionSlowResult(c.Request.Context(), account.ID, schedulerTTFT)
 		} else {
 			h.gatewayService.ClearOpenAITransientFailures(account.ID)
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+			h.gatewayService.RecordOpenAIStickyFailbackProductionResult(c.Request.Context(), account.ID, nil)
 		}
 		h.notifyOpenAIAccountFailbackToHighestPriority(c, "responses", apiKey, subject.UserID, reqModel, reqStream, account, scheduleDecision, requestPlatform, requireCompact, service.OpenAIUpstreamTransportAny, service.OpenAIEndpointCapabilityChatCompletions, "")
 		if failoverAttempt.started() {
@@ -1678,6 +1815,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							continue
 						}
 					}
+					h.gatewayService.RecordOpenAIStickyFailbackFailure(c.Request.Context(), account.ID, failoverErr.StatusCode)
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
@@ -1734,8 +1872,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		if result != nil {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+			h.gatewayService.RecordOpenAIStickyFailbackProductionResult(c.Request.Context(), account.ID, result.FirstTokenMs)
+			h.gatewayService.RecordOpenAIStickyFailbackProductionSlowResult(c.Request.Context(), account.ID, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
+			h.gatewayService.RecordOpenAIStickyFailbackProductionResult(c.Request.Context(), account.ID, nil)
 		}
 		h.notifyOpenAIAccountSwitchCompleted(c, failoverAttempt, apiKey, subject.UserID, account, http.StatusOK, time.Since(requestStart).Milliseconds())
 
@@ -1915,7 +2056,7 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	reqLog *zap.Logger,
 ) (func(), bool) {
 	release, acquired := h.acquireResponsesAccountSlotResult(
-		c, groupID, sessionHash, selection, reqStream, streamStarted, reqLog, true,
+		c, groupID, sessionHash, selection, reqStream, streamStarted, reqLog, true, false,
 	)
 	return release, acquired
 }
@@ -1930,7 +2071,21 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotForFailover(
 	reqLog *zap.Logger,
 ) (func(), bool) {
 	return h.acquireResponsesAccountSlotResult(
-		c, groupID, sessionHash, selection, reqStream, streamStarted, reqLog, false,
+		c, groupID, sessionHash, selection, reqStream, streamStarted, reqLog, false, false,
+	)
+}
+
+func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotForFirstOutputRetry(
+	c *gin.Context,
+	groupID *int64,
+	sessionHash string,
+	selection *service.AccountSelectionResult,
+	reqStream bool,
+	streamStarted *bool,
+	reqLog *zap.Logger,
+) (func(), bool) {
+	return h.acquireResponsesAccountSlotResult(
+		c, groupID, sessionHash, selection, reqStream, streamStarted, reqLog, false, true,
 	)
 }
 
@@ -1943,10 +2098,13 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotResult(
 	streamStarted *bool,
 	reqLog *zap.Logger,
 	releaseOnRequestDone bool,
+	suppressErrorResponse bool,
 ) (func(), bool) {
 	if selection == nil || selection.Account == nil {
-		markOpsRoutingCapacityLimited(c)
-		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
+		if !suppressErrorResponse {
+			markOpsRoutingCapacityLimited(c)
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
+		}
 		return nil, false
 	}
 
@@ -1959,11 +2117,14 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotResult(
 	}
 	account := selection.Account
 	if selection.Acquired {
+		h.gatewayService.RecordOpenAIStickyFailbackAfterSlotAcquired(ctx, account.ID)
 		return finalizeRelease(selection.ReleaseFunc), true
 	}
 	if selection.WaitPlan == nil {
-		markOpsRoutingCapacityLimited(c)
-		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
+		if !suppressErrorResponse {
+			markOpsRoutingCapacityLimited(c)
+			h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
+		}
 		return nil, false
 	}
 
@@ -1977,10 +2138,13 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotResult(
 		if ctx.Err() != nil {
 			return nil, false
 		}
-		h.handleConcurrencyError(c, err, "account", *streamStarted)
+		if !suppressErrorResponse {
+			h.handleConcurrencyError(c, err, "account", *streamStarted)
+		}
 		return nil, false
 	}
 	if fastAcquired {
+		h.gatewayService.RecordOpenAIStickyFailbackAfterSlotAcquired(ctx, account.ID)
 		if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
@@ -1998,7 +2162,9 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotResult(
 			zap.Int64("account_id", account.ID),
 			zap.Int("max_waiting", selection.WaitPlan.MaxWaiting),
 		)
-		h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", *streamStarted)
+		if !suppressErrorResponse {
+			h.handleStreamingAwareError(c, http.StatusTooManyRequests, "rate_limit_error", "Too many pending requests, please retry later", *streamStarted)
+		}
 		return nil, false
 	}
 
@@ -2024,12 +2190,15 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotResult(
 		if ctx.Err() != nil {
 			return nil, false
 		}
-		h.handleConcurrencyError(c, err, "account", *streamStarted)
+		if !suppressErrorResponse {
+			h.handleConcurrencyError(c, err, "account", *streamStarted)
+		}
 		return nil, false
 	}
 
 	// Slot acquired: no longer waiting in queue.
 	releaseWait()
+	h.gatewayService.RecordOpenAIStickyFailbackAfterSlotAcquired(ctx, account.ID)
 	if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
@@ -2276,6 +2445,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			closeOpenAIWSFailoverExhausted(wsConn, failoverErr)
 			return false
 		}
+		h.gatewayService.RecordOpenAIStickyFailbackFailure(ctx, account.ID, failoverErr.StatusCode)
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr
 		if switchCount >= maxAccountSwitches {
@@ -2509,6 +2679,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
+				h.gatewayService.RecordOpenAIStickyFailbackProductionResult(ctx, account.ID, result.FirstTokenMs)
+				h.gatewayService.RecordOpenAIStickyFailbackProductionSlowResult(ctx, account.ID, result.FirstTokenMs)
 				inboundEndpoint := GetInboundEndpoint(c)
 				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
 				quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
@@ -2582,9 +2754,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				if scheduleDecision.StickySessionRebind || scheduleDecision.PreviousRebind {
-					h.gatewayService.RecordOpenAIStickyFailbackFailure(ctx, account.ID, failoverErr.StatusCode)
-				}
 				if handleWSFailover(account, failoverErr) {
 					continue
 				}
@@ -3110,22 +3279,31 @@ func openAIForwardMayFailover(c *gin.Context, writerSizeBeforeForward int, failo
 	return failoverErr != nil && failoverErr.SafeToFailoverAfterWrite
 }
 
-func openAIRequestAllowsFailoverReplay(c *gin.Context) bool {
+func openAIRequestAllowsFirstOutputRetry(c *gin.Context, body []byte) bool {
 	if c == nil || c.Request == nil {
 		return false
 	}
-	return !failoverClientGone(c)
+	return !failoverClientGone(c) && service.IsOpenAIResponseReplayableWithoutPreviousID(body)
 }
 
-func openAIFirstOutputFailoverExhausted(failoverErr *service.UpstreamFailoverError, switchCount *int) bool {
-	if failoverErr == nil || !failoverErr.SafeToFailoverAfterWrite || switchCount == nil {
-		return false
+func newOpenAIFirstOutputRetrySession(body []byte, retryNumber int) (string, []byte, string, error) {
+	if len(body) == 0 || retryNumber <= 0 {
+		return "", nil, "", nil
 	}
-	if *switchCount >= maxOpenAIFirstOutputTimeoutSwitches {
-		return true
+	retrySeed := "first-output-retry:" + uuid.NewString()
+	retryHash := service.DeriveSessionHashFromSeed(retrySeed)
+	if retryHash == "" {
+		return "", nil, "", nil
 	}
-	*switchCount = *switchCount + 1
-	return false
+	retryBody, err := sjson.SetBytes(body, "prompt_cache_key", retrySeed)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return retryHash, retryBody, retrySeed, nil
+}
+
+func openAIAccountSwitchBudgetExhausted(switchCount, maxSwitches int) bool {
+	return switchCount >= maxSwitches
 }
 
 // errorResponse returns OpenAI API format error response

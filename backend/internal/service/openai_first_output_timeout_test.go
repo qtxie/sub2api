@@ -32,6 +32,27 @@ type firstOutputCloseTrackingBody struct {
 	once   sync.Once
 }
 
+type firstOutputTimeoutCounter struct {
+	increments atomic.Int64
+}
+
+func (c *firstOutputTimeoutCounter) IncrementTimeoutCount(context.Context, int64, int) (int64, error) {
+	return c.increments.Add(1), nil
+}
+
+func (c *firstOutputTimeoutCounter) GetTimeoutCount(context.Context, int64) (int64, error) {
+	return c.increments.Load(), nil
+}
+
+func (c *firstOutputTimeoutCounter) ResetTimeoutCount(context.Context, int64) error {
+	c.increments.Store(0)
+	return nil
+}
+
+func (c *firstOutputTimeoutCounter) GetTimeoutCountTTL(context.Context, int64) (time.Duration, error) {
+	return time.Minute, nil
+}
+
 func (b *firstOutputCloseTrackingBody) Close() error {
 	b.once.Do(func() { close(b.closed) })
 	return b.ReadCloser.Close()
@@ -155,6 +176,29 @@ func TestOpenAINativeFirstOutputTimeoutIgnoresPreambleAndCleansReader(t *testing
 	}
 }
 
+func TestOpenAINativeFirstOutputTimeoutDominatesPreSemanticIdleTimeout(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		OpenAIFirstOutputTimeoutSeconds: 2,
+		StreamDataIntervalTimeout:       1,
+		MaxLineSize:                     defaultMaxLineSize,
+	}}}
+	pr, pw := io.Pipe()
+	defer func() { _ = pw.Close() }()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
+
+	startedAt := time.Now()
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 2, Platform: PlatformOpenAI}, startedAt, "model", "model")
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.FirstOutputTimeout)
+	require.GreaterOrEqual(t, time.Since(startedAt), 1900*time.Millisecond)
+	require.NotContains(t, err.Error(), "stream data interval timeout")
+}
+
 func TestOpenAIFirstOutputTimeoutForReasoningEffort(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
 		OpenAIFirstOutputTimeoutSeconds:           120,
@@ -165,6 +209,32 @@ func TestOpenAIFirstOutputTimeoutForReasoningEffort(t *testing.T) {
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("high"))
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("xhigh"))
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("max"))
+}
+
+func TestOpenAIFirstOutputTimeoutHealthAccountingIsDeferredUntilFinalReport(t *testing.T) {
+	repo := &openAIAdvancedSchedulerSettingRepoStub{values: map[string]string{
+		SettingKeyStreamTimeoutSettings: `{"enabled":true,"action":"temp_unsched","temp_unsched_minutes":5,"threshold_count":10,"threshold_window_minutes":10}`,
+	}}
+	rateLimitSvc := NewRateLimitService(nil, nil, &config.Config{}, nil, nil)
+	rateLimitSvc.SetSettingService(NewSettingService(repo, &config.Config{}))
+	counter := &firstOutputTimeoutCounter{}
+	rateLimitSvc.SetTimeoutCounterCache(counter)
+	svc := &OpenAIGatewayService{
+		cfg:              &config.Config{},
+		rateLimitService: rateLimitSvc,
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	account := &Account{ID: 3, Platform: PlatformOpenAI}
+
+	failoverErr := svc.newOpenAIFirstOutputTimeoutError(context.Background(), c, account, time.Now().Add(-time.Second), "gpt-5.1", "low", time.Second, "semantic_output", http.Header{})
+	require.True(t, failoverErr.FirstOutputTimeout)
+	require.Zero(t, counter.increments.Load(), "an intermediate timeout must not penalize the account")
+
+	attemptLatencyMs := int(failoverErr.AttemptLatencyMs)
+	svc.ReportOpenAIAccountFirstOutputTimeout(context.Background(), account, "gpt-5.1", &attemptLatencyMs)
+	require.Equal(t, int64(1), counter.increments.Load(), "the completed retry chain must report exactly once")
 }
 
 func TestOpenAIFirstOutputStageDefaultLimitIsIndependentFromScannerLimit(t *testing.T) {

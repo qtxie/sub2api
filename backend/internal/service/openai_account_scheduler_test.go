@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -140,6 +141,75 @@ func (c schedulerTestConcurrencyCache) GetAccountWaitingCount(ctx context.Contex
 type schedulerTestGatewayCache struct {
 	sessionBindings map[string]int64
 	deletedSessions map[string]int
+}
+
+type schedulerTestFailbackStateCache struct {
+	*schedulerTestGatewayCache
+	failMutations bool
+	state         OpenAIFailbackState
+}
+
+func (c *schedulerTestFailbackStateCache) GetOpenAIFailbackState(context.Context, int64) (OpenAIFailbackState, error) {
+	return c.state, nil
+}
+
+func (c *schedulerTestFailbackStateCache) RecordOpenAIFailback(_ context.Context, _ int64, at time.Time, baseCooldown, _ time.Duration) (OpenAIFailbackState, error) {
+	if c.failMutations {
+		return OpenAIFailbackState{}, errors.New("redis unavailable")
+	}
+	c.state.LastFailbackAt = at
+	c.state.CooldownUntil = time.Time{}
+	if c.state.CooldownSeconds <= 0 {
+		c.state.CooldownSeconds = int(baseCooldown / time.Second)
+	}
+	return c.state, nil
+}
+
+func (c *schedulerTestFailbackStateCache) RecordOpenAIFailbackFailure(context.Context, int64, time.Time, time.Duration, time.Duration, time.Duration, time.Duration, time.Duration) (OpenAIFailbackState, error) {
+	if c.failMutations {
+		return OpenAIFailbackState{}, errors.New("redis unavailable")
+	}
+	return c.state, nil
+}
+
+func (c *schedulerTestFailbackStateCache) RecordOpenAIFailbackProductionResult(_ context.Context, _ int64, _ time.Time, fast bool, recoveryFastCount int, baseCooldown, _ time.Duration) (OpenAIFailbackState, bool, error) {
+	if c.failMutations {
+		return OpenAIFailbackState{}, false, errors.New("redis unavailable")
+	}
+	if c.state.LastFailbackAt.IsZero() {
+		return c.state, false, nil
+	}
+	if fast {
+		c.state.FastCount++
+	} else {
+		c.state.FastCount = 0
+	}
+	reset := c.state.FastCount >= recoveryFastCount
+	if reset {
+		c.state.CooldownSeconds = int(baseCooldown / time.Second)
+		c.state.LastFailbackAt = time.Time{}
+		c.state.FastCount = 0
+	}
+	return c.state, reset, nil
+}
+
+func (c *schedulerTestFailbackStateCache) ReconcileOpenAIFailbackState(_ context.Context, _ int64, local OpenAIFailbackState, _ time.Duration) (OpenAIFailbackState, error) {
+	if c.failMutations {
+		return OpenAIFailbackState{}, errors.New("redis unavailable")
+	}
+	if local.CooldownSeconds > c.state.CooldownSeconds {
+		c.state.CooldownSeconds = local.CooldownSeconds
+	}
+	if local.CooldownUntil.After(c.state.CooldownUntil) {
+		c.state.CooldownUntil = local.CooldownUntil
+	}
+	if local.LastFailbackAt.After(c.state.LastFailbackAt) {
+		c.state.LastFailbackAt = local.LastFailbackAt
+		c.state.FastCount = local.FastCount
+	} else if local.LastFailbackAt.Equal(c.state.LastFailbackAt) && !local.LastFailbackAt.IsZero() && local.FastCount < c.state.FastCount {
+		c.state.FastCount = local.FastCount
+	}
+	return c.state, nil
 }
 
 func (c *schedulerTestGatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -289,6 +359,9 @@ func newOpenAIAdvancedSchedulerRateLimitService(enabled string, values ...string
 	}
 	if len(values) > 1 && values[1] != "" {
 		repo.values[SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled] = values[1]
+	}
+	if len(values) > 2 && values[2] != "" {
+		repo.values[SettingKeyOpenAIPriorityDominantEnabled] = values[2]
 	}
 	return &RateLimitService{
 		settingService: NewSettingService(repo, &config.Config{}),
@@ -694,7 +767,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StickyWeightedSessionIn
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 1,
-			Priority:    100,
+			Priority:    0,
 			GroupIDs:    []int64{groupID},
 		},
 		{
@@ -795,6 +868,9 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StickyWeightedPreviousR
 		cfg:                cfg,
 		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true", "true"),
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: http.StatusOK, Reason: "probe_ok", ElapsedMs: 200}
 	}
 	store := svc.getOpenAIWSStateStore()
 	require.NoError(t, store.BindResponseAccount(ctx, groupID, "resp_weighted_unmovable", 37111, time.Hour))
@@ -1115,12 +1191,16 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyPreferHigh
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
 	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeEnabled = true
 	svc := &OpenAIGatewayService{
 		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
 		cache:              cache,
 		cfg:                cfg,
 		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: http.StatusOK, Reason: "probe_ok", ElapsedMs: 200}
 	}
 
 	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_failback", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
@@ -1233,12 +1313,16 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_PreviousResponseRebindP
 	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindEnabled = true
 	cfg.Gateway.OpenAIScheduler.PreviousResponseRebindOnlyWhenCurrentUnhealthy = false
 	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeEnabled = true
 	svc := &OpenAIGatewayService{
 		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
 		cache:              cache,
 		cfg:                cfg,
 		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: http.StatusOK, Reason: "probe_ok", ElapsedMs: 200}
 	}
 	require.NoError(t, svc.getOpenAIWSStateStore().BindResponseAccount(ctx, groupID, "resp_rebind_enabled", 37302, time.Hour))
 
@@ -1515,6 +1599,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyFailbackCo
 		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
 	}
+	svc.recordOpenAIStickyFailback(ctx, 37701)
 	svc.RecordOpenAIStickyFailbackFailure(ctx, 37701, 502)
 
 	selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_failback_cooldown", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
@@ -1791,11 +1876,15 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabledSessionS
 	cfg.Gateway.Scheduling.LoadBatchEnabled = true
 	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityEnabled = true
 	cfg.Gateway.OpenAIScheduler.StickyPreferHigherPriorityMinIntervalSeconds = 0
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeEnabled = true
 	svc := &OpenAIGatewayService{
 		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
 		cache:              cache,
 		cfg:                cfg,
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: http.StatusOK, Reason: "probe_ok", ElapsedMs: 200}
 	}
 	require.False(t, svc.isOpenAIAdvancedSchedulerEnabled(ctx))
 
@@ -2352,6 +2441,12 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyBusyKeepsS
 	cfg.Gateway.OpenAIScheduler.StickyEscapeEnabled = false
 	cfg.Gateway.OpenAIScheduler.StickyEscapeTTFTMs = 15000
 	cfg.Gateway.OpenAIScheduler.StickyEscapeErrorRate = 0.5
+	cfg.Gateway.OpenAIScheduler.SlowAccountEscapeEnabled = true
+	cfg.Gateway.OpenAIScheduler.SlowTTFTThresholdMs = 30000
+	cfg.Gateway.OpenAIScheduler.SlowSoftTTFTThresholdMs = 15000
+	cfg.Gateway.OpenAIScheduler.SlowRecoveryTTFTMs = 10000
+	cfg.Gateway.OpenAIScheduler.SlowTTFTConsecutiveCount = 3
+	cfg.Gateway.OpenAIScheduler.SlowCooldownSeconds = 300
 	cfg.Gateway.OpenAIWS.Enabled = true
 	cfg.Gateway.OpenAIWS.APIKeyEnabled = true
 	cfg.Gateway.OpenAIWS.OAuthEnabled = true
@@ -2455,9 +2550,9 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyEscapeByTT
 		selection.ReleaseFunc()
 	}
 
-	slowTTFT := 20000
+	slowTTFT := 31000
 	for i := 0; i < 3; i++ {
-		svc.openaiAccountStats.report(21101, true, &slowTTFT)
+		svc.openaiAccountStats.report(21101, true, &slowTTFT, svc.openAISlowAccountConfig())
 	}
 
 	selection, decision, err = svc.SelectAccountWithScheduler(ctx, &groupID, "", "session_hash_sticky_ttft", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
@@ -2646,7 +2741,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SubscriptionPriorityCho
 		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
 		cache:              &schedulerTestGatewayCache{},
 		cfg:                newSchedulerTestSubscriptionPriorityConfig(),
-		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true", "", "true"),
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true", "", "true", "false"),
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
 
@@ -3313,7 +3408,7 @@ func TestOpenAIAccountRuntimeStats_SlowMarkAndRecover(t *testing.T) {
 		thresholdMs:       30000,
 		softThresholdMs:   15000,
 		recoveryTTFTMs:    10000,
-		consecutiveCount:  2,
+		consecutiveCount:  3,
 		minSamples:        2,
 		cooldown:          time.Minute,
 		recoveryFastCount: 2,
@@ -3331,8 +3426,13 @@ func TestOpenAIAccountRuntimeStats_SlowMarkAndRecover(t *testing.T) {
 	require.False(t, stats.slowSnapshot(accountID, time.Now()).marked)
 
 	second := stats.report(accountID, true, &slow, cfg)
-	require.True(t, second.markedSlow)
+	require.False(t, second.markedSlow)
 	require.Equal(t, int64(6), second.slowScore)
+	require.False(t, stats.slowSnapshot(accountID, time.Now()).marked)
+
+	third := stats.report(accountID, true, &slow, cfg)
+	require.True(t, third.markedSlow)
+	require.Equal(t, int64(9), third.slowScore)
 	require.True(t, stats.slowSnapshot(accountID, time.Now()).marked)
 
 	fast := 9000
@@ -3342,7 +3442,7 @@ func TestOpenAIAccountRuntimeStats_SlowMarkAndRecover(t *testing.T) {
 
 	recovered := stats.report(accountID, true, &fast, cfg)
 	require.True(t, recovered.recoveredSlow)
-	require.Equal(t, int64(4), recovered.slowScore)
+	require.Equal(t, int64(7), recovered.slowScore)
 	require.False(t, stats.slowSnapshot(accountID, time.Now()).marked)
 }
 
@@ -3374,6 +3474,373 @@ func TestOpenAIAccountRuntimeStats_SlowScoreSoftSampleAndDecayAvoidTemporarySwit
 	require.False(t, report.markedSlow)
 	require.Equal(t, int64(0), report.slowScore)
 	require.False(t, stats.slowSnapshot(accountID, time.Now()).marked)
+}
+
+func TestOpenAIAccountRuntimeStats_OnlyThreeConsecutiveHardSlowOutcomesMark(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	cfg := normalizeOpenAISlowAccountConfig(openAISlowAccountConfig{
+		enabled: true, thresholdMs: 30000, softThresholdMs: 15000,
+		recoveryTTFTMs: 10000, consecutiveCount: 3, cooldown: time.Minute,
+		markScore: 5, skipScore: 8, maxScore: 10, decayInterval: time.Minute,
+	})
+	hardSlow := 31000
+	accountID := int64(1004)
+
+	stats.report(accountID, true, &hardSlow, cfg)
+	stats.report(accountID, true, &hardSlow, cfg)
+	stats.report(accountID, false, nil, cfg)
+	report := stats.report(accountID, true, &hardSlow, cfg)
+	require.False(t, report.markedSlow)
+	require.Equal(t, int64(1), report.slowStreak)
+
+	stats.report(accountID, true, &hardSlow, cfg)
+	report = stats.report(accountID, true, &hardSlow, cfg)
+	require.True(t, report.markedSlow)
+	require.Equal(t, int64(3), report.slowStreak)
+}
+
+func TestOpenAIAccountRuntimeStats_MinimumSamplesStillAppliesToSlowMark(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	cfg := normalizeOpenAISlowAccountConfig(openAISlowAccountConfig{
+		enabled: true, thresholdMs: 30000, softThresholdMs: 15000,
+		recoveryTTFTMs: 10000, consecutiveCount: 3, minSamples: 5, cooldown: time.Minute,
+		markScore: 5, skipScore: 8, maxScore: 10, decayInterval: time.Minute,
+	})
+	hardSlow := 31000
+	accountID := int64(1005)
+
+	for i := 0; i < 4; i++ {
+		report := stats.report(accountID, true, &hardSlow, cfg)
+		require.False(t, report.markedSlow)
+	}
+	report := stats.report(accountID, true, &hardSlow, cfg)
+	require.True(t, report.markedSlow)
+}
+
+func TestOpenAIAccountRuntimeStats_FastRecoveryClearsExpiredSlowMarker(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	cfg := normalizeOpenAISlowAccountConfig(openAISlowAccountConfig{
+		enabled: true, thresholdMs: 30000, softThresholdMs: 15000,
+		recoveryTTFTMs: 10000, consecutiveCount: 3, minSamples: 3, cooldown: time.Minute,
+		recoveryFastCount: 2, markScore: 5, skipScore: 8, maxScore: 10, decayInterval: time.Minute,
+	})
+	hardSlow := 31000
+	accountID := int64(1006)
+	for i := 0; i < 3; i++ {
+		stats.report(accountID, true, &hardSlow, cfg)
+	}
+	stats.loadOrCreate(accountID).slowUntilUnixNano.Store(time.Now().Add(-time.Second).UnixNano())
+
+	fast := 9000
+	stats.report(accountID, true, &fast, cfg)
+	report := stats.report(accountID, true, &fast, cfg)
+	require.True(t, report.recoveredSlow)
+	require.False(t, stats.slowSnapshot(accountID, time.Now()).marked)
+}
+
+func TestOpenAIAdvancedSelectionOrder_PriorityDominatesScoreAndTopK(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.PriorityDominantEnabled = true
+	svc := &OpenAIGatewayService{cfg: cfg}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc}
+	candidates := []openAIAccountCandidateScore{
+		{account: &Account{ID: 1, Priority: 0}, loadInfo: &AccountLoadInfo{}, score: -100},
+		{account: &Account{ID: 2, Priority: 0}, loadInfo: &AccountLoadInfo{}, score: -200},
+		{account: &Account{ID: 3, Priority: 5}, loadInfo: &AccountLoadInfo{}, score: 1000},
+	}
+	order := scheduler.buildOpenAISelectionOrder(OpenAIAccountScheduleRequest{}, openAIAccountLoadPlan{
+		candidates: candidates,
+		topK:       1,
+	})
+	require.Len(t, order, 3)
+	require.Equal(t, 0, order[0].account.Priority)
+	require.Equal(t, 0, order[1].account.Priority)
+	require.Equal(t, 5, order[2].account.Priority)
+}
+
+func TestOpenAIAdvancedFallbackWaitKeepsPriorityDominanceOverWeightedSticky(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(1007)
+	higher := Account{ID: 10071, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}}
+	lowerSticky := Account{ID: 10072, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 5, GroupIDs: []int64{groupID}}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.PriorityDominantEnabled = true
+	cfg.Gateway.OpenAIScheduler.StickyFailbackProbeEnabled = true
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{higher, lowerSticky}},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: http.StatusOK, Reason: "probe_ok", ElapsedMs: 200}
+	}
+	scheduler := &defaultOpenAIAccountScheduler{service: svc}
+
+	selection, _, _, _, err := scheduler.finishLoadBalanceSelectionFallback(context.Background(), OpenAIAccountScheduleRequest{
+		GroupID:                    &groupID,
+		RequestedModel:             "gpt-5.1",
+		Platform:                   PlatformOpenAI,
+		StickyWeighted:             true,
+		StickyAccountID:            lowerSticky.ID,
+		PreviousResponseReplayable: true,
+	}, openAIAccountLoadSelectionAttempt{
+		selectionOrder: []openAIAccountCandidateScore{{account: &higher}},
+		candidateCount: 2,
+		topK:           1,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, higher.ID, selection.Account.ID)
+	require.NotNil(t, selection.WaitPlan)
+	require.False(t, selection.Acquired)
+}
+
+func TestOpenAIAccountSpeedGateRequiresProbeForUnknownAndStaleEvidence(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	cfg := &config.Config{}
+	raw := &cfg.Gateway.OpenAIScheduler
+	raw.PriorityDominantEnabled = true
+	raw.StickyFailbackProbeEnabled = true
+	raw.ProductionTTFTFreshnessSeconds = 300
+	stats := newOpenAIAccountRuntimeStats()
+	lower := Account{ID: 10080, Priority: 5}
+	svc := &OpenAIGatewayService{
+		cfg:                cfg,
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{lower}},
+		openaiAccountStats: stats,
+	}
+	probeCalls := 0
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		probeCalls++
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: http.StatusOK, Reason: "probe_ok", ElapsedMs: 200}
+	}
+	req := OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1", StickyAccountID: lower.ID}
+
+	unknown := &Account{ID: 10081, Priority: 0}
+	require.True(t, svc.isOpenAIAccountFastEnoughForSelection(context.Background(), req, unknown))
+	require.Equal(t, 1, probeCalls)
+
+	stale := &Account{ID: 10082, Priority: 0}
+	fastTTFT := 1000
+	stats.report(stale.ID, true, &fastTTFT, svc.openAISlowAccountConfig())
+	stats.loadOrCreate(stale.ID).lastTTFTSampleAt.Store(time.Now().Add(-10 * time.Minute).UnixNano())
+	require.True(t, svc.isOpenAIAccountFastEnoughForSelection(context.Background(), req, stale))
+	require.Equal(t, 2, probeCalls)
+
+	fresh := &Account{ID: 10083, Priority: 0}
+	stats.report(fresh.ID, true, &fastTTFT, svc.openAISlowAccountConfig())
+	require.True(t, svc.isOpenAIAccountFastEnoughForSelection(context.Background(), req, fresh))
+	require.Equal(t, 2, probeCalls)
+}
+
+func TestOpenAIStickyFailbackRecordsRecoveryOnlyAfterSlotAcquired(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	cfg := &config.Config{}
+	raw := &cfg.Gateway.OpenAIScheduler
+	raw.PriorityDominantEnabled = true
+	raw.StickyFailbackProbeEnabled = true
+	svc := &OpenAIGatewayService{cfg: cfg}
+	account := &Account{ID: 1009, Priority: 0}
+	state := svc.localOpenAIFailbackState(account.ID)
+	state.state.CooldownSeconds = 300
+	state.state.CooldownUntil = time.Now().Add(-time.Second)
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: http.StatusOK, Reason: "probe_ok", ElapsedMs: 200}
+	}
+
+	require.True(t, svc.isOpenAIAccountFastEnoughForSelection(context.Background(), OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, account))
+	state.mu.Lock()
+	require.True(t, state.state.LastFailbackAt.IsZero())
+	state.mu.Unlock()
+
+	result, err := svc.tryAcquireAccountSlot(context.Background(), account.ID, 1)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	state.mu.Lock()
+	require.False(t, state.state.LastFailbackAt.IsZero())
+	state.mu.Unlock()
+}
+
+func TestOpenAIStickyFailbackAttemptCachePrunesExpiredEntries(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	svc.openaiStickyFailbackLastAttempt.Store("expired", openAIStickyFailbackAttemptEntry{
+		lastAttempt: time.Now().Add(-2 * time.Hour).UnixNano(),
+		expiresAt:   time.Now().Add(-time.Hour).UnixNano(),
+	})
+	svc.openaiStickyFailbackAttemptOps.Store(255)
+
+	require.True(t, svc.allowOpenAIStickyFailbackAttempt("session_hash", nil, "fresh", time.Minute))
+	_, expiredPresent := svc.openaiStickyFailbackLastAttempt.Load("expired")
+	require.False(t, expiredPresent)
+	require.False(t, svc.allowOpenAIStickyFailbackAttempt("session_hash", nil, "fresh", time.Minute))
+}
+
+func TestOpenAIAccountSpeedGateProbesExpiredSlowAccountBeforeRecovery(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	cfg := &config.Config{}
+	raw := &cfg.Gateway.OpenAIScheduler
+	raw.PriorityDominantEnabled = true
+	raw.SlowAccountEscapeEnabled = true
+	raw.SlowTTFTThresholdMs = 30000
+	raw.SlowSoftTTFTThresholdMs = 15000
+	raw.SlowRecoveryTTFTMs = 10000
+	raw.SlowTTFTConsecutiveCount = 3
+	raw.SlowMinSamples = 3
+	raw.SlowCooldownSeconds = 300
+	raw.SlowScoreMarkThreshold = 5
+	raw.SlowScoreSkipThreshold = 8
+	raw.SlowScoreMax = 10
+	raw.StickyFailbackProbeEnabled = true
+	stats := newOpenAIAccountRuntimeStats()
+	svc := &OpenAIGatewayService{cfg: cfg, openaiAccountStats: stats}
+	account := &Account{ID: 1007, Priority: 0}
+	slow := 31000
+	for i := 0; i < 3; i++ {
+		stats.report(account.ID, true, &slow, svc.openAISlowAccountConfig())
+	}
+	stats.loadOrCreate(account.ID).slowUntilUnixNano.Store(time.Now().Add(-time.Second).UnixNano())
+	probeCalls := 0
+	svc.openaiStickyFailbackProbeRunner = func(context.Context, *Account, OpenAIAccountScheduleRequest, openAIStickyPreferHigherPriorityConfig) openAIStickyFailbackProbeResult {
+		probeCalls++
+		return openAIStickyFailbackProbeResult{Healthy: true, StatusCode: http.StatusOK, Reason: "probe_ok", ElapsedMs: 200}
+	}
+
+	eligible := svc.isOpenAIAccountFastEnoughForSelection(context.Background(), OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.1"}, account)
+
+	require.True(t, eligible)
+	require.Equal(t, 1, probeCalls)
+	require.False(t, stats.slowSnapshot(account.ID, time.Now()).marked)
+	state := svc.localOpenAIFailbackState(account.ID)
+	state.mu.Lock()
+	require.True(t, state.state.LastFailbackAt.IsZero())
+	state.mu.Unlock()
+
+	result, err := svc.tryAcquireAccountSlot(context.Background(), account.ID, 1)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	state.mu.Lock()
+	require.False(t, state.state.LastFailbackAt.IsZero())
+	state.mu.Unlock()
+}
+
+func TestOpenAIStickyFailbackCooldownKeepsLocalFallbackWhenRedisRecoversEmpty(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	cfg := &config.Config{}
+	raw := &cfg.Gateway.OpenAIScheduler
+	raw.StickyFailbackFailureCooldownSeconds = 300
+	raw.StickyFailbackRelapseWindowSeconds = 300
+	raw.StickyFailbackCooldownIncrementSeconds = 300
+	raw.StickyFailbackCooldownMaxSeconds = 1800
+	raw.SlowAccountEscapeEnabled = true
+	cache := &schedulerTestFailbackStateCache{
+		schedulerTestGatewayCache: &schedulerTestGatewayCache{},
+		failMutations:             true,
+	}
+	svc := &OpenAIGatewayService{cfg: cfg, cache: cache}
+	ctx := context.Background()
+	accountID := int64(1008)
+	svc.recordOpenAIStickyFailback(ctx, accountID)
+	svc.RecordOpenAIStickyFailbackFailure(ctx, accountID, http.StatusBadGateway)
+	local := svc.localOpenAIFailbackState(accountID)
+	local.mu.Lock()
+	wantUntil := local.state.CooldownUntil
+	require.True(t, local.redisFallback)
+	local.mu.Unlock()
+	require.False(t, wantUntil.IsZero())
+
+	cache.failMutations = false
+	cache.state = OpenAIFailbackState{}
+	gotUntil, cooling := svc.openAIStickyFailbackAccountCooldown(ctx, accountID)
+
+	require.True(t, cooling)
+	require.Equal(t, wantUntil, gotUntil)
+}
+
+func TestOpenAIStickyFailbackRedisRecoveryPreservesLocalProductionWindow(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	cfg := &config.Config{}
+	raw := &cfg.Gateway.OpenAIScheduler
+	raw.StickyFailbackFailureCooldownSeconds = 300
+	raw.StickyFailbackRecoveryFastCount = 3
+	cache := &schedulerTestFailbackStateCache{
+		schedulerTestGatewayCache: &schedulerTestGatewayCache{},
+		failMutations:             true,
+	}
+	svc := &OpenAIGatewayService{cfg: cfg, cache: cache}
+	ctx := context.Background()
+	accountID := int64(1010)
+
+	svc.recordOpenAIStickyFailback(ctx, accountID)
+	local := svc.localOpenAIFailbackState(accountID)
+	local.mu.Lock()
+	wantLastFailback := local.state.LastFailbackAt
+	require.True(t, local.redisFallback)
+	local.mu.Unlock()
+	require.False(t, wantLastFailback.IsZero())
+
+	cache.failMutations = false
+	cache.state = OpenAIFailbackState{}
+	fastTTFT := 1000
+	svc.RecordOpenAIStickyFailbackProductionResult(ctx, accountID, &fastTTFT)
+
+	require.Equal(t, wantLastFailback, cache.state.LastFailbackAt)
+	require.Equal(t, 1, cache.state.FastCount)
+	local.mu.Lock()
+	require.False(t, local.redisFallback)
+	require.Equal(t, cache.state, local.state)
+	local.mu.Unlock()
+}
+
+func TestOpenAIStickyFailbackCooldown_LinearCapAndProductionReset(t *testing.T) {
+	cfg := &config.Config{}
+	raw := &cfg.Gateway.OpenAIScheduler
+	raw.StickyFailbackFailureCooldownSeconds = 300
+	raw.StickyFailbackRelapseWindowSeconds = 300
+	raw.StickyFailbackCooldownIncrementSeconds = 300
+	raw.StickyFailbackCooldownMaxSeconds = 1800
+	raw.StickyFailbackRecoveryFastCount = 3
+	raw.SlowAccountEscapeEnabled = true
+	raw.SlowTTFTThresholdMs = 30000
+	raw.SlowSoftTTFTThresholdMs = 15000
+	raw.SlowRecoveryTTFTMs = 10000
+	svc := &OpenAIGatewayService{cfg: cfg}
+	ctx := context.Background()
+	accountID := int64(1005)
+
+	for expected := 600; expected <= 1800; expected += 300 {
+		svc.recordOpenAIStickyFailback(ctx, accountID)
+		svc.RecordOpenAIStickyFailbackFailure(ctx, accountID, http.StatusBadGateway)
+		state := svc.localOpenAIFailbackState(accountID)
+		state.mu.Lock()
+		require.Equal(t, expected, state.state.CooldownSeconds)
+		state.mu.Unlock()
+	}
+	svc.recordOpenAIStickyFailback(ctx, accountID)
+	svc.RecordOpenAIStickyFailbackFailure(ctx, accountID, http.StatusBadGateway)
+	state := svc.localOpenAIFailbackState(accountID)
+	state.mu.Lock()
+	require.Equal(t, 1800, state.state.CooldownSeconds)
+	state.mu.Unlock()
+
+	svc.recordOpenAIStickyFailback(ctx, accountID)
+	fastTTFT := 1000
+	svc.RecordOpenAIStickyFailbackProductionResult(ctx, accountID, &fastTTFT)
+	svc.RecordOpenAIStickyFailbackProductionResult(ctx, accountID, &fastTTFT)
+	state.mu.Lock()
+	require.Equal(t, 1800, state.state.CooldownSeconds)
+	state.mu.Unlock()
+	svc.RecordOpenAIStickyFailbackProductionResult(ctx, accountID, &fastTTFT)
+	state.mu.Lock()
+	require.Equal(t, 300, state.state.CooldownSeconds)
+	require.True(t, state.state.LastFailbackAt.IsZero())
+	state.mu.Unlock()
 }
 
 func TestOpenAIAccountRuntimeStats_ReportConcurrent(t *testing.T) {
@@ -3681,9 +4148,21 @@ func TestOpenAIAccountSlowPenaltyStages(t *testing.T) {
 		maxScore:      10,
 	}
 
-	require.InDelta(t, 15.0, openAIAccountSlowPenalty(openAIAccountSlowSnapshot{slowScore: 3}, cfg), 1e-9)
+	require.Equal(t, 0.0, openAIAccountSlowPenalty(openAIAccountSlowSnapshot{slowScore: 3}, cfg))
 	require.InDelta(t, 60.0, openAIAccountSlowPenalty(openAIAccountSlowSnapshot{marked: true, slowScore: 6}, cfg), 1e-9)
 	require.Equal(t, 0.0, openAIAccountSlowPenalty(openAIAccountSlowSnapshot{marked: false, slowScore: 6}, cfg))
+	require.True(t, openAIAccountSlowSkip(openAIAccountSlowSnapshot{marked: true}, cfg))
+}
+
+func TestOpenAIGatewayService_MarkedSlowStateDoesNotDependOnDecayedScore(t *testing.T) {
+	stats := newOpenAIAccountRuntimeStats()
+	stat := stats.loadOrCreate(3000)
+	stat.slowUntilUnixNano.Store(time.Now().Add(time.Minute).UnixNano())
+	stat.slowScore.Store(0)
+	svc := &OpenAIGatewayService{openaiAccountStats: stats}
+
+	_, marked := svc.isOpenAIAccountMarkedSlow(3000, time.Now())
+	require.True(t, marked)
 }
 
 func TestOpenAIGatewayService_ReportScheduleResultRecordsSlowStatsWhenAdvancedSchedulerDisabled(t *testing.T) {

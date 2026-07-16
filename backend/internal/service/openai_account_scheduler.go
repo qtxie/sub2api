@@ -25,6 +25,11 @@ const (
 	openAIStickyPreferHigherPrioritySettingKey                     = "openai_sticky_prefer_higher_priority_enabled"
 	openAIStickyPreferHigherPriorityMinIntervalSettingKey          = "openai_sticky_prefer_higher_priority_min_interval_seconds"
 	openAIStickyFailbackFailureCooldownSettingKey                  = "openai_sticky_failback_failure_cooldown_seconds"
+	openAIStickyFailbackRelapseWindowSettingKey                    = "openai_sticky_failback_relapse_window_seconds"
+	openAIStickyFailbackCooldownIncrementSettingKey                = "openai_sticky_failback_cooldown_increment_seconds"
+	openAIStickyFailbackCooldownMaxSettingKey                      = "openai_sticky_failback_cooldown_max_seconds"
+	openAIStickyFailbackRecoveryFastCountSettingKey                = "openai_sticky_failback_recovery_fast_count"
+	openAIProductionTTFTFreshnessSettingKey                        = "openai_production_ttft_freshness_seconds"
 	openAIPreviousResponseRebindSettingKey                         = "openai_previous_response_rebind_enabled"
 	openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey = "openai_previous_response_rebind_only_when_current_unhealthy"
 )
@@ -44,6 +49,7 @@ type cachedOpenAIAdvancedSchedulerSetting struct {
 	enabled                     bool
 	stickyWeightedEnabled       bool
 	subscriptionPriorityEnabled bool
+	priorityDominantEnabled     bool
 	lbTopKOverride              int
 	weightOverrides             map[string]float64
 	expiresAt                   int64
@@ -53,6 +59,7 @@ type openAIAdvancedSchedulerRuntimeSettings struct {
 	enabled                     bool
 	stickyWeightedEnabled       bool
 	subscriptionPriorityEnabled bool
+	priorityDominantEnabled     bool
 	lbTopKOverride              int
 	weightOverrides             map[string]float64
 }
@@ -332,6 +339,12 @@ func (s *openAIAccountRuntimeStats) report(accountID int64, success bool, firstT
 		if len(slowCfgs) > 0 {
 			report = s.updateSlowAccountState(stat, *firstTokenMs, slowCfgs[0])
 		}
+	} else if len(slowCfgs) > 0 {
+		// A non-TTFT outcome interrupts a sequence of hard-slow requests. It is
+		// still represented by the error EWMA, but must not help reach the slow
+		// circuit's consecutive-outcome threshold.
+		stat.slowStreak.Store(0)
+		stat.fastStreak.Store(0)
 	}
 	report.errorRate, report.ttft, report.hasTTFT = s.snapshot(accountID)
 	if firstTokenMs != nil && *firstTokenMs > 0 {
@@ -388,18 +401,16 @@ func (s *openAIAccountRuntimeStats) updateSlowAccountState(stat *openAIAccountRu
 	}
 
 	report.slowScore = score
-	if sampleCount >= int64(cfg.minSamples) && score >= int64(cfg.markScore) {
+	if report.slowStreak >= int64(cfg.consecutiveCount) && sampleCount >= int64(cfg.minSamples) {
 		until := now.Add(cfg.cooldown)
 		oldUntilNano := stat.slowUntilUnixNano.Swap(until.UnixNano())
 		report.slowUntil = until
 		report.markedSlow = oldUntilNano <= nowNano
 	}
-	if score < int64(cfg.markScore) && report.fastStreak >= int64(cfg.recoveryFastCount) {
-		oldUntilNano := stat.slowUntilUnixNano.Load()
+	if report.fastStreak >= int64(cfg.recoveryFastCount) {
+		oldUntilNano := stat.slowUntilUnixNano.Swap(0)
 		if oldUntilNano > 0 {
-			if oldUntilNano <= nowNano || stat.slowUntilUnixNano.CompareAndSwap(oldUntilNano, 0) {
-				report.recoveredSlow = true
-			}
+			report.recoveredSlow = true
 		}
 	}
 	if untilNano := stat.slowUntilUnixNano.Load(); untilNano > 0 {
@@ -512,7 +523,9 @@ func (s *openAIAccountRuntimeStats) slowSnapshot(accountID int64, now time.Time)
 	}
 	if until := stat.slowUntilUnixNano.Load(); until > 0 {
 		snapshot.slowUntil = time.Unix(0, until)
-		snapshot.marked = now.Before(snapshot.slowUntil)
+		// Expiry alone does not prove recovery. Keep the speed gate closed until
+		// a real probe or enough fast production responses clear this state.
+		snapshot.marked = true
 	}
 	return snapshot
 }
@@ -568,7 +581,7 @@ func normalizeOpenAISlowAccountConfig(cfg openAISlowAccountConfig) openAISlowAcc
 		}
 	}
 	if cfg.consecutiveCount <= 0 {
-		cfg.consecutiveCount = 2
+		cfg.consecutiveCount = 3
 	}
 	if cfg.minSamples <= 0 {
 		cfg.minSamples = 3
@@ -626,7 +639,27 @@ type openAIStickyPreferHigherPriorityConfig struct {
 	probeTimeout                      time.Duration
 	probeSuccessTTL                   time.Duration
 	probeFailureTTL                   time.Duration
+	relapseWindow                     time.Duration
+	cooldownIncrement                 time.Duration
+	cooldownMax                       time.Duration
+	recoveryFastCount                 int
+	productionTTFTFreshness           time.Duration
 }
+
+type openAIFailbackRuntimeState struct {
+	opMu          sync.Mutex
+	mu            sync.Mutex
+	state         OpenAIFailbackState
+	redisFallback bool
+	version       uint64
+}
+
+type openAIStickyFailbackAttemptEntry struct {
+	lastAttempt int64
+	expiresAt   int64
+}
+
+const openAIFailbackStateTTL = 24 * time.Hour
 
 func newDefaultOpenAIAccountScheduler(service *OpenAIGatewayService, stats *openAIAccountRuntimeStats) OpenAIAccountScheduler {
 	if stats == nil {
@@ -1004,15 +1037,12 @@ func (s *defaultOpenAIAccountScheduler) shouldEscapeStickyAccount(accountID int6
 	if !cfg.enabled || s == nil || s.stats == nil || accountID <= 0 {
 		return "", 0, 0, false
 	}
-	errorRate, ttft, hasTTFT := s.stats.snapshot(accountID)
+	errorRate, ttft, _ = s.stats.snapshot(accountID)
 	if s.service != nil {
 		slowCfg := s.service.openAISlowAccountConfig()
 		if slowCfg.enabled && s.stats.slowSnapshot(accountID, time.Now()).marked {
 			return "slow_ttft", errorRate, ttft, true
 		}
-	}
-	if hasTTFT && ttft > cfg.ttftMs {
-		return "ttft", errorRate, ttft, true
 	}
 	if errorRate > cfg.errorRate {
 		return "error_rate", errorRate, ttft, true
@@ -1055,22 +1085,21 @@ func (s *OpenAIGatewayService) isOpenAIAccountMarkedSlow(accountID int64, now ti
 		return openAIAccountSlowSnapshot{}, false
 	}
 	snapshot := s.openaiAccountStats.slowSnapshot(accountID, now)
-	return snapshot, snapshot.marked && snapshot.slowScore >= int64(cfg.markScore)
+	return snapshot, snapshot.marked
 }
 
 func openAIAccountSlowSkip(snapshot openAIAccountSlowSnapshot, cfg openAISlowAccountConfig) bool {
-	return cfg.enabled && snapshot.marked && snapshot.slowScore >= int64(cfg.skipScore)
+	return cfg.enabled && snapshot.marked
+}
+
+func openAIAccountSlowCooling(snapshot openAIAccountSlowSnapshot, cfg openAISlowAccountConfig, now time.Time) bool {
+	return openAIAccountSlowSkip(snapshot, cfg) &&
+		(snapshot.slowUntil.IsZero() || now.Before(snapshot.slowUntil))
 }
 
 func openAIAccountSlowPenalty(snapshot openAIAccountSlowSnapshot, cfg openAISlowAccountConfig) float64 {
-	if !cfg.enabled || cfg.penaltyWeight <= 0 || snapshot.slowScore <= 0 {
+	if !cfg.enabled || cfg.penaltyWeight <= 0 || snapshot.slowScore <= 0 || !snapshot.marked {
 		return 0
-	}
-	if snapshot.slowScore >= int64(cfg.markScore) && !snapshot.marked {
-		return 0
-	}
-	if snapshot.slowScore < int64(cfg.markScore) {
-		return cfg.penaltyWeight * 0.25 * float64(snapshot.slowScore) / float64(cfg.markScore)
 	}
 	return cfg.penaltyWeight * float64(snapshot.slowScore) / float64(cfg.maxScore)
 }
@@ -1114,7 +1143,7 @@ func (s *defaultOpenAIAccountScheduler) filterCircuitOpenOpenAIAccountCandidates
 			continue
 		}
 		snapshot := s.stats.slowSnapshot(candidate.account.ID, now)
-		if openAIAccountSlowSkip(snapshot, cfg) {
+		if openAIAccountSlowCooling(snapshot, cfg, now) {
 			candidate.slow = true
 			candidate.slowUntil = snapshot.slowUntil
 			candidate.slowScore = snapshot.slowScore
@@ -1206,7 +1235,7 @@ func (s *OpenAIGatewayService) filterCircuitOpenOpenAIAccountsIfAlternativesExis
 			continue
 		}
 		snapshot := s.openaiAccountStats.slowSnapshot(account.ID, now)
-		if openAIAccountSlowSkip(snapshot, cfg) {
+		if openAIAccountSlowCooling(snapshot, cfg, now) {
 			slow = append(slow, slowAccount{account: account, snapshot: snapshot})
 			continue
 		}
@@ -1485,6 +1514,10 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 ) openAIAccountLoadPlan {
 	allCandidates := make([]openAIAccountCandidateScore, 0, len(filtered))
 	now := time.Now()
+	productionTTFTFreshness := time.Duration(0)
+	if s != nil && s.service != nil {
+		productionTTFTFreshness = s.service.openAIStickyPreferHigherPriorityConfig(ctx).productionTTFTFreshness
+	}
 	for _, account := range filtered {
 		loadInfo := loadMap[account.ID]
 		if loadInfo == nil {
@@ -1495,6 +1528,11 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		if s.stats != nil {
 			errorRate, ttft, hasTTFT = s.stats.snapshot(account.ID)
 			slowSnapshot = s.stats.slowSnapshot(account.ID, now)
+			if hasTTFT && productionTTFTFreshness > 0 &&
+				(slowSnapshot.lastSampleAt.IsZero() || now.Sub(slowSnapshot.lastSampleAt) > productionTTFTFreshness) {
+				ttft = 0
+				hasTTFT = false
+			}
 		}
 		allCandidates = append(allCandidates, openAIAccountCandidateScore{
 			account:   account,
@@ -1698,6 +1736,65 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		}
 		return buildOpenAIWeightedSelectionOrder(ranked, req)
 	}
+	buildPriorityDominantOrder := func(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+		if len(pool) == 0 {
+			return nil
+		}
+		byPriority := make(map[int][]openAIAccountCandidateScore)
+		priorities := make([]int, 0)
+		for _, candidate := range pool {
+			priority := openAIAccountSchedulingPriority(candidate.account)
+			if _, exists := byPriority[priority]; !exists {
+				priorities = append(priorities, priority)
+			}
+			byPriority[priority] = append(byPriority[priority], candidate)
+		}
+		sort.Ints(priorities)
+		ordered := make([]openAIAccountCandidateScore, 0, len(pool))
+		for _, priority := range priorities {
+			tier := byPriority[priority]
+			ranked := selectTopKOpenAICandidates(tier, len(tier))
+			primaryCount := plan.topK
+			if primaryCount <= 0 || primaryCount > len(ranked) {
+				primaryCount = len(ranked)
+			}
+			primary := append([]openAIAccountCandidateScore(nil), ranked[:primaryCount]...)
+			if req.StickyWeighted {
+				for _, stickyID := range []int64{req.StickyPreviousAccountID, req.StickyAccountID} {
+					for i, candidate := range ranked {
+						if stickyID > 0 && candidate.account != nil && candidate.account.ID == stickyID {
+							primary = append([]openAIAccountCandidateScore{candidate}, primary...)
+							primary = dedupeOpenAIAccountCandidateOrder(primary)
+							if i >= primaryCount {
+								ranked = append(ranked[:i], ranked[i+1:]...)
+							}
+							break
+						}
+					}
+				}
+			}
+			ordered = append(ordered, buildOpenAIWeightedSelectionOrder(primary, req)...)
+			seen := make(map[int64]struct{}, len(primary))
+			for _, candidate := range primary {
+				if candidate.account != nil {
+					seen[candidate.account.ID] = struct{}{}
+				}
+			}
+			for _, candidate := range ranked {
+				if candidate.account == nil {
+					continue
+				}
+				if _, exists := seen[candidate.account.ID]; !exists {
+					ordered = append(ordered, candidate)
+				}
+			}
+		}
+		return ordered
+	}
+	buildOrderedPool := buildSelectionOrder
+	if s.service.openAIPriorityDominantEnabled() {
+		buildOrderedPool = buildPriorityDominantOrder
+	}
 
 	if req.RequireCompact {
 		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
@@ -1711,15 +1808,31 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 			}
 		}
 		selectionOrder := make([]openAIAccountCandidateScore, 0, len(plan.allCandidates))
-		selectionOrder = append(selectionOrder, buildSelectionOrder(supported)...)
-		selectionOrder = append(selectionOrder, buildSelectionOrder(unknown)...)
+		selectionOrder = append(selectionOrder, buildOrderedPool(supported)...)
+		selectionOrder = append(selectionOrder, buildOrderedPool(unknown)...)
 		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
 			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
 		}
 		return selectionOrder
 	}
 
-	return buildSelectionOrder(plan.candidates)
+	return buildOrderedPool(plan.candidates)
+}
+
+func dedupeOpenAIAccountCandidateOrder(candidates []openAIAccountCandidateScore) []openAIAccountCandidateScore {
+	seen := make(map[int64]struct{}, len(candidates))
+	result := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.account == nil {
+			continue
+		}
+		if _, exists := seen[candidate.account.ID]; exists {
+			continue
+		}
+		seen[candidate.account.ID] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
 }
 
 func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
@@ -1772,6 +1885,9 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 			compactBlocked = true
 			continue
 		}
+		if !s.service.isOpenAIAccountFastEnoughForSelection(ctx, req, fresh) {
+			continue
+		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 		if acquireErr != nil {
 			return nil, compactBlocked, acquireErr
@@ -1793,6 +1909,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
+	priorityCeiling *int,
 ) (*AccountSelectionResult, error) {
 	if !req.StickyWeighted {
 		return nil, nil
@@ -1825,7 +1942,13 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 			}
 			continue
 		}
+		if priorityCeiling != nil && account.Priority > *priorityCeiling {
+			continue
+		}
 		if req.RequireCompact && openAICompactSupportTier(account) == 0 {
+			continue
+		}
+		if !s.service.isOpenAIAccountFastEnoughForSelection(ctx, req, account) {
 			continue
 		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, account.ID, account.Concurrency)
@@ -2080,7 +2203,12 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 		return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionError(req.RequestedModel, attempt.compactBlocked)
 	}
 
-	if stickyFallback, stickyErr := s.tryFallbackToWeightedSticky(ctx, req); stickyErr != nil {
+	var priorityCeiling *int
+	if s.service.openAIPriorityDominantEnabled() && attempt.selectionOrder[0].account != nil {
+		priority := attempt.selectionOrder[0].account.Priority
+		priorityCeiling = &priority
+	}
+	if stickyFallback, stickyErr := s.tryFallbackToWeightedSticky(ctx, req, priorityCeiling); stickyErr != nil {
 		return nil, candidateCount, topK, loadSkew, stickyErr
 	} else if stickyFallback != nil {
 		return stickyFallback, candidateCount, topK, loadSkew, nil
@@ -2100,6 +2228,9 @@ func (s *defaultOpenAIAccountScheduler) finishLoadBalanceSelectionFallback(
 		}
 		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
 			compactBlocked = true
+			continue
+		}
+		if !s.service.isOpenAIAccountFastEnoughForSelection(ctx, req, fresh) {
 			continue
 		}
 		return &AccountSelectionResult{
@@ -2177,7 +2308,7 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 			continue
 		}
 		if snapshot, marked := s.isOpenAIAccountMarkedSlow(account.ID, time.Now()); marked {
-			if !failbackCfg.probeEnabled || req.RequiredImageCapability != "" {
+			if !failbackCfg.probeEnabled {
 				s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, account.ID, "slow_ttft",
 					slog.Time("slow_until", snapshot.slowUntil),
 				)
@@ -2239,7 +2370,7 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 	})
 
 	for _, candidate := range candidates {
-		if until, cooling := s.openAIStickyFailbackAccountCooldown(candidate.account.ID); cooling {
+		if until, cooling := s.openAIStickyFailbackAccountCooldown(ctx, candidate.account.ID); cooling {
 			s.logOpenAIStickyFailbackSkipped(req, "higher_priority", current.ID, candidate.account.ID, "failback_cooldown",
 				slog.Time("cooldown_until", until),
 			)
@@ -2333,6 +2464,13 @@ func (s *OpenAIGatewayService) tryAcquireHigherPriorityOpenAIAccount(
 		if req.SessionHash != "" && !req.PreserveStickyBinding {
 			_ = s.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
 		}
+		s.recordOpenAIStickyFailback(ctx, fresh.ID)
+		slog.Info("openai.failback_switched",
+			"from_account_id", current.ID,
+			"account_id", fresh.ID,
+			"priority", fresh.Priority,
+			"probe_semantic_ttft_ms", probe.ElapsedMs,
+		)
 		return selection, "higher_priority_available", nil
 	}
 
@@ -2345,9 +2483,6 @@ func (s *OpenAIGatewayService) isOpenAIStickyFailbackProbeTooSlow(probe openAISt
 		return false
 	}
 	cfg := s.openAISlowAccountConfig()
-	if !cfg.enabled {
-		return false
-	}
 	return probe.ElapsedMs > int64(cfg.recoveryTTFTMs)
 }
 
@@ -2478,6 +2613,7 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 				enabled:                     cached.enabled,
 				stickyWeightedEnabled:       cached.stickyWeightedEnabled,
 				subscriptionPriorityEnabled: cached.subscriptionPriorityEnabled,
+				priorityDominantEnabled:     cached.priorityDominantEnabled,
 				lbTopKOverride:              cached.lbTopKOverride,
 				weightOverrides:             cloneOpenAIAdvancedSchedulerWeightOverrides(cached.weightOverrides),
 			}
@@ -2491,6 +2627,7 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 					enabled:                     cached.enabled,
 					stickyWeightedEnabled:       cached.stickyWeightedEnabled,
 					subscriptionPriorityEnabled: cached.subscriptionPriorityEnabled,
+					priorityDominantEnabled:     cached.priorityDominantEnabled,
 					lbTopKOverride:              cached.lbTopKOverride,
 					weightOverrides:             cloneOpenAIAdvancedSchedulerWeightOverrides(cached.weightOverrides),
 				}, nil
@@ -2500,6 +2637,7 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 		enabled := false
 		stickyWeightedEnabled := false
 		subscriptionPriorityEnabled := false
+		priorityDominantEnabled := s.openAIPriorityDominantConfiguredDefault()
 		lbTopKOverride := 0
 		weightOverrides := map[string]float64{}
 		if repo := s.openAIAdvancedSchedulerSettingRepo(); repo != nil {
@@ -2510,6 +2648,9 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 				enabled = strings.EqualFold(strings.TrimSpace(values[openAIAdvancedSchedulerSettingKey]), "true")
 				stickyWeightedEnabled = strings.EqualFold(strings.TrimSpace(values[SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled]), "true")
 				subscriptionPriorityEnabled = strings.EqualFold(strings.TrimSpace(values[SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled]), "true")
+				if value, ok := values[SettingKeyOpenAIPriorityDominantEnabled]; ok {
+					priorityDominantEnabled = parseOpenAIBoolSetting(value, priorityDominantEnabled)
+				}
 				lbTopKOverride = parsePositiveIntOverride(values[SettingKeyOpenAIAdvancedSchedulerLBTopK])
 				weightOverrides = parseOpenAIAdvancedSchedulerWeightOverrides(values)
 			} else {
@@ -2525,6 +2666,9 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 				enabled = strings.EqualFold(strings.TrimSpace(fallbackValues[openAIAdvancedSchedulerSettingKey]), "true")
 				stickyWeightedEnabled = strings.EqualFold(strings.TrimSpace(fallbackValues[SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled]), "true")
 				subscriptionPriorityEnabled = strings.EqualFold(strings.TrimSpace(fallbackValues[SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled]), "true")
+				if value, ok := fallbackValues[SettingKeyOpenAIPriorityDominantEnabled]; ok {
+					priorityDominantEnabled = parseOpenAIBoolSetting(value, priorityDominantEnabled)
+				}
 				lbTopKOverride = parsePositiveIntOverride(fallbackValues[SettingKeyOpenAIAdvancedSchedulerLBTopK])
 				weightOverrides = parseOpenAIAdvancedSchedulerWeightOverrides(fallbackValues)
 			}
@@ -2534,6 +2678,7 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 			enabled:                     enabled,
 			stickyWeightedEnabled:       stickyWeightedEnabled,
 			subscriptionPriorityEnabled: subscriptionPriorityEnabled,
+			priorityDominantEnabled:     priorityDominantEnabled,
 			lbTopKOverride:              lbTopKOverride,
 			weightOverrides:             cloneOpenAIAdvancedSchedulerWeightOverrides(weightOverrides),
 			expiresAt:                   time.Now().Add(openAIAdvancedSchedulerSettingCacheTTL).UnixNano(),
@@ -2542,6 +2687,7 @@ func (s *OpenAIGatewayService) openAIAdvancedSchedulerRuntimeSettings(ctx contex
 			enabled:                     enabled,
 			stickyWeightedEnabled:       stickyWeightedEnabled,
 			subscriptionPriorityEnabled: subscriptionPriorityEnabled,
+			priorityDominantEnabled:     priorityDominantEnabled,
 			lbTopKOverride:              lbTopKOverride,
 			weightOverrides:             weightOverrides,
 		}, nil
@@ -2568,8 +2714,25 @@ func (s *OpenAIGatewayService) isOpenAIAdvancedSchedulerStickyWeightedEnabled(ct
 }
 
 func (s *OpenAIGatewayService) isOpenAIAdvancedSchedulerSubscriptionPriorityEnabled(ctx context.Context) bool {
+	if s.openAIPriorityDominantEnabled() {
+		return false
+	}
 	settings := s.openAIAdvancedSchedulerRuntimeSettings(ctx)
 	return settings.enabled && settings.subscriptionPriorityEnabled
+}
+
+func (s *OpenAIGatewayService) openAIPriorityDominantEnabled() bool {
+	return s.openAIAdvancedSchedulerRuntimeSettings(context.Background()).priorityDominantEnabled
+}
+
+func (s *OpenAIGatewayService) openAIPriorityDominantConfiguredDefault() bool {
+	if s == nil || s.cfg == nil {
+		return true
+	}
+	if !openAISchedulerConfigLoaded(s.cfg.Gateway.OpenAIScheduler) {
+		return true
+	}
+	return s.cfg.Gateway.OpenAIScheduler.PriorityDominantEnabled
 }
 
 func openAIAdvancedSchedulerRuntimeSettingKeys() []string {
@@ -2577,6 +2740,7 @@ func openAIAdvancedSchedulerRuntimeSettingKeys() []string {
 		openAIAdvancedSchedulerSettingKey,
 		SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled,
 		SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled,
+		SettingKeyOpenAIPriorityDominantEnabled,
 		SettingKeyOpenAIAdvancedSchedulerLBTopK,
 	}
 	for _, spec := range openAIAdvancedSchedulerWeightOverrideSpecs() {
@@ -2929,7 +3093,7 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 	s.logOpenAIAccountSlowStateChange(accountID, report, s.openAISlowAccountConfig())
 }
 
-func (s *OpenAIGatewayService) ReportOpenAIAccountFirstOutputTimeout(_ context.Context, account *Account, attemptFirstTokenMs *int) {
+func (s *OpenAIGatewayService) ReportOpenAIAccountFirstOutputTimeout(ctx context.Context, account *Account, model string, attemptFirstTokenMs *int) {
 	if account == nil || account.ID <= 0 {
 		return
 	}
@@ -2937,6 +3101,9 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountFirstOutputTimeout(_ context.C
 	// the generic transient HTTP failure cooldown, because that would conflate
 	// slow accounts with transport/5xx health failures.
 	s.ReportOpenAIAccountScheduleResult(account.ID, false, attemptFirstTokenMs)
+	if s.rateLimitService != nil {
+		s.rateLimitService.HandleStreamTimeout(ctx, account, model)
+	}
 }
 
 func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {
@@ -3020,7 +3187,7 @@ func (s *OpenAIGatewayService) openAISlowAccountConfig() openAISlowAccountConfig
 		thresholdMs:       30000,
 		softThresholdMs:   15000,
 		recoveryTTFTMs:    10000,
-		consecutiveCount:  2,
+		consecutiveCount:  3,
 		minSamples:        3,
 		cooldown:          5 * time.Minute,
 		recoveryFastCount: 2,
@@ -3305,9 +3472,6 @@ func (s *OpenAIGatewayService) recoverOpenAIAccountSlowStateAfterProbe(accountID
 		return false
 	}
 	report := s.openaiAccountStats.recoverSlowAccountAfterProbe(accountID, cfg)
-	if !report.recoveredSlow {
-		return false
-	}
 	slog.Info("openai.account_slow_probe_recovered",
 		"account_id", accountID,
 		"group_id", derefGroupID(req.GroupID),
@@ -3323,15 +3487,100 @@ func (s *OpenAIGatewayService) recoverOpenAIAccountSlowStateAfterProbe(accountID
 	return true
 }
 
+func (s *OpenAIGatewayService) isOpenAIUnknownSpeedFailbackCandidate(ctx context.Context, req OpenAIAccountScheduleRequest, account *Account) bool {
+	if s == nil || account == nil || (s.schedulerSnapshot == nil && s.accountRepo == nil) {
+		return false
+	}
+	for _, currentAccountID := range []int64{req.StickyPreviousAccountID, req.StickyAccountID} {
+		if currentAccountID <= 0 || currentAccountID == account.ID {
+			continue
+		}
+		current, err := s.getSchedulableAccount(ctx, currentAccountID)
+		if err == nil && current != nil && account.Priority < current.Priority {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) isOpenAIAccountFastEnoughForSelection(ctx context.Context, req OpenAIAccountScheduleRequest, account *Account) bool {
+	if s == nil || account == nil || account.ID <= 0 || !s.openAIPriorityDominantEnabled() {
+		return true
+	}
+	now := time.Now()
+	slowCfg := s.openAISlowAccountConfig()
+	snapshot, markedSlow := s.isOpenAIAccountMarkedSlow(account.ID, now)
+	cooldownUntil, cooling := s.openAIStickyFailbackAccountCooldown(ctx, account.ID)
+	if cooling || (markedSlow && openAIAccountSlowCooling(snapshot, slowCfg, now)) {
+		slog.Info("openai.account_speed_gate_closed",
+			"account_id", account.ID,
+			"model", req.RequestedModel,
+			"slow_until", snapshot.slowUntil,
+			"failback_cooldown_until", cooldownUntil,
+		)
+		return false
+	}
+
+	failbackCfg := s.openAIStickyPreferHigherPriorityConfig(ctx)
+	hasFreshProductionEvidence := false
+	if s.openaiAccountStats != nil {
+		_, _, hasTTFT := s.openaiAccountStats.snapshot(account.ID)
+		freshness := failbackCfg.productionTTFTFreshness
+		hasFreshProductionEvidence = hasTTFT && freshness > 0 && !snapshot.lastSampleAt.IsZero() &&
+			now.Sub(snapshot.lastSampleAt) <= freshness
+	}
+
+	// Fresh production evidence keeps the three-strike rule authoritative: an
+	// isolated hard-slow sample does not immediately eject the account. Unknown
+	// or stale accounts still require a real semantic probe before selection.
+	needsRecoveryProbe := markedSlow || !cooldownUntil.IsZero()
+	wasMeasured := !snapshot.lastSampleAt.IsZero()
+	needsEvidenceProbe := !hasFreshProductionEvidence &&
+		(wasMeasured || s.isOpenAIUnknownSpeedFailbackCandidate(ctx, req, account))
+	if !needsRecoveryProbe && !needsEvidenceProbe {
+		return true
+	}
+	var probe openAIStickyFailbackProbeResult
+	if needsRecoveryProbe {
+		probe = s.probeOpenAIStickyFailbackCandidateFresh(ctx, req, account, failbackCfg)
+	} else {
+		probe = s.probeOpenAIStickyFailbackCandidate(ctx, req, account, failbackCfg)
+	}
+	if !probe.Healthy || s.isOpenAIStickyFailbackProbeTooSlow(probe) {
+		slog.Info("openai.account_speed_gate_probe_failed",
+			"account_id", account.ID,
+			"model", req.RequestedModel,
+			"probe_reason", probe.Reason,
+			"probe_status", probe.StatusCode,
+			"probe_elapsed_ms", probe.ElapsedMs,
+		)
+		return false
+	}
+	if markedSlow && !s.recoverOpenAIAccountSlowStateAfterProbe(account.ID, req, probe) {
+		return false
+	}
+	if needsRecoveryProbe {
+		// Do not start the relapse window yet. Selection can still lose the slot;
+		// the transition is consumed only after acquisition succeeds.
+		s.openaiStickyFailbackPending.Store(account.ID, struct{}{})
+	}
+	return true
+}
+
 func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx context.Context) openAIStickyPreferHigherPriorityConfig {
 	cfg := openAIStickyPreferHigherPriorityConfig{
 		previousResponseOnlyWhenUnhealthy: true,
-		minInterval:                       time.Minute,
+		minInterval:                       5 * time.Second,
 		failureCooldown:                   5 * time.Minute,
 		probeEnabled:                      true,
-		probeTimeout:                      5 * time.Second,
-		probeSuccessTTL:                   30 * time.Second,
+		probeTimeout:                      15 * time.Second,
+		probeSuccessTTL:                   10 * time.Second,
 		probeFailureTTL:                   time.Minute,
+		relapseWindow:                     5 * time.Minute,
+		cooldownIncrement:                 5 * time.Minute,
+		cooldownMax:                       30 * time.Minute,
+		recoveryFastCount:                 3,
+		productionTTFTFreshness:           5 * time.Minute,
 	}
 	if s == nil {
 		return cfg
@@ -3339,7 +3588,7 @@ func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx contex
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if s.cfg != nil {
+	if s.cfg != nil && openAISchedulerConfigLoaded(s.cfg.Gateway.OpenAIScheduler) {
 		raw := s.cfg.Gateway.OpenAIScheduler
 		cfg.stickyEnabled = raw.StickyPreferHigherPriorityEnabled
 		cfg.previousResponseEnabled = raw.PreviousResponseRebindEnabled
@@ -3350,6 +3599,21 @@ func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx contex
 		}
 		if raw.StickyFailbackFailureCooldownSeconds >= 0 {
 			cfg.failureCooldown = time.Duration(raw.StickyFailbackFailureCooldownSeconds) * time.Second
+		}
+		if raw.StickyFailbackRelapseWindowSeconds >= 0 {
+			cfg.relapseWindow = time.Duration(raw.StickyFailbackRelapseWindowSeconds) * time.Second
+		}
+		if raw.StickyFailbackCooldownIncrementSeconds >= 0 {
+			cfg.cooldownIncrement = time.Duration(raw.StickyFailbackCooldownIncrementSeconds) * time.Second
+		}
+		if raw.StickyFailbackCooldownMaxSeconds > 0 {
+			cfg.cooldownMax = time.Duration(raw.StickyFailbackCooldownMaxSeconds) * time.Second
+		}
+		if raw.StickyFailbackRecoveryFastCount > 0 {
+			cfg.recoveryFastCount = raw.StickyFailbackRecoveryFastCount
+		}
+		if raw.ProductionTTFTFreshnessSeconds > 0 {
+			cfg.productionTTFTFreshness = time.Duration(raw.ProductionTTFTFreshnessSeconds) * time.Second
 		}
 		if raw.StickyFailbackProbeTimeoutSeconds > 0 {
 			cfg.probeTimeout = time.Duration(raw.StickyFailbackProbeTimeoutSeconds) * time.Second
@@ -3384,6 +3648,11 @@ func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx contex
 				openAIStickyPreferHigherPrioritySettingKey,
 				openAIStickyPreferHigherPriorityMinIntervalSettingKey,
 				openAIStickyFailbackFailureCooldownSettingKey,
+				openAIStickyFailbackRelapseWindowSettingKey,
+				openAIStickyFailbackCooldownIncrementSettingKey,
+				openAIStickyFailbackCooldownMaxSettingKey,
+				openAIStickyFailbackRecoveryFastCountSettingKey,
+				openAIProductionTTFTFreshnessSettingKey,
 				openAIPreviousResponseRebindSettingKey,
 				openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey,
 			})
@@ -3396,6 +3665,21 @@ func (s *OpenAIGatewayService) openAIStickyPreferHigherPriorityConfig(ctx contex
 				}
 				if value, ok := values[openAIStickyFailbackFailureCooldownSettingKey]; ok {
 					loaded.failureCooldown = time.Duration(parseOpenAINonNegativeIntSetting(value, int(loaded.failureCooldown/time.Second))) * time.Second
+				}
+				if value, ok := values[openAIStickyFailbackRelapseWindowSettingKey]; ok {
+					loaded.relapseWindow = time.Duration(parseOpenAINonNegativeIntSetting(value, int(loaded.relapseWindow/time.Second))) * time.Second
+				}
+				if value, ok := values[openAIStickyFailbackCooldownIncrementSettingKey]; ok {
+					loaded.cooldownIncrement = time.Duration(parseOpenAINonNegativeIntSetting(value, int(loaded.cooldownIncrement/time.Second))) * time.Second
+				}
+				if value, ok := values[openAIStickyFailbackCooldownMaxSettingKey]; ok {
+					loaded.cooldownMax = time.Duration(parseOpenAINonNegativeIntSetting(value, int(loaded.cooldownMax/time.Second))) * time.Second
+				}
+				if value, ok := values[openAIStickyFailbackRecoveryFastCountSettingKey]; ok {
+					loaded.recoveryFastCount = parseOpenAINonNegativeIntSetting(value, loaded.recoveryFastCount)
+				}
+				if value, ok := values[openAIProductionTTFTFreshnessSettingKey]; ok {
+					loaded.productionTTFTFreshness = time.Duration(parseOpenAINonNegativeIntSetting(value, int(loaded.productionTTFTFreshness/time.Second))) * time.Second
 				}
 				if value, ok := values[openAIPreviousResponseRebindSettingKey]; ok {
 					loaded.previousResponseEnabled = parseOpenAIBoolSetting(value, loaded.previousResponseEnabled)
@@ -3453,50 +3737,291 @@ func (s *OpenAIGatewayService) allowOpenAIStickyFailbackAttempt(kind string, gro
 	cacheKey := fmt.Sprintf("%s:%d:%s", kind, derefGroupID(groupID), key)
 	now := time.Now().UnixNano()
 	if previous, ok := s.openaiStickyFailbackLastAttempt.Load(cacheKey); ok {
-		if previousNano, ok := previous.(int64); ok && time.Duration(now-previousNano) < minInterval {
+		if entry, ok := previous.(openAIStickyFailbackAttemptEntry); ok && time.Duration(now-entry.lastAttempt) < minInterval {
 			return false
 		}
 	}
-	s.openaiStickyFailbackLastAttempt.Store(cacheKey, now)
+	retention := 2 * minInterval
+	if retention < time.Minute {
+		retention = time.Minute
+	}
+	s.openaiStickyFailbackLastAttempt.Store(cacheKey, openAIStickyFailbackAttemptEntry{
+		lastAttempt: now,
+		expiresAt:   now + retention.Nanoseconds(),
+	})
+	if s.openaiStickyFailbackAttemptOps.Add(1)%256 == 0 {
+		s.openaiStickyFailbackLastAttempt.Range(func(storedKey, value any) bool {
+			entry, ok := value.(openAIStickyFailbackAttemptEntry)
+			if !ok || entry.expiresAt <= now {
+				s.openaiStickyFailbackLastAttempt.Delete(storedKey)
+			}
+			return true
+		})
+	}
 	return true
 }
 
-func (s *OpenAIGatewayService) RecordOpenAIStickyFailbackFailure(ctx context.Context, accountID int64, statusCode int) {
-	if s == nil || accountID <= 0 || statusCode < 500 {
+func (s *OpenAIGatewayService) failbackStateCache() OpenAIFailbackStateCache {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	store, _ := s.cache.(OpenAIFailbackStateCache)
+	return store
+}
+
+func (s *OpenAIGatewayService) reconcileLocalOpenAIFailbackState(ctx context.Context, accountID int64) bool {
+	if s == nil || accountID <= 0 {
+		return false
+	}
+	local := s.localOpenAIFailbackState(accountID)
+	local.mu.Lock()
+	if !local.redisFallback {
+		local.mu.Unlock()
+		return true
+	}
+	state := local.state
+	version := local.version
+	local.mu.Unlock()
+
+	reconciler, _ := s.cache.(OpenAIFailbackStateReconciler)
+	if reconciler == nil {
+		return false
+	}
+	merged, err := reconciler.ReconcileOpenAIFailbackState(ctx, accountID, state, openAIFailbackStateTTL)
+	if err != nil {
+		return false
+	}
+
+	local.mu.Lock()
+	defer local.mu.Unlock()
+	if !local.redisFallback {
+		return true
+	}
+	if local.version != version {
+		// A newer local transition raced the Redis merge. Leave fallback mode on;
+		// the next mutation will conservatively merge the newer version as well.
+		return false
+	}
+	local.state = merged
+	local.redisFallback = false
+	return true
+}
+
+func (s *OpenAIGatewayService) localOpenAIFailbackState(accountID int64) *openAIFailbackRuntimeState {
+	value, _ := s.openaiStickyFailbackStates.LoadOrStore(accountID, &openAIFailbackRuntimeState{})
+	state, _ := value.(*openAIFailbackRuntimeState)
+	if state == nil {
+		state = &openAIFailbackRuntimeState{}
+		s.openaiStickyFailbackStates.Store(accountID, state)
+	}
+	return state
+}
+
+func normalizeOpenAIFailbackCooldown(cfg openAIStickyPreferHigherPriorityConfig, cooldown time.Duration) time.Duration {
+	if cooldown <= 0 {
+		cooldown = cfg.failureCooldown
+	}
+	if cfg.cooldownMax > 0 && cooldown > cfg.cooldownMax {
+		cooldown = cfg.cooldownMax
+	}
+	return cooldown
+}
+
+func (s *OpenAIGatewayService) recordOpenAIStickyFailback(ctx context.Context, accountID int64) {
+	if s == nil || accountID <= 0 {
 		return
 	}
+	local := s.localOpenAIFailbackState(accountID)
+	local.opMu.Lock()
+	defer local.opMu.Unlock()
+	cfg := s.openAIStickyPreferHigherPriorityConfig(ctx)
+	now := time.Now()
+	if store := s.failbackStateCache(); store != nil && s.reconcileLocalOpenAIFailbackState(ctx, accountID) {
+		if state, err := store.RecordOpenAIFailback(ctx, accountID, now, cfg.failureCooldown, openAIFailbackStateTTL); err == nil {
+			local.mu.Lock()
+			local.state = state
+			local.redisFallback = false
+			local.mu.Unlock()
+			return
+		}
+	}
+	local.mu.Lock()
+	local.state.LastFailbackAt = now
+	local.state.FastCount = 0
+	local.state.CooldownUntil = time.Time{}
+	if local.state.CooldownSeconds <= 0 {
+		local.state.CooldownSeconds = int(cfg.failureCooldown / time.Second)
+	}
+	local.redisFallback = true
+	local.version++
+	local.mu.Unlock()
+}
+
+// RecordOpenAIStickyFailbackAfterSlotAcquired starts the relapse window only
+// after a recovery-probed account actually owns a concurrency slot.
+func (s *OpenAIGatewayService) RecordOpenAIStickyFailbackAfterSlotAcquired(ctx context.Context, accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	if _, pending := s.openaiStickyFailbackPending.LoadAndDelete(accountID); pending {
+		s.recordOpenAIStickyFailback(ctx, accountID)
+	}
+}
+
+func (s *OpenAIGatewayService) RecordOpenAIStickyFailbackFailure(ctx context.Context, accountID int64, statusCode int) {
+	if s == nil || accountID <= 0 || (statusCode > 0 && statusCode < 400) {
+		return
+	}
+	s.recordOpenAIStickyFailbackFailure(ctx, accountID, statusCode)
+}
+
+func (s *OpenAIGatewayService) RecordOpenAIStickyFailbackSlowFailure(ctx context.Context, accountID int64, statusCode int) {
+	if _, marked := s.isOpenAIAccountMarkedSlow(accountID, time.Now()); !marked {
+		return
+	}
+	s.recordOpenAIStickyFailbackFailure(ctx, accountID, statusCode)
+}
+
+func (s *OpenAIGatewayService) RecordOpenAIStickyFailbackProductionSlowResult(ctx context.Context, accountID int64, firstTokenMs *int) {
+	if firstTokenMs == nil || *firstTokenMs <= s.openAISlowAccountConfig().thresholdMs {
+		return
+	}
+	s.RecordOpenAIStickyFailbackSlowFailure(ctx, accountID, 0)
+}
+
+func (s *OpenAIGatewayService) recordOpenAIStickyFailbackFailure(ctx context.Context, accountID int64, statusCode int) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	local := s.localOpenAIFailbackState(accountID)
+	local.opMu.Lock()
+	defer local.opMu.Unlock()
 	cfg := s.openAIStickyPreferHigherPriorityConfig(ctx)
 	if cfg.failureCooldown <= 0 {
 		return
 	}
-	until := time.Now().Add(cfg.failureCooldown)
-	s.openaiStickyFailbackCooldownUntil.Store(accountID, until)
+	now := time.Now()
+	var state OpenAIFailbackState
+	if store := s.failbackStateCache(); store != nil && s.reconcileLocalOpenAIFailbackState(ctx, accountID) {
+		cached, err := store.RecordOpenAIFailbackFailure(ctx, accountID, now, cfg.failureCooldown, cfg.cooldownIncrement, cfg.cooldownMax, cfg.relapseWindow, openAIFailbackStateTTL)
+		if err == nil {
+			state = cached
+			local.mu.Lock()
+			local.state = state
+			local.redisFallback = false
+			local.mu.Unlock()
+			if state.CooldownUntil.IsZero() {
+				return
+			}
+		}
+	}
+	if state.CooldownUntil.IsZero() {
+		local.mu.Lock()
+		if local.state.LastFailbackAt.IsZero() {
+			local.mu.Unlock()
+			return
+		}
+		cooldown := time.Duration(local.state.CooldownSeconds) * time.Second
+		if !local.state.LastFailbackAt.IsZero() && now.Sub(local.state.LastFailbackAt) <= cfg.relapseWindow {
+			cooldown = normalizeOpenAIFailbackCooldown(cfg, cooldown) + cfg.cooldownIncrement
+		} else {
+			cooldown = cfg.failureCooldown
+		}
+		cooldown = normalizeOpenAIFailbackCooldown(cfg, cooldown)
+		local.state.CooldownSeconds = int(cooldown / time.Second)
+		local.state.CooldownUntil = now.Add(cooldown)
+		local.state.LastFailbackAt = time.Time{}
+		local.state.FastCount = 0
+		local.redisFallback = true
+		local.version++
+		state = local.state
+		local.mu.Unlock()
+	}
 	slog.Warn("openai.sticky_failback_account_cooldown",
 		"account_id", accountID,
 		"upstream_status", statusCode,
-		"cooldown_seconds", int(cfg.failureCooldown/time.Second),
-		"cooldown_until", until,
+		"cooldown_seconds", state.CooldownSeconds,
+		"cooldown_until", state.CooldownUntil,
 	)
 }
 
-func (s *OpenAIGatewayService) openAIStickyFailbackAccountCooldown(accountID int64) (time.Time, bool) {
+func (s *OpenAIGatewayService) RecordOpenAIStickyFailbackProductionResult(ctx context.Context, accountID int64, firstTokenMs *int) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	local := s.localOpenAIFailbackState(accountID)
+	local.opMu.Lock()
+	defer local.opMu.Unlock()
+	cfg := s.openAIStickyPreferHigherPriorityConfig(ctx)
+	fast := firstTokenMs != nil && *firstTokenMs > 0 && *firstTokenMs <= s.openAISlowAccountConfig().recoveryTTFTMs
+	if store := s.failbackStateCache(); store != nil && s.reconcileLocalOpenAIFailbackState(ctx, accountID) {
+		state, reset, err := store.RecordOpenAIFailbackProductionResult(ctx, accountID, time.Now(), fast, cfg.recoveryFastCount, cfg.failureCooldown, openAIFailbackStateTTL)
+		if err == nil {
+			local.mu.Lock()
+			local.state = state
+			local.redisFallback = false
+			local.mu.Unlock()
+			if reset {
+				slog.Info("openai.sticky_failback_cooldown_reset", "account_id", accountID, "cooldown_seconds", state.CooldownSeconds)
+			}
+			return
+		}
+	}
+	local.mu.Lock()
+	if local.state.LastFailbackAt.IsZero() {
+		local.mu.Unlock()
+		return
+	}
+	if fast {
+		local.state.FastCount++
+	} else {
+		local.state.FastCount = 0
+	}
+	reset := local.state.FastCount >= cfg.recoveryFastCount
+	if reset {
+		local.state.CooldownSeconds = int(cfg.failureCooldown / time.Second)
+		local.state.LastFailbackAt = time.Time{}
+		local.state.FastCount = 0
+	}
+	local.redisFallback = true
+	local.version++
+	state := local.state
+	local.mu.Unlock()
+	if reset {
+		slog.Info("openai.sticky_failback_cooldown_reset", "account_id", accountID, "cooldown_seconds", state.CooldownSeconds)
+	}
+}
+
+func (s *OpenAIGatewayService) openAIStickyFailbackAccountCooldown(ctx context.Context, accountID int64) (time.Time, bool) {
 	if s == nil || accountID <= 0 {
 		return time.Time{}, false
 	}
-	value, ok := s.openaiStickyFailbackCooldownUntil.Load(accountID)
-	if !ok {
-		return time.Time{}, false
+	local := s.localOpenAIFailbackState(accountID)
+	local.opMu.Lock()
+	defer local.opMu.Unlock()
+	if store := s.failbackStateCache(); store != nil {
+		if state, err := store.GetOpenAIFailbackState(ctx, accountID); err == nil {
+			local.mu.Lock()
+			if local.redisFallback {
+				cfg := s.openAIStickyPreferHigherPriorityConfig(ctx)
+				now := time.Now()
+				withinRelapseWindow := !local.state.LastFailbackAt.IsZero() &&
+					cfg.relapseWindow > 0 && now.Sub(local.state.LastFailbackAt) <= cfg.relapseWindow
+				if !local.state.CooldownUntil.IsZero() || withinRelapseWindow {
+					localState := local.state
+					local.mu.Unlock()
+					return localState.CooldownUntil, now.Before(localState.CooldownUntil)
+				}
+			}
+			local.state = state
+			local.redisFallback = false
+			local.mu.Unlock()
+			return state.CooldownUntil, time.Now().Before(state.CooldownUntil)
+		}
 	}
-	until, ok := value.(time.Time)
-	if !ok || until.IsZero() {
-		s.openaiStickyFailbackCooldownUntil.Delete(accountID)
-		return time.Time{}, false
-	}
-	if time.Now().After(until) {
-		s.openaiStickyFailbackCooldownUntil.Delete(accountID)
-		return time.Time{}, false
-	}
-	return until, true
+	local.mu.Lock()
+	defer local.mu.Unlock()
+	return local.state.CooldownUntil, time.Now().Before(local.state.CooldownUntil)
 }
 
 func (s *OpenAIGatewayService) logOpenAIStickyFailbackSkipped(req OpenAIAccountScheduleRequest, kind string, currentAccountID, candidateAccountID int64, reason string, extra ...slog.Attr) {

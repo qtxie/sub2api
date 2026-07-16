@@ -74,6 +74,25 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if err := s.normalizeOpenAIAdvancedSchedulerOverrides(settings); err != nil {
 		return nil, err
 	}
+	failbackDefaults := s.openAIStickyFailbackConfigDefaults()
+	if settings.OpenAIStickyFailbackCooldownMaxSeconds <= 0 {
+		settings.OpenAIStickyFailbackCooldownMaxSeconds = int(failbackDefaults.cooldownMax / time.Second)
+	}
+	if settings.OpenAIStickyFailbackRecoveryFastCount <= 0 {
+		settings.OpenAIStickyFailbackRecoveryFastCount = failbackDefaults.recoveryFastCount
+	}
+	if settings.OpenAIProductionTTFTFreshnessSeconds <= 0 {
+		settings.OpenAIProductionTTFTFreshnessSeconds = int(failbackDefaults.productionTTFTFreshness / time.Second)
+	}
+	if settings.OpenAIPriorityDominantEnabled && settings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled {
+		return nil, infraerrors.BadRequest("OPENAI_SCHEDULER_PRIORITY_CONFLICT", "subscription priority cannot be enabled while priority-dominant scheduling is enabled")
+	}
+	if settings.OpenAIStickyFailbackRelapseWindowSeconds < 0 || settings.OpenAIStickyFailbackCooldownIncrementSeconds < 0 {
+		return nil, infraerrors.BadRequest("INVALID_OPENAI_FAILBACK_COOLDOWN", "failback relapse window and cooldown increment must be non-negative")
+	}
+	if settings.OpenAIStickyFailbackCooldownMaxSeconds < settings.OpenAIStickyFailbackFailureCooldownSeconds {
+		return nil, infraerrors.BadRequest("INVALID_OPENAI_FAILBACK_COOLDOWN", "failback cooldown maximum must be at least the base cooldown")
+	}
 	settings.PaymentVisibleMethodAlipaySource = alipaySource
 	settings.PaymentVisibleMethodWxpaySource = wxpaySource
 	settings.WeChatConnectAppID = strings.TrimSpace(settings.WeChatConnectAppID)
@@ -385,6 +404,7 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[openAIAdvancedSchedulerSettingKey] = strconv.FormatBool(settings.OpenAIAdvancedSchedulerEnabled)
 	updates[SettingKeyOpenAIAdvancedSchedulerStickyWeightedEnabled] = strconv.FormatBool(settings.OpenAIAdvancedSchedulerStickyWeightedEnabled)
 	updates[SettingKeyOpenAIAdvancedSchedulerSubscriptionPriorityEnabled] = strconv.FormatBool(settings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled)
+	updates[SettingKeyOpenAIPriorityDominantEnabled] = strconv.FormatBool(settings.OpenAIPriorityDominantEnabled)
 	updates[SettingKeyOpenAIAdvancedSchedulerLBTopK] = settings.OpenAIAdvancedSchedulerLBTopK
 	updates[SettingKeyOpenAIAdvancedSchedulerWeightPriority] = settings.OpenAIAdvancedSchedulerWeightPriority
 	updates[SettingKeyOpenAIAdvancedSchedulerWeightLoad] = settings.OpenAIAdvancedSchedulerWeightLoad
@@ -398,6 +418,11 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[openAIStickyPreferHigherPrioritySettingKey] = strconv.FormatBool(settings.OpenAIStickyPreferHigherPriorityEnabled)
 	updates[openAIStickyPreferHigherPriorityMinIntervalSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds))
 	updates[openAIStickyFailbackFailureCooldownSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackFailureCooldownSeconds))
+	updates[openAIStickyFailbackRelapseWindowSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackRelapseWindowSeconds))
+	updates[openAIStickyFailbackCooldownIncrementSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackCooldownIncrementSeconds))
+	updates[openAIStickyFailbackCooldownMaxSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackCooldownMaxSeconds))
+	updates[openAIStickyFailbackRecoveryFastCountSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackRecoveryFastCount))
+	updates[openAIProductionTTFTFreshnessSettingKey] = strconv.Itoa(nonNegativeInt(settings.OpenAIProductionTTFTFreshnessSeconds))
 	updates[openAIPreviousResponseRebindSettingKey] = strconv.FormatBool(settings.OpenAIPreviousResponseRebindEnabled)
 	updates[openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey] = strconv.FormatBool(settings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy)
 	if err := s.filterOpenAIStickyFailbackDefaultUpdates(ctx, updates, settings); err != nil {
@@ -465,6 +490,11 @@ func (s *SettingService) filterOpenAIStickyFailbackDefaultUpdates(ctx context.Co
 		openAIStickyPreferHigherPrioritySettingKey,
 		openAIStickyPreferHigherPriorityMinIntervalSettingKey,
 		openAIStickyFailbackFailureCooldownSettingKey,
+		openAIStickyFailbackRelapseWindowSettingKey,
+		openAIStickyFailbackCooldownIncrementSettingKey,
+		openAIStickyFailbackCooldownMaxSettingKey,
+		openAIStickyFailbackRecoveryFastCountSettingKey,
+		openAIProductionTTFTFreshnessSettingKey,
 		openAIPreviousResponseRebindSettingKey,
 		openAIPreviousResponseRebindOnlyWhenCurrentUnhealthySettingKey,
 	}
@@ -492,6 +522,21 @@ func (s *SettingService) filterOpenAIStickyFailbackDefaultUpdates(ctx context.Co
 	deleteIfImplicitDefault(openAIStickyFailbackFailureCooldownSettingKey,
 		strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackFailureCooldownSeconds)),
 		strconv.Itoa(int(defaults.failureCooldown/time.Second)))
+	deleteIfImplicitDefault(openAIStickyFailbackRelapseWindowSettingKey,
+		strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackRelapseWindowSeconds)),
+		strconv.Itoa(int(defaults.relapseWindow/time.Second)))
+	deleteIfImplicitDefault(openAIStickyFailbackCooldownIncrementSettingKey,
+		strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackCooldownIncrementSeconds)),
+		strconv.Itoa(int(defaults.cooldownIncrement/time.Second)))
+	deleteIfImplicitDefault(openAIStickyFailbackCooldownMaxSettingKey,
+		strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackCooldownMaxSeconds)),
+		strconv.Itoa(int(defaults.cooldownMax/time.Second)))
+	deleteIfImplicitDefault(openAIStickyFailbackRecoveryFastCountSettingKey,
+		strconv.Itoa(nonNegativeInt(settings.OpenAIStickyFailbackRecoveryFastCount)),
+		strconv.Itoa(defaults.recoveryFastCount))
+	deleteIfImplicitDefault(openAIProductionTTFTFreshnessSettingKey,
+		strconv.Itoa(nonNegativeInt(settings.OpenAIProductionTTFTFreshnessSeconds)),
+		strconv.Itoa(int(defaults.productionTTFTFreshness/time.Second)))
 	deleteIfImplicitDefault(openAIPreviousResponseRebindSettingKey,
 		strconv.FormatBool(settings.OpenAIPreviousResponseRebindEnabled),
 		strconv.FormatBool(defaults.previousResponseEnabled))
@@ -504,12 +549,17 @@ func (s *SettingService) filterOpenAIStickyFailbackDefaultUpdates(ctx context.Co
 func (s *SettingService) openAIStickyFailbackConfigDefaults() openAIStickyPreferHigherPriorityConfig {
 	cfg := openAIStickyPreferHigherPriorityConfig{
 		previousResponseOnlyWhenUnhealthy: true,
-		minInterval:                       time.Minute,
+		minInterval:                       5 * time.Second,
 		failureCooldown:                   5 * time.Minute,
 		probeEnabled:                      true,
-		probeTimeout:                      5 * time.Second,
-		probeSuccessTTL:                   30 * time.Second,
+		probeTimeout:                      15 * time.Second,
+		probeSuccessTTL:                   10 * time.Second,
 		probeFailureTTL:                   time.Minute,
+		relapseWindow:                     5 * time.Minute,
+		cooldownIncrement:                 5 * time.Minute,
+		cooldownMax:                       30 * time.Minute,
+		recoveryFastCount:                 3,
+		productionTTFTFreshness:           5 * time.Minute,
 	}
 	if s == nil || s.cfg == nil {
 		return cfg
@@ -528,6 +578,21 @@ func (s *SettingService) openAIStickyFailbackConfigDefaults() openAIStickyPrefer
 	if raw.StickyFailbackFailureCooldownSeconds >= 0 {
 		cfg.failureCooldown = time.Duration(raw.StickyFailbackFailureCooldownSeconds) * time.Second
 	}
+	if raw.StickyFailbackRelapseWindowSeconds >= 0 {
+		cfg.relapseWindow = time.Duration(raw.StickyFailbackRelapseWindowSeconds) * time.Second
+	}
+	if raw.StickyFailbackCooldownIncrementSeconds >= 0 {
+		cfg.cooldownIncrement = time.Duration(raw.StickyFailbackCooldownIncrementSeconds) * time.Second
+	}
+	if raw.StickyFailbackCooldownMaxSeconds > 0 {
+		cfg.cooldownMax = time.Duration(raw.StickyFailbackCooldownMaxSeconds) * time.Second
+	}
+	if raw.StickyFailbackRecoveryFastCount > 0 {
+		cfg.recoveryFastCount = raw.StickyFailbackRecoveryFastCount
+	}
+	if raw.ProductionTTFTFreshnessSeconds > 0 {
+		cfg.productionTTFTFreshness = time.Duration(raw.ProductionTTFTFreshnessSeconds) * time.Second
+	}
 	if raw.StickyFailbackProbeTimeoutSeconds > 0 {
 		cfg.probeTimeout = time.Duration(raw.StickyFailbackProbeTimeoutSeconds) * time.Second
 	}
@@ -541,12 +606,18 @@ func (s *SettingService) openAIStickyFailbackConfigDefaults() openAIStickyPrefer
 }
 
 func openAISchedulerConfigLoaded(raw config.GatewayOpenAISchedulerConfig) bool {
-	return raw.StickyEscapeEnabled ||
+	return raw.PriorityDominantEnabled ||
+		raw.StickyEscapeEnabled ||
 		raw.StickyEscapeTTFTMs != 0 ||
 		raw.StickyEscapeErrorRate != 0 ||
 		raw.StickyPreferHigherPriorityEnabled ||
 		raw.StickyPreferHigherPriorityMinIntervalSeconds != 0 ||
 		raw.StickyFailbackFailureCooldownSeconds != 0 ||
+		raw.StickyFailbackRelapseWindowSeconds != 0 ||
+		raw.StickyFailbackCooldownIncrementSeconds != 0 ||
+		raw.StickyFailbackCooldownMaxSeconds != 0 ||
+		raw.StickyFailbackRecoveryFastCount != 0 ||
+		raw.ProductionTTFTFreshnessSeconds != 0 ||
 		raw.StickyFailbackProbeEnabled ||
 		raw.StickyFailbackProbeTimeoutSeconds != 0 ||
 		raw.StickyFailbackProbeSuccessTTLSeconds != 0 ||
@@ -658,6 +729,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 		enabled:                     settings.OpenAIAdvancedSchedulerEnabled,
 		stickyWeightedEnabled:       settings.OpenAIAdvancedSchedulerStickyWeightedEnabled,
 		subscriptionPriorityEnabled: settings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled,
+		priorityDominantEnabled:     settings.OpenAIPriorityDominantEnabled,
 		lbTopKOverride:              parsePositiveIntOverride(settings.OpenAIAdvancedSchedulerLBTopK),
 		weightOverrides: parseOpenAIAdvancedSchedulerWeightOverrides(map[string]string{
 			SettingKeyOpenAIAdvancedSchedulerWeightPriority:         settings.OpenAIAdvancedSchedulerWeightPriority,
@@ -679,6 +751,11 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	stickyFailbackCfg.previousResponseOnlyWhenUnhealthy = settings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy
 	stickyFailbackCfg.minInterval = time.Duration(nonNegativeInt(settings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds)) * time.Second
 	stickyFailbackCfg.failureCooldown = time.Duration(nonNegativeInt(settings.OpenAIStickyFailbackFailureCooldownSeconds)) * time.Second
+	stickyFailbackCfg.relapseWindow = time.Duration(nonNegativeInt(settings.OpenAIStickyFailbackRelapseWindowSeconds)) * time.Second
+	stickyFailbackCfg.cooldownIncrement = time.Duration(nonNegativeInt(settings.OpenAIStickyFailbackCooldownIncrementSeconds)) * time.Second
+	stickyFailbackCfg.cooldownMax = time.Duration(nonNegativeInt(settings.OpenAIStickyFailbackCooldownMaxSeconds)) * time.Second
+	stickyFailbackCfg.recoveryFastCount = nonNegativeInt(settings.OpenAIStickyFailbackRecoveryFastCount)
+	stickyFailbackCfg.productionTTFTFreshness = time.Duration(nonNegativeInt(settings.OpenAIProductionTTFTFreshnessSeconds)) * time.Second
 	openAIStickyPreferHigherPrioritySettingCache.Store(&cachedOpenAIStickyPreferHigherPrioritySetting{
 		cfg:       stickyFailbackCfg,
 		expiresAt: time.Now().Add(openAIAdvancedSchedulerSettingCacheTTL).UnixNano(),

@@ -224,6 +224,7 @@ func TestSettingHandler_UpdateSettings_PersistsPaymentVisibleMethodsAndAdvancedS
 		"payment_visible_method_wxpay_enabled":                    false,
 		"openai_advanced_scheduler_enabled":                       true,
 		"openai_advanced_scheduler_subscription_priority_enabled": true,
+		"openai_priority_dominant_enabled":                        false,
 	}
 	rawBody, err := json.Marshal(body)
 	require.NoError(t, err)

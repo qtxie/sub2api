@@ -246,6 +246,7 @@ type UpdateSettingsRequest struct {
 	OpenAIAdvancedSchedulerEnabled                       *bool   `json:"openai_advanced_scheduler_enabled"`
 	OpenAIAdvancedSchedulerStickyWeightedEnabled         *bool   `json:"openai_advanced_scheduler_sticky_weighted_enabled"`
 	OpenAIAdvancedSchedulerSubscriptionPriorityEnabled   *bool   `json:"openai_advanced_scheduler_subscription_priority_enabled"`
+	OpenAIPriorityDominantEnabled                        *bool   `json:"openai_priority_dominant_enabled"`
 	OpenAIAdvancedSchedulerLBTopK                        *string `json:"openai_advanced_scheduler_lb_top_k"`
 	OpenAIAdvancedSchedulerWeightPriority                *string `json:"openai_advanced_scheduler_weight_priority"`
 	OpenAIAdvancedSchedulerWeightLoad                    *string `json:"openai_advanced_scheduler_weight_load"`
@@ -259,6 +260,11 @@ type UpdateSettingsRequest struct {
 	OpenAIStickyPreferHigherPriorityEnabled              *bool   `json:"openai_sticky_prefer_higher_priority_enabled"`
 	OpenAIStickyPreferHigherPriorityMinIntervalSeconds   *int    `json:"openai_sticky_prefer_higher_priority_min_interval_seconds"`
 	OpenAIStickyFailbackFailureCooldownSeconds           *int    `json:"openai_sticky_failback_failure_cooldown_seconds"`
+	OpenAIStickyFailbackRelapseWindowSeconds             *int    `json:"openai_sticky_failback_relapse_window_seconds"`
+	OpenAIStickyFailbackCooldownIncrementSeconds         *int    `json:"openai_sticky_failback_cooldown_increment_seconds"`
+	OpenAIStickyFailbackCooldownMaxSeconds               *int    `json:"openai_sticky_failback_cooldown_max_seconds"`
+	OpenAIStickyFailbackRecoveryFastCount                *int    `json:"openai_sticky_failback_recovery_fast_count"`
+	OpenAIProductionTTFTFreshnessSeconds                 *int    `json:"openai_production_ttft_freshness_seconds"`
 	OpenAIPreviousResponseRebindEnabled                  *bool   `json:"openai_previous_response_rebind_enabled"`
 	OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy *bool   `json:"openai_previous_response_rebind_only_when_current_unhealthy"`
 
@@ -350,6 +356,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	previousAuthSourceDefaults, err := h.settingService.GetAuthSourceDefaultSettings(c.Request.Context())
 	if err != nil {
 		response.ErrorFrom(c, err)
+		return
+	}
+	if (req.OpenAIStickyFailbackRelapseWindowSeconds != nil && *req.OpenAIStickyFailbackRelapseWindowSeconds < 0) ||
+		(req.OpenAIStickyFailbackCooldownIncrementSeconds != nil && *req.OpenAIStickyFailbackCooldownIncrementSeconds < 0) ||
+		(req.OpenAIStickyFailbackCooldownMaxSeconds != nil && *req.OpenAIStickyFailbackCooldownMaxSeconds <= 0) ||
+		(req.OpenAIStickyFailbackRecoveryFastCount != nil && *req.OpenAIStickyFailbackRecoveryFastCount <= 0) ||
+		(req.OpenAIProductionTTFTFreshnessSeconds != nil && *req.OpenAIProductionTTFTFreshnessSeconds <= 0) {
+		response.BadRequest(c, "OpenAI failback cooldown maximum, recovery count, and TTFT freshness must be positive; relapse window and increment must be non-negative")
 		return
 	}
 
@@ -1452,6 +1466,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled
 		}(),
+		OpenAIPriorityDominantEnabled: func() bool {
+			if req.OpenAIPriorityDominantEnabled != nil {
+				return *req.OpenAIPriorityDominantEnabled
+			}
+			return previousSettings.OpenAIPriorityDominantEnabled
+		}(),
 		OpenAIAdvancedSchedulerLBTopK:                 stringSetting(req.OpenAIAdvancedSchedulerLBTopK, previousSettings.OpenAIAdvancedSchedulerLBTopK),
 		OpenAIAdvancedSchedulerWeightPriority:         stringSetting(req.OpenAIAdvancedSchedulerWeightPriority, previousSettings.OpenAIAdvancedSchedulerWeightPriority),
 		OpenAIAdvancedSchedulerWeightLoad:             stringSetting(req.OpenAIAdvancedSchedulerWeightLoad, previousSettings.OpenAIAdvancedSchedulerWeightLoad),
@@ -1479,6 +1499,36 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.OpenAIStickyFailbackFailureCooldownSeconds
 			}
 			return previousSettings.OpenAIStickyFailbackFailureCooldownSeconds
+		}(),
+		OpenAIStickyFailbackRelapseWindowSeconds: func() int {
+			if req.OpenAIStickyFailbackRelapseWindowSeconds != nil {
+				return *req.OpenAIStickyFailbackRelapseWindowSeconds
+			}
+			return previousSettings.OpenAIStickyFailbackRelapseWindowSeconds
+		}(),
+		OpenAIStickyFailbackCooldownIncrementSeconds: func() int {
+			if req.OpenAIStickyFailbackCooldownIncrementSeconds != nil {
+				return *req.OpenAIStickyFailbackCooldownIncrementSeconds
+			}
+			return previousSettings.OpenAIStickyFailbackCooldownIncrementSeconds
+		}(),
+		OpenAIStickyFailbackCooldownMaxSeconds: func() int {
+			if req.OpenAIStickyFailbackCooldownMaxSeconds != nil {
+				return *req.OpenAIStickyFailbackCooldownMaxSeconds
+			}
+			return previousSettings.OpenAIStickyFailbackCooldownMaxSeconds
+		}(),
+		OpenAIStickyFailbackRecoveryFastCount: func() int {
+			if req.OpenAIStickyFailbackRecoveryFastCount != nil {
+				return *req.OpenAIStickyFailbackRecoveryFastCount
+			}
+			return previousSettings.OpenAIStickyFailbackRecoveryFastCount
+		}(),
+		OpenAIProductionTTFTFreshnessSeconds: func() int {
+			if req.OpenAIProductionTTFTFreshnessSeconds != nil {
+				return *req.OpenAIProductionTTFTFreshnessSeconds
+			}
+			return previousSettings.OpenAIProductionTTFTFreshnessSeconds
 		}(),
 		OpenAIPreviousResponseRebindEnabled: func() bool {
 			if req.OpenAIPreviousResponseRebindEnabled != nil {
@@ -1869,6 +1919,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAIAdvancedSchedulerEnabled:                         updatedSettings.OpenAIAdvancedSchedulerEnabled,
 		OpenAIAdvancedSchedulerStickyWeightedEnabled:           updatedSettings.OpenAIAdvancedSchedulerStickyWeightedEnabled,
 		OpenAIAdvancedSchedulerSubscriptionPriorityEnabled:     updatedSettings.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled,
+		OpenAIPriorityDominantEnabled:                          updatedSettings.OpenAIPriorityDominantEnabled,
 		OpenAIAdvancedSchedulerLBTopK:                          updatedSettings.OpenAIAdvancedSchedulerLBTopK,
 		OpenAIAdvancedSchedulerWeightPriority:                  updatedSettings.OpenAIAdvancedSchedulerWeightPriority,
 		OpenAIAdvancedSchedulerWeightLoad:                      updatedSettings.OpenAIAdvancedSchedulerWeightLoad,
@@ -1892,6 +1943,11 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAIStickyPreferHigherPriorityEnabled:                updatedSettings.OpenAIStickyPreferHigherPriorityEnabled,
 		OpenAIStickyPreferHigherPriorityMinIntervalSeconds:     updatedSettings.OpenAIStickyPreferHigherPriorityMinIntervalSeconds,
 		OpenAIStickyFailbackFailureCooldownSeconds:             updatedSettings.OpenAIStickyFailbackFailureCooldownSeconds,
+		OpenAIStickyFailbackRelapseWindowSeconds:               updatedSettings.OpenAIStickyFailbackRelapseWindowSeconds,
+		OpenAIStickyFailbackCooldownIncrementSeconds:           updatedSettings.OpenAIStickyFailbackCooldownIncrementSeconds,
+		OpenAIStickyFailbackCooldownMaxSeconds:                 updatedSettings.OpenAIStickyFailbackCooldownMaxSeconds,
+		OpenAIStickyFailbackRecoveryFastCount:                  updatedSettings.OpenAIStickyFailbackRecoveryFastCount,
+		OpenAIProductionTTFTFreshnessSeconds:                   updatedSettings.OpenAIProductionTTFTFreshnessSeconds,
 		OpenAIPreviousResponseRebindEnabled:                    updatedSettings.OpenAIPreviousResponseRebindEnabled,
 		OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy:   updatedSettings.OpenAIPreviousResponseRebindOnlyWhenCurrentUnhealthy,
 		BalanceLowNotifyEnabled:                                updatedSettings.BalanceLowNotifyEnabled,

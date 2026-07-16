@@ -458,6 +458,19 @@ func TestSettingService_UpdateSettings_PaymentVisibleMethodsAndAdvancedScheduler
 	require.Equal(t, "4", repo.updates[SettingKeyOpenAIAdvancedSchedulerWeightSessionSticky])
 }
 
+func TestSettingService_UpdateSettings_RejectsSubscriptionPriorityWithPriorityDominance(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		OpenAIAdvancedSchedulerSubscriptionPriorityEnabled: true,
+		OpenAIPriorityDominantEnabled:                      true,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "subscription priority cannot be enabled")
+	require.Empty(t, repo.updates)
+}
+
 func TestSettingService_GetAllSettings_OpenAIAdvancedSchedulerEffectiveValuesUseConfig(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.LBTopK = 13

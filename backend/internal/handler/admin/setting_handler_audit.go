@@ -449,6 +449,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled != after.OpenAIAdvancedSchedulerSubscriptionPriorityEnabled {
 		changed = append(changed, "openai_advanced_scheduler_subscription_priority_enabled")
 	}
+	if before.OpenAIPriorityDominantEnabled != after.OpenAIPriorityDominantEnabled {
+		changed = append(changed, "openai_priority_dominant_enabled")
+	}
 	if before.OpenAIAdvancedSchedulerLBTopK != after.OpenAIAdvancedSchedulerLBTopK {
 		changed = append(changed, "openai_advanced_scheduler_lb_top_k")
 	}
@@ -487,6 +490,21 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.OpenAIStickyFailbackFailureCooldownSeconds != after.OpenAIStickyFailbackFailureCooldownSeconds {
 		changed = append(changed, "openai_sticky_failback_failure_cooldown_seconds")
+	}
+	if before.OpenAIStickyFailbackRelapseWindowSeconds != after.OpenAIStickyFailbackRelapseWindowSeconds {
+		changed = append(changed, "openai_sticky_failback_relapse_window_seconds")
+	}
+	if before.OpenAIStickyFailbackCooldownIncrementSeconds != after.OpenAIStickyFailbackCooldownIncrementSeconds {
+		changed = append(changed, "openai_sticky_failback_cooldown_increment_seconds")
+	}
+	if before.OpenAIStickyFailbackCooldownMaxSeconds != after.OpenAIStickyFailbackCooldownMaxSeconds {
+		changed = append(changed, "openai_sticky_failback_cooldown_max_seconds")
+	}
+	if before.OpenAIStickyFailbackRecoveryFastCount != after.OpenAIStickyFailbackRecoveryFastCount {
+		changed = append(changed, "openai_sticky_failback_recovery_fast_count")
+	}
+	if before.OpenAIProductionTTFTFreshnessSeconds != after.OpenAIProductionTTFTFreshnessSeconds {
+		changed = append(changed, "openai_production_ttft_freshness_seconds")
 	}
 	if before.OpenAIPreviousResponseRebindEnabled != after.OpenAIPreviousResponseRebindEnabled {
 		changed = append(changed, "openai_previous_response_rebind_enabled")
