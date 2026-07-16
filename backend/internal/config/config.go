@@ -765,7 +765,7 @@ type GatewayConfig struct {
 	// attempt until the first meaningful SSE event. Zero disables the guard.
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
 	// OpenAIFirstOutputSameAccountRetries retries a replay-safe first-output timeout
-	// on the same account with a fresh upstream session before normal failover.
+	// or HTTP 502 on the same account with a fresh upstream session before normal failover.
 	OpenAIFirstOutputSameAccountRetries int `mapstructure:"openai_first_output_same_account_retries"`
 	// OpenAIHighEffortFirstOutputTimeoutSeconds overrides the first-output timeout
 	// for high/xhigh/max reasoning. Zero falls back to the standard timeout.

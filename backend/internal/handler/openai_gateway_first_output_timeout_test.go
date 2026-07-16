@@ -43,6 +43,44 @@ type openAIFirstOutputFailoverUpstream struct {
 	timeoutsBeforeOK int
 }
 
+type openAIBadGatewayRetryUpstream struct {
+	service.HTTPUpstream
+	mu         sync.Mutex
+	accountIDs []int64
+	sessionIDs []string
+	promptKeys []string
+}
+
+func (u *openAIBadGatewayRetryUpstream) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
+	requestBody, _ := io.ReadAll(req.Body)
+	u.mu.Lock()
+	u.accountIDs = append(u.accountIDs, accountID)
+	u.sessionIDs = append(u.sessionIDs, req.Header.Get("session_id"))
+	u.promptKeys = append(u.promptKeys, gjson.GetBytes(requestBody, "prompt_cache_key").String())
+	call := len(u.accountIDs)
+	u.mu.Unlock()
+
+	status := http.StatusOK
+	body := `data: {"type":"response.completed","response":{"id":"resp_502_retry","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"
+	contentType := "text/event-stream"
+	if call == 1 {
+		status = http.StatusBadGateway
+		body = `{"error":{"message":"temporary bad gateway"}}`
+		contentType = "application/json"
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{contentType}},
+		Body:       io.NopCloser(bytes.NewBufferString(body)),
+	}, nil
+}
+
+func (u *openAIBadGatewayRetryUpstream) attempts() ([]int64, []string, []string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]int64(nil), u.accountIDs...), append([]string(nil), u.sessionIDs...), append([]string(nil), u.promptKeys...)
+}
+
 type openAIFirstOutputRetryConcurrencyCache struct {
 	service.ConcurrencyCache
 	mu           sync.Mutex
@@ -174,6 +212,93 @@ func TestOpenAIRequestAllowsFirstOutputRetryRequiresReplayableInputAndConnectedC
 	require.False(t, openAIRequestAllowsFirstOutputRetry(c, []byte(`{"input":[{"type":"function_call_output","call_id":"call_1","output":"ok"}]}`)))
 	cancel()
 	require.False(t, openAIRequestAllowsFirstOutputRetry(c, []byte(`{"input":"hello"}`)))
+}
+
+func TestOpenAIFailureAllowsFreshSessionRetryForBadGatewayOnly(t *testing.T) {
+	require.True(t, openAIFailureAllowsFreshSessionRetry(&service.UpstreamFailoverError{FirstOutputTimeout: true}))
+	require.True(t, openAIFailureAllowsFreshSessionRetry(&service.UpstreamFailoverError{StatusCode: http.StatusBadGateway}))
+	require.False(t, openAIFailureAllowsFreshSessionRetry(&service.UpstreamFailoverError{StatusCode: http.StatusServiceUnavailable}))
+	require.False(t, openAIFailureAllowsFreshSessionRetry(nil))
+}
+
+func TestNewOpenAIBadGatewayRetrySessionUsesFreshHash(t *testing.T) {
+	failure := &service.UpstreamFailoverError{StatusCode: http.StatusBadGateway}
+	firstHash, firstBody, firstSeed, err := newOpenAIFreshSessionRetry([]byte(`{"input":"hello"}`), 1, failure)
+	require.NoError(t, err)
+	secondHash, secondBody, secondSeed, err := newOpenAIFreshSessionRetry([]byte(`{"input":"hello"}`), 2, failure)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, firstHash)
+	require.NotEmpty(t, secondHash)
+	require.NotEqual(t, firstHash, secondHash)
+	require.NotEqual(t, firstSeed, secondSeed)
+	require.Equal(t, service.DeriveSessionHashFromSeed(firstSeed), firstHash)
+	require.Equal(t, service.DeriveSessionHashFromSeed(secondSeed), secondHash)
+	require.Equal(t, firstSeed, gjson.GetBytes(firstBody, "prompt_cache_key").String())
+	require.Equal(t, secondSeed, gjson.GetBytes(secondBody, "prompt_cache_key").String())
+}
+
+func TestOpenAIResponsesBadGatewayRetriesSameAccountWithFreshSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(4207)
+	accounts := []service.Account{
+		{
+			ID: 9950, Name: "bad-gateway-oauth", Platform: service.PlatformOpenAI,
+			Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 1,
+			Credentials: map[string]any{"access_token": "token-1", "chatgpt_account_id": "account-1"},
+		},
+		{
+			ID: 9951, Name: "fallback-oauth", Platform: service.PlatformOpenAI,
+			Type: service.AccountTypeOAuth, Status: service.StatusActive, Schedulable: true, Priority: 2,
+			Credentials: map[string]any{"access_token": "token-2", "chatgpt_account_id": "account-2"},
+		},
+	}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Default.RateMultiplier = 1
+	cfg.Security.URLAllowlist.Enabled = false
+	cfg.Gateway.OpenAIFirstOutputSameAccountRetries = 1
+	cfg.Gateway.MaxAccountSwitches = 3
+
+	accountRepo := &openAIWSFailoverHandlerAccountRepoStub{accounts: accounts}
+	upstream := &openAIBadGatewayRetryUpstream{}
+	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
+	gatewaySvc := service.NewOpenAIGatewayService(
+		accountRepo, nil, nil, nil, nil, nil, nil, cfg, nil, nil,
+		service.NewBillingService(cfg, nil), nil, billingCacheSvc, upstream,
+		&service.DeferredService{}, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	h := NewOpenAIGatewayHandler(
+		gatewaySvc,
+		service.NewConcurrencyService(nil),
+		billingCacheSvc,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		nil, nil, nil, nil, cfg,
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", bytes.NewBufferString(`{"model":"gpt-5.2","input":"hello","stream":true,"prompt_cache_key":"original-session"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{
+		ID: 1807, GroupID: &groupID,
+		User:  &service.User{ID: 1707, Status: service.StatusActive},
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+	})
+	c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1707, Concurrency: 0})
+
+	h.Responses(c)
+
+	accountIDs, sessionIDs, promptKeys := upstream.attempts()
+	require.Equal(t, []int64{9950, 9950}, accountIDs)
+	require.Len(t, sessionIDs, 2)
+	require.NotEmpty(t, sessionIDs[0])
+	require.NotEmpty(t, sessionIDs[1])
+	require.NotEqual(t, sessionIDs[0], sessionIDs[1])
+	require.Equal(t, "original-session", promptKeys[0])
+	require.Contains(t, promptKeys[1], "bad-gateway-retry:")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "response.completed")
 }
 
 func TestOpenAIResponsesFirstOutputTimeoutRetriesSameAccountWithFreshSession(t *testing.T) {

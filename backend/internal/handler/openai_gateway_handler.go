@@ -55,6 +55,7 @@ type openAIFirstOutputRetryAttempt struct {
 	forwardBody     []byte
 	sessionSeed     string
 	retryNumber     int
+	eventPrefix     string
 	deferredFailure *service.UpstreamFailoverError
 }
 
@@ -908,6 +909,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			attemptForwardBody     = forwardBody
 			retrySessionSeed       string
 			activeFirstOutputRetry int
+			freshRetryEventPrefix  string
 			deferredFirstOutputErr *service.UpstreamFailoverError
 		)
 		if firstOutputRetry != nil {
@@ -917,9 +919,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			attemptForwardBody = firstOutputRetry.forwardBody
 			retrySessionSeed = firstOutputRetry.sessionSeed
 			activeFirstOutputRetry = firstOutputRetry.retryNumber
+			freshRetryEventPrefix = firstOutputRetry.eventPrefix
 			deferredFirstOutputErr = firstOutputRetry.deferredFailure
 			firstOutputRetry = nil
-			reqLog.Debug("openai.first_output_same_account_retry_selected",
+			reqLog.Debug(freshRetryEventPrefix+"_selected",
 				zap.Int64("account_id", selection.Account.ID),
 				zap.Int("retry", activeFirstOutputRetry),
 			)
@@ -1032,13 +1035,17 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			if activeFirstOutputRetry <= 0 || deferredFirstOutputErr == nil || c.Request.Context().Err() != nil {
 				return
 			}
-			var attemptFirstTokenMs *int
-			if deferredFirstOutputErr.AttemptLatencyMs > 0 {
-				attemptLatencyMs := int(deferredFirstOutputErr.AttemptLatencyMs)
-				attemptFirstTokenMs = &attemptLatencyMs
+			if deferredFirstOutputErr.FirstOutputTimeout {
+				var attemptFirstTokenMs *int
+				if deferredFirstOutputErr.AttemptLatencyMs > 0 {
+					attemptLatencyMs := int(deferredFirstOutputErr.AttemptLatencyMs)
+					attemptFirstTokenMs = &attemptLatencyMs
+				}
+				h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, reqModel, attemptFirstTokenMs)
+				h.gatewayService.RecordOpenAIStickyFailbackSlowFailure(c.Request.Context(), account.ID, deferredFirstOutputErr.StatusCode)
+			} else {
+				h.gatewayService.RecordOpenAIStickyFailbackFailure(c.Request.Context(), account.ID, deferredFirstOutputErr.StatusCode)
 			}
-			h.gatewayService.ReportOpenAIAccountFirstOutputTimeout(c.Request.Context(), account, reqModel, attemptFirstTokenMs)
-			h.gatewayService.RecordOpenAIStickyFailbackSlowFailure(c.Request.Context(), account.ID, deferredFirstOutputErr.StatusCode)
 			if openAIAccountSwitchBudgetExhausted(switchCount, maxAccountSwitches) {
 				h.handleFailoverExhausted(c, deferredFirstOutputErr, streamStarted)
 				return
@@ -1047,7 +1054,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			lastFailoverErr = deferredFirstOutputErr
 			switchCount++
 			h.gatewayService.RecordOpenAIAccountSwitch()
-			reqLog.Warn("openai.first_output_retry_slot_unavailable",
+			reqLog.Warn(freshRetryEventPrefix+"_slot_unavailable",
 				zap.Int64("account_id", account.ID),
 				zap.Int("retry", activeFirstOutputRetry),
 				zap.Int("switch_count", switchCount),
@@ -1104,7 +1111,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					if activeFirstOutputRetry > 0 {
-						reqLog.Info("openai.first_output_same_account_retry_completed",
+						reqLog.Info(freshRetryEventPrefix+"_completed",
 							zap.Int64("account_id", account.ID),
 							zap.Int("retry", activeFirstOutputRetry),
 							zap.Bool("success", false),
@@ -1168,12 +1175,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
-					if failoverErr.FirstOutputTimeout &&
+					if openAIFailureAllowsFreshSessionRetry(failoverErr) &&
 						openAIRequestAllowsFirstOutputRetry(c, attemptForwardBody) &&
 						h.cfg != nil &&
 						firstOutputRetryCount[account.ID] < h.cfg.Gateway.OpenAIFirstOutputSameAccountRetries {
 						retryNumber := firstOutputRetryCount[account.ID] + 1
-						retryHash, retryBody, retrySeed, retryErr := newOpenAIFirstOutputRetrySession(attemptForwardBody, retryNumber)
+						retryEventPrefix := openAIFreshSessionRetryEventPrefix(failoverErr)
+						retryHash, retryBody, retrySeed, retryErr := newOpenAIFreshSessionRetry(attemptForwardBody, retryNumber, failoverErr)
 						if retryErr == nil && retryHash != "" {
 							firstOutputRetryCount[account.ID] = retryNumber
 							firstOutputRetry = &openAIFirstOutputRetryAttempt{
@@ -1183,19 +1191,26 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 								forwardBody:     retryBody,
 								sessionSeed:     retrySeed,
 								retryNumber:     retryNumber,
+								eventPrefix:     retryEventPrefix,
 								deferredFailure: failoverErr,
 							}
-							reqLog.Warn("openai.first_output_same_account_retry_started",
+							reqLog.Warn(retryEventPrefix+"_started",
 								zap.Int64("account_id", account.ID),
 								zap.Int("retry", retryNumber),
 								zap.Int("retry_limit", h.cfg.Gateway.OpenAIFirstOutputSameAccountRetries),
+								zap.Int("trigger_status", failoverErr.StatusCode),
+								zap.Bool("first_output_timeout", failoverErr.FirstOutputTimeout),
 								zap.Bool("fresh_session", true),
 								zap.Bool("duplicate_upstream_work_possible", true),
 								zap.Bool("duplicate_billing_possible", true),
 							)
 							continue
 						}
-						reqLog.Warn("openai.first_output_retry_session_failed",
+						retrySessionFailureEvent := retryEventPrefix + "_session_failed"
+						if failoverErr.FirstOutputTimeout {
+							retrySessionFailureEvent = "openai.first_output_retry_session_failed"
+						}
+						reqLog.Warn(retrySessionFailureEvent,
 							zap.Int64("account_id", account.ID),
 							zap.Error(retryErr),
 						)
@@ -1302,7 +1317,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		if result != nil {
 			if activeFirstOutputRetry > 0 {
-				reqLog.Info("openai.first_output_same_account_retry_completed",
+				reqLog.Info(freshRetryEventPrefix+"_completed",
 					zap.Int64("account_id", account.ID),
 					zap.Int("retry", activeFirstOutputRetry),
 					zap.Bool("success", true),
@@ -3286,11 +3301,30 @@ func openAIRequestAllowsFirstOutputRetry(c *gin.Context, body []byte) bool {
 	return !failoverClientGone(c) && service.IsOpenAIResponseReplayableWithoutPreviousID(body)
 }
 
+func openAIFailureAllowsFreshSessionRetry(failoverErr *service.UpstreamFailoverError) bool {
+	return failoverErr != nil && (failoverErr.FirstOutputTimeout || failoverErr.StatusCode == http.StatusBadGateway)
+}
+
+func openAIFreshSessionRetryEventPrefix(failoverErr *service.UpstreamFailoverError) string {
+	if failoverErr != nil && failoverErr.StatusCode == http.StatusBadGateway && !failoverErr.FirstOutputTimeout {
+		return "openai.bad_gateway_fresh_session_retry"
+	}
+	return "openai.first_output_same_account_retry"
+}
+
 func newOpenAIFirstOutputRetrySession(body []byte, retryNumber int) (string, []byte, string, error) {
+	return newOpenAIFreshSessionRetry(body, retryNumber, &service.UpstreamFailoverError{FirstOutputTimeout: true})
+}
+
+func newOpenAIFreshSessionRetry(body []byte, retryNumber int, failoverErr *service.UpstreamFailoverError) (string, []byte, string, error) {
 	if len(body) == 0 || retryNumber <= 0 {
 		return "", nil, "", nil
 	}
-	retrySeed := "first-output-retry:" + uuid.NewString()
+	prefix := "first-output-retry:"
+	if failoverErr != nil && failoverErr.StatusCode == http.StatusBadGateway && !failoverErr.FirstOutputTimeout {
+		prefix = "bad-gateway-retry:"
+	}
+	retrySeed := prefix + uuid.NewString()
 	retryHash := service.DeriveSessionHashFromSeed(retrySeed)
 	if retryHash == "" {
 		return "", nil, "", nil

@@ -157,7 +157,7 @@ gateway:
   openai_response_header_timeout: 0
   # First meaningful output deadline per ordinary HTTP /responses account attempt (seconds, 0=disabled)
   openai_first_output_timeout_seconds: 0
-  # Replay-safe same-account retries after a first-output timeout. Each retry uses a fresh upstream session.
+  # Replay-safe same-account retries after a first-output timeout or HTTP 502. Each retry uses a fresh upstream session.
   # Cancellation cannot prove the timed-out attempt stopped upstream; duplicate work or billing is possible.
   openai_first_output_same_account_retries: 1
   # Optional high/xhigh/max override (seconds, 0=use the standard timeout)
