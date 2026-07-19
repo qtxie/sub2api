@@ -34,13 +34,16 @@ const (
 	// maxSameAccountRetries 同账号重试次数默认上限（针对 RetryableOnSameAccount 错误）。
 	// 生产调用方通常传入账号级配置 account.GetPoolModeRetryCount()，该常量仅作兜底/测试默认值。
 	maxSameAccountRetries = 3
-	// sameAccountRetryDelay 同账号重试间隔
-	sameAccountRetryDelay = 500 * time.Millisecond
+	// defaultSameAccountRetryDelay 同账号重试间隔。
+	defaultSameAccountRetryDelay = 10 * time.Second
 	// singleAccountBackoffDelay 单账号分组 503 退避重试固定延时。
 	// Service 层在 SingleAccountRetry 模式下已做充分原地重试（最多 3 次、总等待 30s），
 	// Handler 层只需短暂间隔后重新进入 Service 层即可。
 	singleAccountBackoffDelay = 2 * time.Second
 )
+
+// Kept as a variable so tests can avoid sleeping for the production interval.
+var sameAccountRetryDelay = defaultSameAccountRetryDelay
 
 // FailoverState 跨循环迭代共享的 failover 状态
 type FailoverState struct {

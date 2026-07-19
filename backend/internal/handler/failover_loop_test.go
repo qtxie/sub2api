@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -12,6 +13,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMain(m *testing.M) {
+	sameAccountRetryDelay = 50 * time.Millisecond
+	os.Exit(m.Run())
+}
 
 // ---------------------------------------------------------------------------
 // Mock
@@ -114,7 +120,7 @@ func TestSleepWithContext(t *testing.T) {
 	t.Run("等待期间context取消返回false", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		go func() {
-			time.Sleep(30 * time.Millisecond)
+			time.Sleep(5 * time.Millisecond)
 			cancel()
 		}()
 
@@ -356,6 +362,10 @@ func TestHandleFailoverError_CacheBilling(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
+	t.Run("生产重试间隔为10秒", func(t *testing.T) {
+		require.Equal(t, 10*time.Second, defaultSameAccountRetryDelay)
+	})
+
 	t.Run("第一次重试返回FailoverContinue", func(t *testing.T) {
 		mock := &mockTempUnscheduler{}
 		fs := NewFailoverState(3, false)
@@ -370,9 +380,9 @@ func TestHandleFailoverError_SameAccountRetry(t *testing.T) {
 		require.Equal(t, 0, fs.SwitchCount, "同账号重试不应增加切换计数")
 		require.NotContains(t, fs.FailedAccountIDs, int64(100), "同账号重试不应加入失败列表")
 		require.Empty(t, mock.calls, "同账号重试期间不应调用 TempUnschedule")
-		// 验证等待了 sameAccountRetryDelay (500ms)
-		require.GreaterOrEqual(t, elapsed, 400*time.Millisecond)
-		require.Less(t, elapsed, 2*time.Second)
+		// 测试进程使用短延迟，但仍验证重试路径确实等待。
+		require.GreaterOrEqual(t, elapsed, sameAccountRetryDelay)
+		require.Less(t, elapsed, time.Second)
 	})
 
 	t.Run("达到最大重试次数前均返回FailoverContinue", func(t *testing.T) {
