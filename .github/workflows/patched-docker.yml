@@ -9,7 +9,7 @@ on:
         default: "patched"
   push:
     branches:
-      - main
+      - patched
 
 permissions:
   contents: read
