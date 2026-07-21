@@ -365,6 +365,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var pendingSwitchFrom *service.Account
+	var pendingSwitchStatus int
+	var pendingSwitchReason string
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 
 	// 生图意图的 /v1/responses 请求必须调度到确实支持 Responses API 的账号，否则
@@ -447,6 +450,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
 		)
 		account := selection.Account
+		if pendingSwitchFrom != nil {
+			h.gatewayService.ReportOpenAIAccountSwitchTransition(
+				pendingSwitchFrom,
+				account,
+				account.GetMappedModel(reqModel),
+				pendingSwitchStatus,
+				pendingSwitchReason,
+			)
+			pendingSwitchFrom = nil
+			pendingSwitchStatus = 0
+			pendingSwitchReason = ""
+		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
@@ -539,7 +554,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							continue
 						}
 					}
-					h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, account.GetMappedModel(reqModel), failoverErr.StatusCode, string(failoverErr.Reason))
+					pendingSwitchFrom = account
+					pendingSwitchStatus = failoverErr.StatusCode
+					pendingSwitchReason = string(failoverErr.Reason)
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
@@ -900,6 +917,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var pendingMessagesSwitchFrom *service.Account
+	var pendingMessagesSwitchStatus int
+	var pendingMessagesSwitchReason string
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	effectiveMappedModel := preferredMappedModel
 
@@ -962,6 +982,18 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		if pendingMessagesSwitchFrom != nil {
+			h.gatewayService.ReportOpenAIAccountSwitchTransition(
+				pendingMessagesSwitchFrom,
+				account,
+				account.GetMappedModel(currentRoutingModel),
+				pendingMessagesSwitchStatus,
+				pendingMessagesSwitchReason,
+			)
+			pendingMessagesSwitchFrom = nil
+			pendingMessagesSwitchStatus = 0
+			pendingMessagesSwitchReason = ""
+		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_messages.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
@@ -1049,7 +1081,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							continue
 						}
 					}
-					h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, account.GetMappedModel(currentRoutingModel), failoverErr.StatusCode, string(failoverErr.Reason))
+					pendingMessagesSwitchFrom = account
+					pendingMessagesSwitchStatus = failoverErr.StatusCode
+					pendingMessagesSwitchReason = string(failoverErr.Reason)
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
@@ -1568,6 +1602,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
+	var pendingWSSwitchFrom *service.Account
+	var pendingWSSwitchStatus int
+	var pendingWSSwitchReason string
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	handleWSFailover := func(account *service.Account, failoverErr *service.UpstreamFailoverError) bool {
 		if ctx.Err() != nil {
@@ -1584,7 +1621,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		if ctx.Err() != nil {
 			return false
 		}
-		h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, account.GetMappedModel(reqModel), failoverErr.StatusCode, string(failoverErr.Reason))
+		pendingWSSwitchFrom = account
+		pendingWSSwitchStatus = failoverErr.StatusCode
+		pendingWSSwitchReason = string(failoverErr.Reason)
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr
 		if switchCount >= maxAccountSwitches {
@@ -1657,6 +1696,18 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		account := selection.Account
+		if pendingWSSwitchFrom != nil {
+			h.gatewayService.ReportOpenAIAccountSwitchTransition(
+				pendingWSSwitchFrom,
+				account,
+				account.GetMappedModel(reqModel),
+				pendingWSSwitchStatus,
+				pendingWSSwitchReason,
+			)
+			pendingWSSwitchFrom = nil
+			pendingWSSwitchStatus = 0
+			pendingWSSwitchReason = ""
+		}
 		accountMaxConcurrency := account.Concurrency
 		if selection.WaitPlan != nil && selection.WaitPlan.MaxConcurrency > 0 {
 			accountMaxConcurrency = selection.WaitPlan.MaxConcurrency

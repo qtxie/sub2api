@@ -181,6 +181,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var pendingSwitchFrom *service.Account
+	var pendingSwitchStatus int
+	var pendingSwitchReason string
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	mediaEligibilityRejected := false
 	switchCount := 0
@@ -290,6 +293,18 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				continue
 			}
 		}
+		if pendingSwitchFrom != nil {
+			h.gatewayService.ReportOpenAIAccountSwitchTransition(
+				pendingSwitchFrom,
+				account,
+				grokMediaScheduleModel(account, routingModel, nil),
+				pendingSwitchStatus,
+				pendingSwitchReason,
+			)
+			pendingSwitchFrom = nil
+			pendingSwitchStatus = 0
+			pendingSwitchReason = ""
+		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
@@ -361,7 +376,9 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 						continue
 					}
 				}
-				h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, grokMediaScheduleModel(account, routingModel, nil), failoverErr.StatusCode, string(failoverErr.Reason))
+				pendingSwitchFrom = account
+				pendingSwitchStatus = failoverErr.StatusCode
+				pendingSwitchReason = string(failoverErr.Reason)
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {

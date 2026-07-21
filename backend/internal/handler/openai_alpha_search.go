@@ -111,6 +111,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 	switchCount := 0
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
+	var pendingSwitchFrom *service.Account
+	var pendingSwitchStatus int
+	var pendingSwitchReason string
 	routingStart := time.Now()
 
 	for {
@@ -150,6 +153,18 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		}
 
 		account := selection.Account
+		if pendingSwitchFrom != nil {
+			h.gatewayService.ReportOpenAIAccountSwitchTransition(
+				pendingSwitchFrom,
+				account,
+				account.GetMappedModel(requestedModel),
+				pendingSwitchStatus,
+				pendingSwitchReason,
+			)
+			pendingSwitchFrom = nil
+			pendingSwitchStatus = 0
+			pendingSwitchReason = ""
+		}
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 		accountRelease, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
 		if !acquired {
@@ -197,7 +212,9 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			)
 			return
 		}
-		h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, account.GetMappedModel(requestedModel), failoverErr.StatusCode, string(failoverErr.Reason))
+		pendingSwitchFrom = account
+		pendingSwitchStatus = failoverErr.StatusCode
+		pendingSwitchReason = string(failoverErr.Reason)
 		failedAccountIDs[account.ID] = struct{}{}
 		lastFailoverErr = failoverErr
 		if switchCount >= h.maxAccountSwitches {

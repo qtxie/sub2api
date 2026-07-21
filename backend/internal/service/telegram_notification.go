@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,14 +51,22 @@ const (
 // bodies, upstream response bodies, credentials, and user content are excluded
 // before an event ever enters the persistent delivery outbox.
 type GatewayNotificationEvent struct {
-	Type       GatewayNotificationEventType `json:"type"`
-	Platform   string                       `json:"platform,omitempty"`
-	AccountID  int64                        `json:"account_id,omitempty"`
-	Model      string                       `json:"model,omitempty"`
-	StatusCode int                          `json:"status_code,omitempty"`
-	Stage      string                       `json:"stage,omitempty"`
-	Reason     string                       `json:"reason,omitempty"`
-	OccurredAt time.Time                    `json:"occurred_at"`
+	Type            GatewayNotificationEventType `json:"type"`
+	Platform        string                       `json:"platform,omitempty"`
+	AccountID       int64                        `json:"account_id,omitempty"`
+	AccountName     string                       `json:"account_name,omitempty"`
+	FromAccountID   int64                        `json:"from_account_id,omitempty"`
+	FromAccountName string                       `json:"from_account_name,omitempty"`
+	ToAccountID     int64                        `json:"to_account_id,omitempty"`
+	ToAccountName   string                       `json:"to_account_name,omitempty"`
+	Model           string                       `json:"model,omitempty"`
+	StatusCode      int                          `json:"status_code,omitempty"`
+	Stage           string                       `json:"stage,omitempty"`
+	Reason          string                       `json:"reason,omitempty"`
+	ElapsedMs       int64                        `json:"elapsed_ms,omitempty"`
+	FromPriority    int                          `json:"from_priority,omitempty"`
+	ToPriority      int                          `json:"to_priority,omitempty"`
+	OccurredAt      time.Time                    `json:"occurred_at"`
 }
 
 // GatewayNotificationPublisher keeps gateway code independent from the
@@ -497,11 +506,17 @@ func normalizeGatewayNotificationEvent(event *GatewayNotificationEvent) bool {
 		return false
 	}
 	event.Platform = boundedTelegramField(event.Platform, 64)
+	event.AccountName = boundedTelegramField(event.AccountName, 128)
+	event.FromAccountName = boundedTelegramField(event.FromAccountName, 128)
+	event.ToAccountName = boundedTelegramField(event.ToAccountName, 128)
 	event.Model = boundedTelegramField(event.Model, 160)
 	event.Stage = boundedTelegramField(event.Stage, 64)
 	event.Reason = boundedTelegramField(event.Reason, 300)
 	if event.StatusCode < 0 || event.StatusCode > 999 {
 		event.StatusCode = 0
+	}
+	if event.ElapsedMs < 0 {
+		event.ElapsedMs = 0
 	}
 	if event.OccurredAt.IsZero() {
 		event.OccurredAt = time.Now().UTC()
@@ -525,10 +540,17 @@ func telegramNotificationDedupeKey(event GatewayNotificationEvent) string {
 		string(event.Type),
 		event.Platform,
 		fmt.Sprintf("%d", event.AccountID),
+		event.AccountName,
+		fmt.Sprintf("%d", event.FromAccountID),
+		event.FromAccountName,
+		fmt.Sprintf("%d", event.ToAccountID),
+		event.ToAccountName,
 		event.Model,
 		fmt.Sprintf("%d", event.StatusCode),
 		event.Stage,
 		event.Reason,
+		fmt.Sprintf("%d", event.FromPriority),
+		fmt.Sprintf("%d", event.ToPriority),
 	} {
 		_, _ = hash.Write([]byte(value))
 		_, _ = hash.Write([]byte{0})
@@ -537,43 +559,63 @@ func telegramNotificationDedupeKey(event GatewayNotificationEvent) string {
 }
 
 func formatTelegramGatewayNotification(event TelegramNotificationOutboxEvent) string {
-	lines := []string{
-		"sub2api gateway notification",
-		"Type: " + string(event.Event.Type),
-	}
-	if event.Event.Platform != "" {
-		lines = append(lines, "Platform: "+event.Event.Platform)
-	}
-	if event.Event.AccountID > 0 {
-		lines = append(lines, fmt.Sprintf("Account: %d", event.Event.AccountID))
-	}
-	if event.Event.Model != "" {
-		lines = append(lines, "Model: "+event.Event.Model)
-	}
-	if event.Event.StatusCode > 0 {
-		lines = append(lines, fmt.Sprintf("Status: %d", event.Event.StatusCode))
-	}
-	if event.Event.Stage != "" {
-		lines = append(lines, "Stage: "+event.Event.Stage)
-	}
-	if event.Event.Reason != "" {
-		lines = append(lines, "Reason: "+event.Event.Reason)
+	var message string
+	switch event.Event.Type {
+	case GatewayNotificationEventError:
+		code := strings.TrimSpace(event.Event.Reason)
+		if event.Event.StatusCode > 0 {
+			code = strconv.Itoa(event.Event.StatusCode)
+		}
+		if code == "" {
+			code = "unknown"
+		}
+		message = "❌ ERROR " + code
+	case GatewayNotificationEventTimeout:
+		message = "⚠️ TIMEOUT " + formatTelegramElapsed(event.Event.ElapsedMs)
+	case GatewayNotificationEventSwitch:
+		from := telegramAccountLabel(event.Event.FromAccountName, event.Event.FromAccountID, event.Event.AccountName, event.Event.AccountID)
+		to := telegramAccountLabel(event.Event.ToAccountName, event.Event.ToAccountID, "", 0)
+		icon := "✅"
+		if event.Event.ToPriority < event.Event.FromPriority {
+			icon = "❤️"
+		}
+		message = fmt.Sprintf("%s account %s -> account %s", icon, from, to)
+	default:
+		message = "[sub2api] " + string(event.Event.Type)
 	}
 	if event.OccurrenceCount > 1 {
-		lines = append(lines, fmt.Sprintf("Occurrences: %d", event.OccurrenceCount))
+		message += fmt.Sprintf(" (%d occurrences)", event.OccurrenceCount)
 	}
-	at := event.LastOccurredAt
-	if at.IsZero() {
-		at = event.Event.OccurredAt
-	}
-	if !at.IsZero() {
-		lines = append(lines, "Last seen: "+at.UTC().Format(time.RFC3339))
-	}
-	message := strings.Join(lines, "\n")
 	if len(message) > telegramNotificationMaxMessageBytes {
 		return message[:telegramNotificationMaxMessageBytes]
 	}
 	return message
+}
+
+func telegramAccountLabel(name string, id int64, fallbackName string, fallbackID int64) string {
+	if name = strings.TrimSpace(name); name != "" {
+		return name
+	}
+	if id > 0 {
+		return strconv.FormatInt(id, 10)
+	}
+	if fallbackName = strings.TrimSpace(fallbackName); fallbackName != "" {
+		return fallbackName
+	}
+	if fallbackID > 0 {
+		return strconv.FormatInt(fallbackID, 10)
+	}
+	return "unknown"
+}
+
+func formatTelegramElapsed(elapsedMs int64) string {
+	if elapsedMs <= 0 {
+		return "unknown"
+	}
+	if elapsedMs < 1000 {
+		return fmt.Sprintf("%dms", elapsedMs)
+	}
+	return fmt.Sprintf("%.1fs", float64(elapsedMs)/1000)
 }
 
 func telegramNotificationRetryDelay(attempt int) time.Duration {

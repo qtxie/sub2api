@@ -71,6 +71,27 @@ func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
 	c.Set(key, value)
 }
 
+// GetOpsLatencyMs returns a previously recorded stage latency in milliseconds.
+func GetOpsLatencyMs(c *gin.Context, key string) (int64, bool) {
+	if c == nil || strings.TrimSpace(key) == "" {
+		return 0, false
+	}
+	value, ok := c.Get(key)
+	if !ok {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case int64:
+		return typed, typed >= 0
+	case int:
+		return int64(typed), typed >= 0
+	case int32:
+		return int64(typed), typed >= 0
+	default:
+		return 0, false
+	}
+}
+
 func MarkOpsClientBusinessLimited(c *gin.Context, reason string) {
 	if c == nil {
 		return

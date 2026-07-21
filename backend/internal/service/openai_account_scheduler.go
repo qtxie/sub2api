@@ -2327,9 +2327,36 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountSwitchEvent(accountID int64, m
 	})
 }
 
+// ReportOpenAIAccountSwitchTransition publishes an actual failover transition.
+// Lower account priority values are the primary tier; moving to a lower value
+// therefore represents a switch back to primary.
+func (s *OpenAIGatewayService) ReportOpenAIAccountSwitchTransition(from, to *Account, model string, statusCode int, reason string) {
+	if from == nil || to == nil || from.ID == to.ID {
+		return
+	}
+	s.RecordOpenAIAccountSwitch()
+	s.publishGatewayNotification(GatewayNotificationEvent{
+		Type:            GatewayNotificationEventSwitch,
+		Platform:        to.Platform,
+		FromAccountID:   from.ID,
+		FromAccountName: from.Name,
+		ToAccountID:     to.ID,
+		ToAccountName:   to.Name,
+		FromPriority:    from.Priority,
+		ToPriority:      to.Priority,
+		Model:           model,
+		StatusCode:      statusCode,
+		Reason:          reason,
+	})
+}
+
 // ReportOpenAIUpstreamTimeout publishes a typed timeout separately from a
 // generic upstream error so operators can route the two conditions differently.
-func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(accountID int64, model string, statusCode int, reason string) {
+func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(accountID int64, model string, statusCode int, reason string, elapsed ...time.Duration) {
+	var elapsedMs int64
+	if len(elapsed) > 0 && elapsed[0] > 0 {
+		elapsedMs = elapsed[0].Milliseconds()
+	}
 	s.publishGatewayNotification(GatewayNotificationEvent{
 		Type:       GatewayNotificationEventTimeout,
 		Platform:   "openai",
@@ -2337,6 +2364,7 @@ func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(accountID int64, mode
 		Model:      model,
 		StatusCode: statusCode,
 		Reason:     reason,
+		ElapsedMs:  elapsedMs,
 	})
 }
 

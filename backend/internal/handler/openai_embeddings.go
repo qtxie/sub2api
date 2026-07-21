@@ -104,6 +104,9 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 
 	failedAccountIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
+	var pendingSwitchFrom *service.Account
+	var pendingSwitchStatus int
+	var pendingSwitchReason string
 	switchCount := 0
 	maxAccountSwitches := h.maxAccountSwitches
 	if maxAccountSwitches <= 0 {
@@ -158,6 +161,18 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		if pendingSwitchFrom != nil {
+			h.gatewayService.ReportOpenAIAccountSwitchTransition(
+				pendingSwitchFrom,
+				account,
+				account.GetMappedModel(reqModel),
+				pendingSwitchStatus,
+				pendingSwitchReason,
+			)
+			pendingSwitchFrom = nil
+			pendingSwitchStatus = 0
+			pendingSwitchReason = ""
+		}
 		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		accountReleaseFunc, accountAcquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, "", selection, false, &streamStarted, reqLog)
@@ -205,7 +220,9 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 					)
 					return
 				}
-				h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, account.GetMappedModel(reqModel), failoverErr.StatusCode, string(failoverErr.Reason))
+				pendingSwitchFrom = account
+				pendingSwitchStatus = failoverErr.StatusCode
+				pendingSwitchReason = string(failoverErr.Reason)
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {

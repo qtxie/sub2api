@@ -142,6 +142,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	var pendingSwitchFrom *service.Account
+	var pendingSwitchStatus int
+	var pendingSwitchReason string
 	stopJSONKeepalive := func() {}
 	jsonKeepaliveStarted := false
 	defer func() { stopJSONKeepalive() }()
@@ -208,6 +211,18 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		)
 
 		account := selection.Account
+		if pendingSwitchFrom != nil {
+			h.gatewayService.ReportOpenAIAccountSwitchTransition(
+				pendingSwitchFrom,
+				account,
+				account.GetMappedModel(requestModel),
+				pendingSwitchStatus,
+				pendingSwitchReason,
+			)
+			pendingSwitchFrom = nil
+			pendingSwitchStatus = 0
+			pendingSwitchReason = ""
+		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.images.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
@@ -303,7 +318,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							continue
 						}
 					}
-					h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, account.GetMappedModel(requestModel), failoverErr.StatusCode, string(failoverErr.Reason))
+					pendingSwitchFrom = account
+					pendingSwitchStatus = failoverErr.StatusCode
+					pendingSwitchReason = string(failoverErr.Reason)
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {

@@ -282,6 +282,7 @@ func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 		originalModel,
 		http.StatusGatewayTimeout,
 		"first output deadline exceeded",
+		elapsed,
 	)
 	return &UpstreamFailoverError{
 		StatusCode:      http.StatusGatewayTimeout,

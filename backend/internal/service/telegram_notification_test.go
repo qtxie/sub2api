@@ -174,8 +174,14 @@ func TestOpenAIGatewayPublishesErrorTimeoutAndSwitchEvents(t *testing.T) {
 	gateway.SetGatewayNotificationPublisher(publisher)
 
 	gateway.ReportOpenAIAccountScheduleResult(7, "gpt-5", false, nil)
-	gateway.ReportOpenAIUpstreamTimeout(7, "gpt-5", http.StatusGatewayTimeout, "first output deadline exceeded")
-	gateway.ReportOpenAIAccountSwitchEvent(7, "gpt-5", http.StatusBadGateway, "inference")
+	gateway.ReportOpenAIUpstreamTimeout(7, "gpt-5", http.StatusGatewayTimeout, "first output deadline exceeded", 1500*time.Millisecond)
+	gateway.ReportOpenAIAccountSwitchTransition(
+		&Account{ID: 7, Name: "account A", Priority: 0},
+		&Account{ID: 8, Name: "account B", Priority: 5},
+		"gpt-5",
+		http.StatusBadGateway,
+		"inference",
+	)
 
 	publisher.mu.Lock()
 	defer publisher.mu.Unlock()
@@ -192,7 +198,54 @@ func TestOpenAIGatewayPublishesErrorTimeoutAndSwitchEvents(t *testing.T) {
 			t.Fatalf("event %d type = %q, want %q", i, publisher.events[i].Type, want)
 		}
 	}
-	if publisher.events[2].StatusCode != http.StatusBadGateway || publisher.events[2].AccountID != 7 {
+	if publisher.events[2].StatusCode != http.StatusBadGateway || publisher.events[2].FromAccountID != 7 || publisher.events[2].ToAccountID != 8 {
 		t.Fatalf("switch event = %#v", publisher.events[2])
+	}
+	if publisher.events[1].ElapsedMs != 1500 {
+		t.Fatalf("timeout elapsed_ms = %d, want 1500", publisher.events[1].ElapsedMs)
+	}
+}
+
+func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
+	tests := []struct {
+		name  string
+		event TelegramNotificationOutboxEvent
+		want  string
+	}{
+		{
+			name: "error",
+			event: TelegramNotificationOutboxEvent{Event: GatewayNotificationEvent{
+				Type: GatewayNotificationEventError, StatusCode: http.StatusBadGateway,
+			}},
+			want: "❌ ERROR 502",
+		},
+		{
+			name: "timeout",
+			event: TelegramNotificationOutboxEvent{Event: GatewayNotificationEvent{
+				Type: GatewayNotificationEventTimeout, ElapsedMs: 1500,
+			}},
+			want: "⚠️ TIMEOUT 1.5s",
+		},
+		{
+			name: "switch to backup",
+			event: TelegramNotificationOutboxEvent{Event: GatewayNotificationEvent{
+				Type: GatewayNotificationEventSwitch, FromAccountName: "A", ToAccountName: "B", FromPriority: 0, ToPriority: 5,
+			}},
+			want: "✅ account A -> account B",
+		},
+		{
+			name: "switch to primary",
+			event: TelegramNotificationOutboxEvent{Event: GatewayNotificationEvent{
+				Type: GatewayNotificationEventSwitch, FromAccountName: "B", ToAccountName: "A", FromPriority: 5, ToPriority: 0,
+			}},
+			want: "❤️ account B -> account A",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatTelegramGatewayNotification(tt.event); got != tt.want {
+				t.Fatalf("formatTelegramGatewayNotification() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
