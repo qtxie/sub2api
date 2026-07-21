@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	openAIFailbackProbeMaxOutputTokens = 32
+	openAIFailbackProbeMaxOutputTokens = 128
 	openAIFailbackProbeMaxEventBytes   = 1 << 20
 	openAIFailbackProbeMaxErrorBytes   = 8 << 10
 )

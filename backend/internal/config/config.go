@@ -1222,8 +1222,8 @@ type GatewayOpenAISchedulerConfig struct {
 	FailbackProbeTimeoutSeconds int `mapstructure:"failback_probe_timeout_seconds"`
 	// FailbackMaxTTFTMs is the maximum healthy probe and probation TTFT.
 	FailbackMaxTTFTMs int `mapstructure:"failback_max_ttft_ms"`
-	// FailbackMinHealthyRequests is the number of fast production requests needed
-	// before the adaptive cooldown resets to its default.
+	// FailbackMinHealthyRequests is the number of successful production requests
+	// needed before the adaptive cooldown resets. Measured TTFT must remain healthy.
 	FailbackMinHealthyRequests int `mapstructure:"failback_min_healthy_requests"`
 }
 

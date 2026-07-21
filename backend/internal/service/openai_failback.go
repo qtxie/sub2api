@@ -291,9 +291,7 @@ func (c *openAIFailbackController) recordProductionResult(
 			}
 			return c.cooldownState(level, now, "production_slow"), true
 		}
-		if firstTokenMS != nil {
-			current.HealthyRequests++
-		}
+		current.HealthyRequests++
 		current.UpdatedAtUnixMilli = now.UnixMilli()
 		if now.UnixMilli() >= current.ProbationUntilUnixMilli && current.HealthyRequests >= c.cfg.minHealthyRequests {
 			return openAIFailbackState{}, false
@@ -477,20 +475,40 @@ func (c *openAIFailbackController) acquireLocalProbe(key, owner string, ttl time
 
 func (c *openAIFailbackController) readState(ctx context.Context, key string) (openAIFailbackState, bool) {
 	if c.store != nil {
-		raw, found, err := c.store.GetOpenAIFailbackState(ctx, key)
-		if err == nil {
-			if !found {
-				c.mu.Lock()
-				local, localFound := c.local[key]
-				if !localFound || !local.dirty || !c.now().Before(local.expiresAt) {
-					delete(c.local, key)
-					c.mu.Unlock()
-					return openAIFailbackState{}, false
-				}
-				c.mu.Unlock()
-				return decodeOpenAIFailbackState(local.raw)
+		for range openAIFailbackCASAttempts {
+			raw, found, err := c.store.GetOpenAIFailbackState(ctx, key)
+			if err != nil {
+				break
 			}
 			state, valid := decodeOpenAIFailbackState(raw)
+			localEntry, localState, localFound := c.readDirtyLocalState(key)
+			// Dirty local state represents a mutation made while the shared store
+			// was unavailable. Reconcile it before trusting a stale remote value.
+			if localFound && (!found || !valid || localState.UpdatedAtUnixMilli >= state.UpdatedAtUnixMilli) {
+				if found && raw == localEntry.raw {
+					c.storeLocalState(key, localEntry.raw, false)
+					return localState, true
+				}
+				expected := ""
+				if found {
+					expected = raw
+				}
+				swapped, swapErr := c.store.CompareAndSwapOpenAIFailbackState(
+					ctx, key, expected, localEntry.raw, openAIFailbackStateTTL,
+				)
+				if swapErr != nil {
+					break
+				}
+				if !swapped {
+					continue
+				}
+				c.storeLocalState(key, localEntry.raw, false)
+				return localState, true
+			}
+			if !found {
+				c.deleteLocalState(key)
+				return openAIFailbackState{}, false
+			}
 			if valid {
 				c.storeLocalState(key, raw, false)
 			}
@@ -516,11 +534,10 @@ func (c *openAIFailbackController) mutateState(
 				current = openAIFailbackState{}
 			}
 			currentFound := found && valid
-			if !found {
-				if local, localFound := c.readDirtyLocalState(key); localFound {
-					current = local
-					currentFound = true
-				}
+			_, local, localFound := c.readDirtyLocalState(key)
+			if localFound && (!found || !valid || local.UpdatedAtUnixMilli >= current.UpdatedAtUnixMilli) {
+				current = local
+				currentFound = true
 			}
 			next, keep := mutate(current, currentFound)
 			nextRaw := ""
@@ -564,14 +581,15 @@ func (c *openAIFailbackController) readLocalState(key string) (openAIFailbackSta
 	return decodeOpenAIFailbackState(entry.raw)
 }
 
-func (c *openAIFailbackController) readDirtyLocalState(key string) (openAIFailbackState, bool) {
+func (c *openAIFailbackController) readDirtyLocalState(key string) (openAIFailbackLocalState, openAIFailbackState, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, found := c.local[key]
 	if !found || !entry.dirty || !c.now().Before(entry.expiresAt) {
-		return openAIFailbackState{}, false
+		return openAIFailbackLocalState{}, openAIFailbackState{}, false
 	}
-	return decodeOpenAIFailbackState(entry.raw)
+	state, valid := decodeOpenAIFailbackState(entry.raw)
+	return entry, state, valid
 }
 
 func (c *openAIFailbackController) mutateLocalState(

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -93,6 +94,63 @@ func TestOpenAIFailbackControllerSlowProbationResultRelapses(t *testing.T) {
 	require.Equal(t, int64(300), state.CooldownSeconds)
 }
 
+func TestOpenAIFailbackControllerNonStreamingSuccessesCompleteProbation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	controller.now = func() time.Time { return now }
+
+	controller.recordProductionResult(ctx, 21, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+	require.True(t, controller.recordProbeSuccess(ctx, 21, "gpt-5-mini", 200))
+
+	controller.recordProductionResult(ctx, 21, "gpt-5-mini", true, nil)
+	controller.recordProductionResult(ctx, 21, "gpt-5-mini", true, nil)
+	state := requireOpenAIFailbackState(t, controller, 21, "gpt-5-mini")
+	require.Equal(t, 2, state.HealthyRequests)
+
+	now = now.Add(5 * time.Minute)
+	controller.recordProductionResult(ctx, 21, "gpt-5-mini", true, nil)
+	key, ok := openAIFailbackStateKey(21, "gpt-5-mini")
+	require.True(t, ok)
+	_, found := controller.readState(ctx, key)
+	require.False(t, found)
+}
+
+func TestOpenAIFailbackControllerReconcilesNewerDirtyStateAfterStoreRecovery(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	store := &openAIFailbackStoreStub{}
+	controller := newOpenAIFailbackController(store, testOpenAIFailbackConfig())
+	controller.now = func() time.Time { return now }
+
+	controller.recordProductionResult(ctx, 22, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+	require.True(t, controller.recordProbeSuccess(ctx, 22, "gpt-5-mini", 200))
+	remoteState, valid := decodeOpenAIFailbackState(store.value)
+	require.True(t, valid)
+	require.Equal(t, openAIFailbackPhaseProbation, remoteState.Phase)
+
+	store.unavailable = true
+	now = now.Add(time.Minute)
+	controller.recordProductionResult(ctx, 22, "gpt-5-mini", false, nil)
+	key, ok := openAIFailbackStateKey(22, "gpt-5-mini")
+	require.True(t, ok)
+	_, localState, dirty := controller.readDirtyLocalState(key)
+	require.True(t, dirty)
+	require.Equal(t, openAIFailbackPhaseCooldown, localState.Phase)
+	require.Equal(t, 1, localState.CooldownLevel)
+
+	store.unavailable = false
+	require.Equal(t, openAIFailbackBlock, controller.selectionAction(ctx, 22, "gpt-5-mini"))
+	remoteState, valid = decodeOpenAIFailbackState(store.value)
+	require.True(t, valid)
+	require.Equal(t, openAIFailbackPhaseCooldown, remoteState.Phase)
+	require.Equal(t, 1, remoteState.CooldownLevel)
+	_, _, dirty = controller.readDirtyLocalState(key)
+	require.False(t, dirty)
+}
+
 func TestOpenAIFailbackControllerProbeLeaseIsSingleFlight(t *testing.T) {
 	ctx := context.Background()
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
@@ -124,6 +182,55 @@ type openAIFailbackProbeUpstream struct {
 	proxyURL    string
 	accountID   int64
 	concurrency int
+}
+
+type openAIFailbackStoreStub struct {
+	value       string
+	found       bool
+	unavailable bool
+}
+
+func (s *openAIFailbackStoreStub) GetOpenAIFailbackState(context.Context, string) (string, bool, error) {
+	if s.unavailable {
+		return "", false, errors.New("failback store unavailable")
+	}
+	return s.value, s.found, nil
+}
+
+func (s *openAIFailbackStoreStub) CompareAndSwapOpenAIFailbackState(
+	_ context.Context,
+	_ string,
+	expected string,
+	next string,
+	_ time.Duration,
+) (bool, error) {
+	if s.unavailable {
+		return false, errors.New("failback store unavailable")
+	}
+	if expected == "" {
+		if s.found {
+			return false, nil
+		}
+	} else if !s.found || s.value != expected {
+		return false, nil
+	}
+	s.value = next
+	s.found = next != ""
+	return true, nil
+}
+
+func (s *openAIFailbackStoreStub) AcquireOpenAIFailbackProbe(context.Context, string, string, time.Duration) (bool, error) {
+	if s.unavailable {
+		return false, errors.New("failback store unavailable")
+	}
+	return true, nil
+}
+
+func (s *openAIFailbackStoreStub) ReleaseOpenAIFailbackProbe(context.Context, string, string) error {
+	if s.unavailable {
+		return errors.New("failback store unavailable")
+	}
+	return nil
 }
 
 func (u *openAIFailbackProbeUpstream) Do(req *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error) {
@@ -174,7 +281,7 @@ func TestOpenAIFailbackProbeUsesSameMappedModelAndCheapOutput(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(body, &payload))
 	require.Equal(t, "gpt-5-mini", payload["model"])
-	require.EqualValues(t, openAIFailbackProbeMaxOutputTokens, payload["max_tokens"])
+	require.EqualValues(t, 128, payload["max_tokens"])
 	require.Equal(t, true, payload["stream"])
 }
 
