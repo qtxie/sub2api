@@ -1,0 +1,277 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/stretchr/testify/require"
+)
+
+func testOpenAIFailbackConfig() openAIFailbackConfig {
+	return openAIFailbackConfig{
+		enabled:            true,
+		defaultCooldown:    2 * time.Minute,
+		cooldownIncrement:  3 * time.Minute,
+		maxCooldown:        26 * time.Minute,
+		probation:          5 * time.Minute,
+		probeTimeout:       20 * time.Second,
+		maxTTFT:            20 * time.Second,
+		minHealthyRequests: 3,
+	}
+}
+
+func TestOpenAIFailbackControllerAdaptiveCooldownAndHealthyReset(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	controller.now = func() time.Time { return now }
+
+	controller.recordProductionResult(ctx, 10, "gpt-5-mini", false, nil)
+	state := requireOpenAIFailbackState(t, controller, 10, "gpt-5-mini")
+	require.Equal(t, 0, state.CooldownLevel)
+	require.Equal(t, int64(120), state.CooldownSeconds)
+	require.Equal(t, openAIFailbackBlock, controller.selectionAction(ctx, 10, "gpt-5-mini"))
+
+	now = now.Add(2 * time.Minute)
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(ctx, 10, "gpt-5-mini"))
+	require.True(t, controller.recordProbeSuccess(ctx, 10, "gpt-5-mini", 250))
+	require.Equal(t, openAIFailbackAllow, controller.selectionAction(ctx, 10, "gpt-5-mini"))
+
+	now = now.Add(time.Minute)
+	controller.recordProductionResult(ctx, 10, "gpt-5-mini", false, nil)
+	state = requireOpenAIFailbackState(t, controller, 10, "gpt-5-mini")
+	require.Equal(t, 1, state.CooldownLevel)
+	require.Equal(t, int64(300), state.CooldownSeconds)
+
+	now = now.Add(5 * time.Minute)
+	controller.recordProbeFailure(ctx, 10, "gpt-5-mini", "probe_error")
+	state = requireOpenAIFailbackState(t, controller, 10, "gpt-5-mini")
+	require.Equal(t, 2, state.CooldownLevel)
+	require.Equal(t, int64(480), state.CooldownSeconds)
+
+	now = now.Add(8 * time.Minute)
+	require.True(t, controller.recordProbeSuccess(ctx, 10, "gpt-5-mini", 300))
+	fastTTFT := 300
+	controller.recordProductionResult(ctx, 10, "gpt-5-mini", true, &fastTTFT)
+	controller.recordProductionResult(ctx, 10, "gpt-5-mini", true, &fastTTFT)
+	now = now.Add(5 * time.Minute)
+	controller.recordProductionResult(ctx, 10, "gpt-5-mini", true, &fastTTFT)
+
+	key, ok := openAIFailbackStateKey(10, "gpt-5-mini")
+	require.True(t, ok)
+	_, found := controller.readState(ctx, key)
+	require.False(t, found)
+
+	controller.recordProductionResult(ctx, 10, "gpt-5-mini", false, nil)
+	state = requireOpenAIFailbackState(t, controller, 10, "gpt-5-mini")
+	require.Equal(t, 0, state.CooldownLevel)
+	require.Equal(t, int64(120), state.CooldownSeconds)
+}
+
+func TestOpenAIFailbackControllerSlowProbationResultRelapses(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	controller.now = func() time.Time { return now }
+
+	controller.recordProductionResult(ctx, 20, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+	require.True(t, controller.recordProbeSuccess(ctx, 20, "gpt-5-mini", 200))
+
+	slowTTFT := 20_001
+	controller.recordProductionResult(ctx, 20, "gpt-5-mini", true, &slowTTFT)
+	state := requireOpenAIFailbackState(t, controller, 20, "gpt-5-mini")
+	require.Equal(t, 1, state.CooldownLevel)
+	require.Equal(t, "production_slow", state.LastFailure)
+	require.Equal(t, int64(300), state.CooldownSeconds)
+}
+
+func TestOpenAIFailbackControllerProbeLeaseIsSingleFlight(t *testing.T) {
+	ctx := context.Background()
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+
+	owner, acquired := controller.acquireProbe(ctx, 30, "gpt-5-mini")
+	require.True(t, acquired)
+	require.NotEmpty(t, owner)
+	_, acquired = controller.acquireProbe(ctx, 30, "gpt-5-mini")
+	require.False(t, acquired)
+
+	controller.releaseProbe(ctx, 30, "gpt-5-mini", owner)
+	_, acquired = controller.acquireProbe(ctx, 30, "gpt-5-mini")
+	require.True(t, acquired)
+}
+
+func requireOpenAIFailbackState(t *testing.T, controller *openAIFailbackController, accountID int64, model string) openAIFailbackState {
+	t.Helper()
+	key, ok := openAIFailbackStateKey(accountID, model)
+	require.True(t, ok)
+	state, found := controller.readState(context.Background(), key)
+	require.True(t, found)
+	return state
+}
+
+type openAIFailbackProbeUpstream struct {
+	response    *http.Response
+	err         error
+	request     *http.Request
+	proxyURL    string
+	accountID   int64
+	concurrency int
+}
+
+func (u *openAIFailbackProbeUpstream) Do(req *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error) {
+	u.request = req
+	u.proxyURL = proxyURL
+	u.accountID = accountID
+	u.concurrency = concurrency
+	return u.response, u.err
+}
+
+func (u *openAIFailbackProbeUpstream) DoWithTLS(
+	req *http.Request,
+	proxyURL string,
+	accountID int64,
+	concurrency int,
+	_ *tlsfingerprint.Profile,
+) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, concurrency)
+}
+
+func TestOpenAIFailbackProbeUsesSameMappedModelAndCheapOutput(t *testing.T) {
+	upstream := &openAIFailbackProbeUpstream{response: failbackProbeResponse(
+		http.StatusOK,
+		"data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n",
+	)}
+	account := &Account{
+		ID:          40,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 3,
+		Credentials: map[string]any{"api_key": "test-key"},
+	}
+	svc := &OpenAIGatewayService{httpUpstream: upstream, cfg: &config.Config{}}
+
+	result, err := svc.runOpenAIFailbackProbe(
+		context.Background(), account, "gpt-5-mini", OpenAIEndpointCapabilityChatCompletions,
+	)
+	require.NoError(t, err)
+	require.Greater(t, result.TTFTMS, 0)
+	require.Equal(t, int64(40), upstream.accountID)
+	require.Equal(t, 3, upstream.concurrency)
+	require.Equal(t, "/v1/chat/completions", upstream.request.URL.Path)
+	require.Equal(t, "Bearer test-key", upstream.request.Header.Get("Authorization"))
+	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(upstream.request.Context()))
+
+	body, err := io.ReadAll(upstream.request.Body)
+	require.NoError(t, err)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(body, &payload))
+	require.Equal(t, "gpt-5-mini", payload["model"])
+	require.EqualValues(t, openAIFailbackProbeMaxOutputTokens, payload["max_tokens"])
+	require.Equal(t, true, payload["stream"])
+}
+
+func TestOpenAIFailbackSelectionSuccessfulProbeAdmitsSameRequest(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	controller.now = func() time.Time { return now }
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+
+	upstream := &openAIFailbackProbeUpstream{response: failbackProbeResponse(
+		http.StatusOK,
+		"data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n",
+	)}
+	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(51), selection.Account.ID)
+	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
+
+	body, err := io.ReadAll(upstream.request.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"model":"gpt-5-mini"`)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIFailbackSelectionFailedProbeFallsBackAndEscalates(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	controller.now = func() time.Time { return now }
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+
+	upstream := &openAIFailbackProbeUpstream{response: failbackProbeResponse(http.StatusServiceUnavailable, `{"error":{"message":"busy"}}`)}
+	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(52), selection.Account.ID)
+	state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
+	require.Equal(t, 1, state.CooldownLevel)
+	require.Equal(t, int64(300), state.CooldownSeconds)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func newOpenAIFailbackSelectionTestService(
+	controller *openAIFailbackController,
+	upstream HTTPUpstream,
+) *OpenAIGatewayService {
+	accounts := []Account{
+		{
+			ID: 51, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0,
+			Credentials: map[string]any{
+				"api_key":       "high-key",
+				"model_mapping": map[string]any{"gpt-5": "gpt-5-mini"},
+			},
+		},
+		{
+			ID: 52, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 10,
+			Credentials: map[string]any{
+				"api_key":       "lower-key",
+				"model_mapping": map[string]any{"gpt-5": "gpt-5-mini"},
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	return &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		httpUpstream:       upstream,
+		openaiFailback:     controller,
+	}
+}
+
+func failbackProbeResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}

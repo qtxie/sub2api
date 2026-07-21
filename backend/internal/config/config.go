@@ -1207,6 +1207,24 @@ type GatewayOpenAISchedulerConfig struct {
 	StickyEscapeTTFTMs int `mapstructure:"sticky_escape_ttft_ms"`
 	// StickyEscapeErrorRate: 错误率 EWMA 超过该阈值时跳过 sticky
 	StickyEscapeErrorRate float64 `mapstructure:"sticky_escape_error_rate"`
+	// FailbackProbeEnabled requires a cheap real HTTP probe before a cooled
+	// account/model is admitted back into scheduling.
+	FailbackProbeEnabled bool `mapstructure:"failback_probe_enabled"`
+	// FailbackDefaultCooldownSeconds is the first cooldown after a production failure.
+	FailbackDefaultCooldownSeconds int `mapstructure:"failback_default_cooldown_seconds"`
+	// FailbackCooldownIncrementSeconds is added after each failed probe or quick relapse.
+	FailbackCooldownIncrementSeconds int `mapstructure:"failback_cooldown_increment_seconds"`
+	// FailbackCooldownMaxSeconds caps the adaptive cooldown.
+	FailbackCooldownMaxSeconds int `mapstructure:"failback_cooldown_max_seconds"`
+	// FailbackProbationSeconds is the observation window after a successful probe.
+	FailbackProbationSeconds int `mapstructure:"failback_probation_seconds"`
+	// FailbackProbeTimeoutSeconds bounds the real upstream probe.
+	FailbackProbeTimeoutSeconds int `mapstructure:"failback_probe_timeout_seconds"`
+	// FailbackMaxTTFTMs is the maximum healthy probe and probation TTFT.
+	FailbackMaxTTFTMs int `mapstructure:"failback_max_ttft_ms"`
+	// FailbackMinHealthyRequests is the number of fast production requests needed
+	// before the adaptive cooldown resets to its default.
+	FailbackMinHealthyRequests int `mapstructure:"failback_min_healthy_requests"`
 }
 
 // GatewayUsageRecordConfig 使用量记录异步队列配置
@@ -2375,6 +2393,14 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.sticky_escape_enabled", true)
 	viper.SetDefault("gateway.openai_scheduler.sticky_escape_error_rate", 0.0)
 	viper.SetDefault("gateway.openai_scheduler.sticky_escape_ttft_ms", 0)
+	viper.SetDefault("gateway.openai_scheduler.failback_probe_enabled", true)
+	viper.SetDefault("gateway.openai_scheduler.failback_default_cooldown_seconds", 120)
+	viper.SetDefault("gateway.openai_scheduler.failback_cooldown_increment_seconds", 180)
+	viper.SetDefault("gateway.openai_scheduler.failback_cooldown_max_seconds", 1560)
+	viper.SetDefault("gateway.openai_scheduler.failback_probation_seconds", 300)
+	viper.SetDefault("gateway.openai_scheduler.failback_probe_timeout_seconds", 20)
+	viper.SetDefault("gateway.openai_scheduler.failback_max_ttft_ms", 20000)
+	viper.SetDefault("gateway.openai_scheduler.failback_min_healthy_requests", 3)
 
 	// server.trusted_proxies and security.forwarded_client_ip_headers are the
 	// other exception: load() distinguishes explicit configuration from absence
@@ -3256,6 +3282,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIScheduler.StickyEscapeErrorRate < 0 || c.Gateway.OpenAIScheduler.StickyEscapeErrorRate > 1 {
 		return fmt.Errorf("gateway.openai_scheduler.sticky_escape_error_rate must be between 0 and 1")
+	}
+	failback := c.Gateway.OpenAIScheduler
+	if failback.FailbackProbeEnabled {
+		if failback.FailbackDefaultCooldownSeconds <= 0 || failback.FailbackCooldownIncrementSeconds < 0 ||
+			failback.FailbackCooldownMaxSeconds < failback.FailbackDefaultCooldownSeconds || failback.FailbackProbationSeconds <= 0 ||
+			failback.FailbackProbeTimeoutSeconds <= 0 || failback.FailbackMaxTTFTMs <= 0 || failback.FailbackMinHealthyRequests <= 0 {
+			return fmt.Errorf("gateway.openai_scheduler failback durations, TTFT, and healthy request count must be positive; max cooldown must be at least the default")
+		}
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")

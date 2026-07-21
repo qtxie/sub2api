@@ -341,6 +341,52 @@ func TestOpenAIGatewayService_OpenAIAdvancedSchedulerRuntimeSettings_DBOverrides
 	require.Equal(t, 10.0, weights.SessionSticky)
 }
 
+func TestOpenAIAdvancedSchedulerPriorityIsHardTier(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	defer resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	accounts := []Account{
+		{ID: 20901, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0},
+		{ID: 20902, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 10},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.LBTopK = 2
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights = config.GatewayOpenAIWSSchedulerScoreWeights{
+		Priority: 100,
+		Load:     1000,
+	}
+	loadMap := map[int64]*AccountLoadInfo{
+		20901: {AccountID: 20901, LoadRate: 100},
+		20902: {AccountID: 20902, LoadRate: 0},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cfg:                cfg,
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{loadMap: loadMap}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		context.Background(), nil, "", "", "gpt-5", nil, OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(20901), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+
+	selection, _, err = svc.SelectAccountWithScheduler(
+		context.Background(), nil, "", "", "gpt-5", map[int64]struct{}{20901: {}}, OpenAIUpstreamTransportAny, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(20902), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_OpenAIAdvancedSchedulerRuntimeSettings_InvalidWeightSumsFallBackToConfig(t *testing.T) {
 	base := config.GatewayOpenAIWSSchedulerScoreWeights{
 		Priority: 1, Load: 2, Queue: 3, ErrorRate: 4, TTFT: 5, Reset: 6,
@@ -1046,7 +1092,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPrev
 	require.True(t, decision.StickyPreviousHit)
 }
 
-func TestOpenAIGatewayService_SelectAccountWithScheduler_StickyWeightedSessionInTopKUsesStickyFirst(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountWithScheduler_HardPriorityTierOverridesLowerPrioritySticky(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
 	ctx := context.Background()
@@ -1105,9 +1151,9 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_StickyWeightedSessionIn
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(37101), selection.Account.ID)
+	require.Equal(t, int64(37102), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
-	require.True(t, decision.StickySessionHit)
+	require.False(t, decision.StickySessionHit)
 	require.Equal(t, 2, decision.TopK)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()

@@ -109,6 +109,12 @@ type OpenAIAccountSchedulerMetricsSnapshot struct {
 	AccountSwitchRate        float64
 	LoadSkewAvg              float64
 	RuntimeStatsAccountCount int
+	FailbackProbeTotal       int64
+	FailbackProbeSuccess     int64
+	FailbackProbeFailure     int64
+	FailbackBlockedTotal     int64
+	FailbackRelapseTotal     int64
+	FailbackResetTotal       int64
 }
 
 type OpenAIAccountScheduler interface {
@@ -425,6 +431,13 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		}
 		if escapedSticky {
 			req.PreserveStickyBinding = true
+			if req.StickyAccountID > 0 {
+				req.ExcludedIDs = cloneExcludedAccountIDs(req.ExcludedIDs)
+				if req.ExcludedIDs == nil {
+					req.ExcludedIDs = make(map[int64]struct{})
+				}
+				req.ExcludedIDs[req.StickyAccountID] = struct{}{}
+			}
 		}
 	}
 
@@ -827,7 +840,6 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			candidates = append(candidates, candidate)
 		}
 	}
-
 	plan := openAIAccountLoadPlan{
 		allCandidates:             allCandidates,
 		candidates:                candidates,
@@ -839,7 +851,6 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 		return plan
 	}
 
-	minPriority, maxPriority := openAIAccountSchedulingPriority(candidates[0].account), openAIAccountSchedulingPriority(candidates[0].account)
 	maxWaiting := 1
 	loadRateSum := 0.0
 	loadRateSumSquares := 0.0
@@ -848,12 +859,6 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	for i := range candidates {
 		candidate := &candidates[i]
 		candidate.priority = openAIAccountSchedulingPriority(candidate.account)
-		if candidate.priority < minPriority {
-			minPriority = candidate.priority
-		}
-		if candidate.priority > maxPriority {
-			maxPriority = candidate.priority
-		}
 		if candidate.loadInfo.WaitingCount > maxWaiting {
 			maxWaiting = candidate.loadInfo.WaitingCount
 		}
@@ -921,10 +926,6 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 
 	for i := range candidates {
 		item := &candidates[i]
-		priorityFactor := 1.0
-		if maxPriority > minPriority {
-			priorityFactor = 1 - float64(item.priority-minPriority)/float64(maxPriority-minPriority)
-		}
 		loadFactor := 1 - clamp01(float64(item.loadInfo.LoadRate)/100.0)
 		queueFactor := 1 - clamp01(float64(item.loadInfo.WaitingCount)/float64(maxWaiting))
 		errorFactor := 1 - clamp01(item.errorRate)
@@ -952,8 +953,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 			upstreamCostFactor = factor
 		}
 
-		item.score = weights.Priority*priorityFactor +
-			weights.Load*loadFactor +
+		item.score = weights.Load*loadFactor +
 			weights.Queue*queueFactor +
 			weights.ErrorRate*errorFactor +
 			weights.TTFT*ttftFactor +
@@ -1037,27 +1037,53 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		return append(primary, overflow...)
 	}
 
-	if req.RequireCompact {
-		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
-		unknown := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
-		for _, candidate := range plan.candidates {
-			switch openAICompactSupportTier(candidate.account) {
-			case 2:
-				supported = append(supported, candidate)
-			case 1:
-				unknown = append(unknown, candidate)
-			}
+	priorityTiers := func(pool []openAIAccountCandidateScore) [][]openAIAccountCandidateScore {
+		if len(pool) == 0 {
+			return nil
 		}
+		ordered := append([]openAIAccountCandidateScore(nil), pool...)
+		sort.SliceStable(ordered, func(i, j int) bool {
+			return openAIAccountSchedulingPriority(ordered[i].account) < openAIAccountSchedulingPriority(ordered[j].account)
+		})
+		tiers := make([][]openAIAccountCandidateScore, 0, len(ordered))
+		for _, candidate := range ordered {
+			priority := openAIAccountSchedulingPriority(candidate.account)
+			if len(tiers) == 0 || openAIAccountSchedulingPriority(tiers[len(tiers)-1][0].account) != priority {
+				tiers = append(tiers, []openAIAccountCandidateScore{candidate})
+				continue
+			}
+			tiers[len(tiers)-1] = append(tiers[len(tiers)-1], candidate)
+		}
+		return tiers
+	}
+
+	if req.RequireCompact {
 		selectionOrder := make([]openAIAccountCandidateScore, 0, len(plan.allCandidates))
-		selectionOrder = append(selectionOrder, buildSelectionOrder(supported)...)
-		selectionOrder = append(selectionOrder, buildSelectionOrder(unknown)...)
+		for _, tier := range priorityTiers(plan.candidates) {
+			supported := make([]openAIAccountCandidateScore, 0, len(tier))
+			unknown := make([]openAIAccountCandidateScore, 0, len(tier))
+			for _, candidate := range tier {
+				switch openAICompactSupportTier(candidate.account) {
+				case 2:
+					supported = append(supported, candidate)
+				case 1:
+					unknown = append(unknown, candidate)
+				}
+			}
+			selectionOrder = append(selectionOrder, buildSelectionOrder(supported)...)
+			selectionOrder = append(selectionOrder, buildSelectionOrder(unknown)...)
+		}
 		if len(plan.staleSnapshotCompactRetry) > 0 && s.service.schedulerSnapshot != nil {
 			selectionOrder = append(selectionOrder, sortOpenAICompactRetryCandidates(plan.staleSnapshotCompactRetry)...)
 		}
 		return selectionOrder
 	}
 
-	return buildSelectionOrder(plan.candidates)
+	selectionOrder := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
+	for _, tier := range priorityTiers(plan.candidates) {
+		selectionOrder = append(selectionOrder, buildSelectionOrder(tier)...)
+	}
+	return selectionOrder
 }
 
 func sortOpenAICompactRetryCandidates(pool []openAIAccountCandidateScore) []openAIAccountCandidateScore {
@@ -2047,6 +2073,61 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	previousResponseCanMove bool,
 	useUpstreamTokenCost bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	controller := s.getOpenAIFailbackController()
+	if controller == nil {
+		return s.selectAccountWithSchedulerOnce(
+			ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs,
+			requiredTransport, requiredCapability, requiredImageCapability, requireCompact,
+			platform, previousResponseCanMove, useUpstreamTokenCost,
+		)
+	}
+
+	effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
+	for {
+		selection, decision, err := s.selectAccountWithSchedulerOnce(
+			ctx, groupID, previousResponseID, sessionHash, requestedModel, effectiveExcludedIDs,
+			requiredTransport, requiredCapability, requiredImageCapability, requireCompact,
+			platform, previousResponseCanMove, useUpstreamTokenCost,
+		)
+		if err != nil || selection == nil || selection.Account == nil {
+			return selection, decision, err
+		}
+
+		account := selection.Account
+		mappedModel := canonicalOpenAIAccountSchedulingModel(account, requestedModel)
+		if !shouldApplyOpenAIFailback(platform, account, mappedModel, requiredCapability, requiredImageCapability) ||
+			s.allowOpenAIFailbackSelection(ctx, controller, account, mappedModel, requiredCapability) {
+			return selection, decision, nil
+		}
+
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+		if effectiveExcludedIDs == nil {
+			effectiveExcludedIDs = make(map[int64]struct{})
+		}
+		if _, exists := effectiveExcludedIDs[account.ID]; exists {
+			return nil, decision, ErrNoAvailableAccounts
+		}
+		effectiveExcludedIDs[account.ID] = struct{}{}
+	}
+}
+
+func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
+	requireCompact bool,
+	platform string,
+	previousResponseCanMove bool,
+	useUpstreamTokenCost bool,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
 	platform = normalizeOpenAICompatiblePlatform(platform)
 	decision := OpenAIAccountScheduleDecision{}
@@ -2190,6 +2271,11 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 	if success {
 		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
 	}
+	if controller := s.getOpenAIFailbackController(); controller != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), openAIFailbackStoreTimeout)
+		controller.recordProductionResult(ctx, accountID, model, success, firstTokenMs)
+		cancel()
+	}
 	scheduler := s.getOpenAIAccountScheduler(context.Background())
 	if scheduler == nil {
 		return
@@ -2207,10 +2293,20 @@ func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {
 
 func (s *OpenAIGatewayService) SnapshotOpenAIAccountSchedulerMetrics() OpenAIAccountSchedulerMetricsSnapshot {
 	scheduler := s.getOpenAIAccountScheduler(context.Background())
-	if scheduler == nil {
-		return OpenAIAccountSchedulerMetricsSnapshot{}
+	var snapshot OpenAIAccountSchedulerMetricsSnapshot
+	if scheduler != nil {
+		snapshot = scheduler.SnapshotMetrics()
 	}
-	return scheduler.SnapshotMetrics()
+	if controller := s.getOpenAIFailbackController(); controller != nil {
+		failback := controller.snapshotMetrics()
+		snapshot.FailbackProbeTotal = failback.ProbeTotal
+		snapshot.FailbackProbeSuccess = failback.ProbeSuccess
+		snapshot.FailbackProbeFailure = failback.ProbeFailure
+		snapshot.FailbackBlockedTotal = failback.Blocked
+		snapshot.FailbackRelapseTotal = failback.Relapse
+		snapshot.FailbackResetTotal = failback.Reset
+	}
+	return snapshot
 }
 
 func (s *OpenAIGatewayService) openAIWSSessionStickyTTL() time.Duration {
@@ -2439,17 +2535,10 @@ func buildOpenAIAccountSchedulerScoreSnapshot(
 		return nil
 	}
 
-	minPriority, maxPriority := openAIAccountSchedulingPriority(candidates[0].account), openAIAccountSchedulingPriority(candidates[0].account)
 	maxWaiting := 1
 	for i := range candidates {
 		candidate := &candidates[i]
 		candidate.priority = openAIAccountSchedulingPriority(candidate.account)
-		if candidate.priority < minPriority {
-			minPriority = candidate.priority
-		}
-		if candidate.priority > maxPriority {
-			maxPriority = candidate.priority
-		}
 		if candidate.loadInfo.WaitingCount > maxWaiting {
 			maxWaiting = candidate.loadInfo.WaitingCount
 		}
@@ -2489,10 +2578,6 @@ func buildOpenAIAccountSchedulerScoreSnapshot(
 
 	result := make(map[int64]OpenAIAccountSchedulerScoreSnapshot, len(candidates))
 	for _, candidate := range candidates {
-		priorityFactor := 1.0
-		if maxPriority > minPriority {
-			priorityFactor = 1 - float64(candidate.priority-minPriority)/float64(maxPriority-minPriority)
-		}
 		loadFactor := 1 - clamp01(float64(candidate.loadInfo.LoadRate)/100.0)
 		queueFactor := 1 - clamp01(float64(candidate.loadInfo.WaitingCount)/float64(maxWaiting))
 		errorFactor := 1.0
@@ -2515,8 +2600,7 @@ func buildOpenAIAccountSchedulerScoreSnapshot(
 		if factor, ok := upstreamCostFactors[candidate.account.ID]; ok {
 			upstreamCostFactor = factor
 		}
-		baseScore := weights.Priority*priorityFactor +
-			weights.Load*loadFactor +
+		baseScore := weights.Load*loadFactor +
 			weights.Queue*queueFactor +
 			weights.ErrorRate*errorFactor +
 			weights.TTFT*ttftFactor +

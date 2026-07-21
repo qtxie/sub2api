@@ -393,6 +393,16 @@ gateway:
     sticky_escape_ttft_ms: 15000
     # 错误率 EWMA 超过该阈值时跳过 sticky，默认 0.5，仅在明显降级时触发
     sticky_escape_error_rate: 0.5
+    # Require a cheap same-model HTTP probe before a cooled account returns to traffic.
+    failback_probe_enabled: true
+    failback_default_cooldown_seconds: 120
+    failback_cooldown_increment_seconds: 180
+    failback_cooldown_max_seconds: 1560
+    # A passed probe immediately admits the account into this probation window.
+    failback_probation_seconds: 300
+    failback_probe_timeout_seconds: 20
+    failback_max_ttft_ms: 20000
+    failback_min_healthy_requests: 3
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:
