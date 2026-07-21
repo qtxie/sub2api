@@ -303,7 +303,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 							continue
 						}
 					}
-					h.gatewayService.RecordOpenAIAccountSwitch()
+					h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, account.GetMappedModel(requestModel), failoverErr.StatusCode, string(failoverErr.Reason))
 					failedAccountIDs[account.ID] = struct{}{}
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {

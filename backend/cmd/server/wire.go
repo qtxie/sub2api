@@ -85,6 +85,7 @@ func provideCleanup(
 	opsIngressReject *service.OpsIngressRejectAggregator,
 	apiKeyService *service.APIKeyService,
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
+	telegramNotificationService *service.TelegramNotificationService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	tokenRefresh *service.TokenRefreshService,
 	accountExpiry *service.AccountExpiryService,
@@ -134,6 +135,12 @@ func provideCleanup(
 			{"AuthCacheInvalidationWorker", func() error {
 				if authCacheInvalidationWorker != nil {
 					authCacheInvalidationWorker.Stop()
+				}
+				return nil
+			}},
+			{"TelegramNotificationService", func() error {
+				if telegramNotificationService != nil {
+					telegramNotificationService.Stop()
 				}
 				return nil
 			}},

@@ -205,7 +205,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 					)
 					return
 				}
-				h.gatewayService.RecordOpenAIAccountSwitch()
+				h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, account.GetMappedModel(reqModel), failoverErr.StatusCode, string(failoverErr.Reason))
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {

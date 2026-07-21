@@ -2284,6 +2284,14 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64, model string, success bool, firstTokenMs *int) {
 	if success {
 		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
+	} else {
+		s.publishGatewayNotification(GatewayNotificationEvent{
+			Type:      GatewayNotificationEventError,
+			Platform:  "openai",
+			AccountID: accountID,
+			Model:     model,
+			Reason:    "upstream request failed",
+		})
 	}
 	if controller := s.getOpenAIFailbackController(); controller != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), openAIFailbackStoreTimeout)
@@ -2303,6 +2311,33 @@ func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {
 		return
 	}
 	scheduler.ReportSwitch()
+}
+
+// ReportOpenAIAccountSwitchEvent preserves the scheduler metric while also
+// publishing a safe operational event with the failover context.
+func (s *OpenAIGatewayService) ReportOpenAIAccountSwitchEvent(accountID int64, model string, statusCode int, reason string) {
+	s.RecordOpenAIAccountSwitch()
+	s.publishGatewayNotification(GatewayNotificationEvent{
+		Type:       GatewayNotificationEventSwitch,
+		Platform:   "openai",
+		AccountID:  accountID,
+		Model:      model,
+		StatusCode: statusCode,
+		Reason:     reason,
+	})
+}
+
+// ReportOpenAIUpstreamTimeout publishes a typed timeout separately from a
+// generic upstream error so operators can route the two conditions differently.
+func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(accountID int64, model string, statusCode int, reason string) {
+	s.publishGatewayNotification(GatewayNotificationEvent{
+		Type:       GatewayNotificationEventTimeout,
+		Platform:   "openai",
+		AccountID:  accountID,
+		Model:      model,
+		StatusCode: statusCode,
+		Reason:     reason,
+	})
 }
 
 func (s *OpenAIGatewayService) SnapshotOpenAIAccountSchedulerMetrics() OpenAIAccountSchedulerMetricsSnapshot {

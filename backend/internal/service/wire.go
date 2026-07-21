@@ -583,6 +583,7 @@ func ProvideOpsService(
 	settingService *SettingService,
 	authCacheInvalidationWorker *AuthCacheInvalidationWorker,
 	apiKeyService *APIKeyService,
+	telegramNotificationService *TelegramNotificationService,
 ) *OpsService {
 	svc := NewOpsService(
 		opsRepo,
@@ -605,6 +606,9 @@ func ProvideOpsService(
 	}
 	svc.authCacheInvalidationWorker = authCacheInvalidationWorker
 	svc.apiKeyService = apiKeyService
+	if openAIGatewayService != nil {
+		openAIGatewayService.SetGatewayNotificationPublisher(telegramNotificationService)
+	}
 	svc.StartRuntimeSettingsRefresh(context.Background())
 	return svc
 }
@@ -729,6 +733,7 @@ var ProviderSet = wire.NewSet(
 	NewDataManagementService,
 	ProvideBackupService,
 	ProvideOpsSystemLogSink,
+	ProvideTelegramNotificationService,
 	ProvideOpsService,
 	ProvideOpsIngressRejectAggregator,
 	ProvideAuditLogService,

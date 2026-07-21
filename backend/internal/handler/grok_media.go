@@ -361,7 +361,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 						continue
 					}
 				}
-				h.gatewayService.RecordOpenAIAccountSwitch()
+				h.gatewayService.ReportOpenAIAccountSwitchEvent(account.ID, grokMediaScheduleModel(account, routingModel, nil), failoverErr.StatusCode, string(failoverErr.Reason))
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {

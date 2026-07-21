@@ -71,6 +71,7 @@ type Config struct {
 	Database                DatabaseConfig                `mapstructure:"database"`
 	Redis                   RedisConfig                   `mapstructure:"redis"`
 	Ops                     OpsConfig                     `mapstructure:"ops"`
+	Notifications           NotificationsConfig           `mapstructure:"notifications"`
 	JWT                     JWTConfig                     `mapstructure:"jwt"`
 	Totp                    TotpConfig                    `mapstructure:"totp"`
 	LinuxDo                 LinuxDoConnectConfig          `mapstructure:"linuxdo_connect"`
@@ -1463,6 +1464,26 @@ type OpsConfig struct {
 	Aggregation OpsAggregationConfig `mapstructure:"aggregation"`
 }
 
+// NotificationsConfig contains process-level notification transports. These
+// values are intentionally configuration-file/environment backed rather than
+// mutable through the admin API, so credentials remain deployment secrets.
+type NotificationsConfig struct {
+	Telegram TelegramNotificationConfig `mapstructure:"telegram"`
+}
+
+type TelegramNotificationConfig struct {
+	Enabled               bool   `mapstructure:"enabled"`
+	BotToken              string `mapstructure:"bot_token"`
+	ChatID                string `mapstructure:"chat_id"`
+	ThreadID              int64  `mapstructure:"thread_id"`
+	NotifyErrors          bool   `mapstructure:"notify_errors"`
+	NotifyTimeouts        bool   `mapstructure:"notify_timeouts"`
+	NotifyAccountSwitches bool   `mapstructure:"notify_account_switches"`
+	DedupeWindowSeconds   int    `mapstructure:"dedupe_window_seconds"`
+	QueueSize             int    `mapstructure:"queue_size"`
+	RequestTimeoutSeconds int    `mapstructure:"request_timeout_seconds"`
+}
+
 type OpsCleanupConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
 	Schedule string `mapstructure:"schedule"`
@@ -2087,6 +2108,20 @@ func setDefaults() {
 	viper.SetDefault("ops.metrics_collector_cache.enabled", true)
 	// TTL should be slightly larger than collection interval (1m) to maximize cross-replica cache hits.
 	viper.SetDefault("ops.metrics_collector_cache.ttl", 65*time.Second)
+
+	// Telegram gateway notifications. Credentials and destinations are read
+	// from the deployment environment/config file and require a restart when
+	// changed.
+	viper.SetDefault("notifications.telegram.enabled", false)
+	viper.SetDefault("notifications.telegram.bot_token", "")
+	viper.SetDefault("notifications.telegram.chat_id", "")
+	viper.SetDefault("notifications.telegram.thread_id", 0)
+	viper.SetDefault("notifications.telegram.notify_errors", true)
+	viper.SetDefault("notifications.telegram.notify_timeouts", true)
+	viper.SetDefault("notifications.telegram.notify_account_switches", true)
+	viper.SetDefault("notifications.telegram.dedupe_window_seconds", 300)
+	viper.SetDefault("notifications.telegram.queue_size", 1024)
+	viper.SetDefault("notifications.telegram.request_timeout_seconds", 10)
 
 	// JWT
 	viper.SetDefault("jwt.secret", "")

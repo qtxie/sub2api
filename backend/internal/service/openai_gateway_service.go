@@ -431,6 +431,7 @@ type OpenAIGatewayService struct {
 	openaiOAuth429WindowStartUnixNano   atomic.Int64
 	openaiOAuth429WindowCount           atomic.Int64
 	openaiWSRetryMetrics                openAIWSRetryMetrics
+	gatewayNotificationPublisher        atomic.Pointer[gatewayNotificationPublisherHolder]
 	responseHeaderFilter                *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle               *accountWriteThrottle
 	codexModelsManifestCache            codexModelsManifestCache

@@ -123,6 +123,14 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		s.ReportOpenAIUpstreamTimeout(
+			account.ID,
+			"",
+			http.StatusGatewayTimeout,
+			"upstream transport deadline exceeded",
+		)
+	}
 
 	if classifyOpenAITransportError(err).Persistent {
 		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)

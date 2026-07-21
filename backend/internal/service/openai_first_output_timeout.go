@@ -277,6 +277,12 @@ func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	if s.rateLimitService != nil {
 		s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 	}
+	s.ReportOpenAIUpstreamTimeout(
+		account.ID,
+		originalModel,
+		http.StatusGatewayTimeout,
+		"first output deadline exceeded",
+	)
 	return &UpstreamFailoverError{
 		StatusCode:      http.StatusGatewayTimeout,
 		ResponseBody:    []byte(`{"error":{"type":"first_output_timeout","message":"Upstream produced no output before the deadline"}}`),
