@@ -243,6 +243,13 @@ func (s *OpenAIGatewayService) openAIFirstOutputTimeout(reasoningEffort string) 
 	return time.Duration(seconds) * time.Second
 }
 
+func (s *OpenAIGatewayService) openAIFirstOutputTimeoutForRequest(c *gin.Context, body []byte, reasoningEffort string) time.Duration {
+	if IsOpenAIRemoteCompactionV2Request(c, body) {
+		return 0
+	}
+	return s.openAIFirstOutputTimeout(reasoningEffort)
+}
+
 func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 	ctx context.Context,
 	c *gin.Context,

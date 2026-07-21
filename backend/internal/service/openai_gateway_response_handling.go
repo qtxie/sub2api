@@ -47,6 +47,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	if account != nil && account.Platform == PlatformOpenAI {
 		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffort)
 	}
+	return s.handleStreamingResponseWithReasoningAndTimeout(ctx, resp, c, account, startTime, originalModel, mappedModel, reasoningEffort, firstOutputTimeout)
+}
+
+func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningAndTimeout(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string, firstOutputTimeout time.Duration) (*openaiStreamingResult, error) {
 	guardFirstOutput := firstOutputTimeout > 0
 	var attemptResponseHeaders http.Header
 	if guardFirstOutput {

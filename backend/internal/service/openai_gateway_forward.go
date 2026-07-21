@@ -750,7 +750,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	firstOutputTimeout := time.Duration(0)
 	if reqStream && account.Platform == PlatformOpenAI {
-		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffortValue)
+		firstOutputTimeout = s.openAIFirstOutputTimeoutForRequest(c, body, reasoningEffortValue)
 	}
 
 	httpInvalidEncryptedContentRetryTried := false
@@ -901,7 +901,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageCount := 0
 		var imageOutputSizes []string
 		if reqStream {
-			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+			streamResult, err := s.handleStreamingResponseWithReasoningAndTimeout(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue, firstOutputTimeout)
 			if err != nil {
 				return nil, err
 			}

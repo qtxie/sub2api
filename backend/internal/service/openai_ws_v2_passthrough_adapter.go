@@ -534,6 +534,15 @@ func openAIWSPassthroughIsTerminalOutput(payload []byte) bool {
 	}
 }
 
+func (s *OpenAIGatewayService) openAIWSPassthroughFirstOutputTimeout(c *gin.Context, payload []byte, reasoningEffort string) time.Duration {
+	if !isOpenAIRemoteCompactionV2WebSocketTurn(c, payload) {
+		if timeout := s.openAIFirstOutputTimeout(reasoningEffort); timeout > 0 {
+			return timeout
+		}
+	}
+	return s.openAIWSPassthroughIdleTimeout()
+}
+
 var _ openaiwsv2.FrameConn = (*openAIWSClientFrameConn)(nil)
 var _ openaiwsv2.FrameConn = (*openAIWSPassthroughFirstOutputFrameConn)(nil)
 
@@ -807,10 +816,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if current := usageMeta.reasoningEffort.Load(); current != nil {
 				reasoningEffort = *current
 			}
-			timeout := s.openAIFirstOutputTimeout(reasoningEffort)
-			if timeout <= 0 {
-				timeout = s.openAIWSPassthroughIdleTimeout()
-			}
+			timeout := s.openAIWSPassthroughFirstOutputTimeout(c, payload, reasoningEffort)
 			model := openAIWSPassthroughRequestModelForFrame(payload)
 			if model == "" {
 				model = usageMeta.requestModelForFrame(payload)

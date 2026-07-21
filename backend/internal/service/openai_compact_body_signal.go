@@ -1,6 +1,13 @@
 package service
 
-import "github.com/tidwall/gjson"
+import (
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+)
+
+const openAIRemoteCompactionV2Feature = "remote_compaction_v2"
 
 // HasCompactionTriggerInInput detects an input item with
 // type="compaction_trigger". The handler combines this body signal with the
@@ -23,4 +30,37 @@ func HasCompactionTriggerInInput(body []byte) bool {
 		return true
 	})
 	return found
+}
+
+// IsOpenAIRemoteCompactionV2Request identifies the native HTTP Responses
+// protocol. Unlike the legacy /responses/compact bridge, this stays on the
+// streaming /responses endpoint and can legitimately take a long time before
+// producing its compaction result.
+func IsOpenAIRemoteCompactionV2Request(c *gin.Context, body []byte) bool {
+	return gjson.GetBytes(body, "stream").Type == gjson.True &&
+		HasCompactionTriggerInInput(body) &&
+		hasOpenAICodexBetaFeature(c, openAIRemoteCompactionV2Feature)
+}
+
+// isOpenAIRemoteCompactionV2WebSocketTurn is the equivalent predicate for a
+// response.create frame. WebSocket turns are inherently streamed, so they do
+// not require the HTTP stream:true signal.
+func isOpenAIRemoteCompactionV2WebSocketTurn(c *gin.Context, payload []byte) bool {
+	return strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" &&
+		HasCompactionTriggerInInput(payload) &&
+		hasOpenAICodexBetaFeature(c, openAIRemoteCompactionV2Feature)
+}
+
+func hasOpenAICodexBetaFeature(c *gin.Context, expected string) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	for _, header := range c.Request.Header.Values("x-codex-beta-features") {
+		for _, feature := range strings.Split(header, ",") {
+			if strings.TrimSpace(feature) == expected {
+				return true
+			}
+		}
+	}
+	return false
 }

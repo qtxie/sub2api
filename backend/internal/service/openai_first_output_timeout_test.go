@@ -32,6 +32,28 @@ type firstOutputCloseTrackingBody struct {
 	once   sync.Once
 }
 
+type remoteCompactionV2DeadlineInspectingUpstream struct {
+	hadDeadline bool
+}
+
+func (u *remoteCompactionV2DeadlineInspectingUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	_, u.hadDeadline = req.Context().Deadline()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"summary"}}`,
+			"",
+			`data: {"type":"response.completed","response":{"id":"resp_compact_v2","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+			"",
+		}, "\n"))),
+	}, nil
+}
+
+func (u *remoteCompactionV2DeadlineInspectingUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, "", 0, 0)
+}
+
 func (b *firstOutputCloseTrackingBody) Close() error {
 	b.once.Do(func() { close(b.closed) })
 	return b.ReadCloser.Close()
@@ -162,6 +184,56 @@ func TestOpenAIFirstOutputTimeoutForReasoningEffort(t *testing.T) {
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("high"))
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("xhigh"))
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("max"))
+}
+
+func TestOpenAIFirstOutputTimeoutDoesNotApplyToRemoteCompactionV2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &remoteCompactionV2DeadlineInspectingUpstream{}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Gateway: config.GatewayConfig{
+			OpenAIFirstOutputTimeoutSeconds:           60,
+			OpenAIHighEffortFirstOutputTimeoutSeconds: 90,
+			MaxLineSize: defaultMaxLineSize,
+		}},
+		httpUpstream: upstream,
+	}
+	body := []byte(`{"model":"gpt-5.6-sol","stream":true,"input":[{"type":"compaction_trigger"}],"reasoning":{"effort":"max"}}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	c.Request.Header.Set("x-codex-beta-features", "responses_websockets_v2, remote_compaction_v2")
+	account := &Account{
+		ID: 1, Name: "oauth-test", Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"access_token": "test-token", "chatgpt_account_id": "test-account"},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, upstream.hadDeadline)
+	require.Contains(t, rec.Body.String(), `"type":"compaction"`)
+}
+
+func TestOpenAIWebSocketFirstOutputTimeoutDoesNotApplyToRemoteCompactionV2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		OpenAIFirstOutputTimeoutSeconds:           60,
+		OpenAIHighEffortFirstOutputTimeoutSeconds: 90,
+		OpenAIWS: config.GatewayOpenAIWSConfig{
+			ReadTimeoutSeconds: 180,
+		},
+	}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	c.Request.Header.Set("x-codex-beta-features", "remote_compaction_v2")
+	compactFrame := []byte(`{"type":"response.create","model":"gpt-5.6-sol","input":[{"type":"compaction_trigger"}],"reasoning":{"effort":"max"}}`)
+	regularFrame := []byte(`{"type":"response.create","model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":"hello"}],"reasoning":{"effort":"max"}}`)
+
+	require.Equal(t, 180*time.Second, svc.openAIWSPassthroughFirstOutputTimeout(c, compactFrame, "max"))
+	require.Equal(t, 90*time.Second, svc.openAIWSPassthroughFirstOutputTimeout(c, regularFrame, "max"))
 }
 
 func TestOpenAIFirstOutputStageDefaultLimitIsIndependentFromScannerLimit(t *testing.T) {
