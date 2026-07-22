@@ -33,6 +33,28 @@ const (
 	openAIFailbackProbe
 )
 
+// OpenAITemporaryCapacityError reports that at least one otherwise eligible
+// account is in a temporary failback cooldown. RetryAt is the earliest known
+// time at which scheduling that request may make progress.
+type OpenAITemporaryCapacityError struct {
+	Err     error
+	RetryAt time.Time
+}
+
+func (e *OpenAITemporaryCapacityError) Error() string {
+	if e == nil || e.Err == nil {
+		return "OpenAI capacity is temporarily unavailable"
+	}
+	return e.Err.Error()
+}
+
+func (e *OpenAITemporaryCapacityError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 type openAIFailbackProbeSubmission int
 
 const (
@@ -328,28 +350,33 @@ func openAIFailbackStateKey(accountID int64, model string) (string, bool) {
 }
 
 func (c *openAIFailbackController) selectionAction(ctx context.Context, accountID int64, model string) openAIFailbackAction {
+	action, _ := c.selectionActionWithRetryAt(ctx, accountID, model)
+	return action
+}
+
+func (c *openAIFailbackController) selectionActionWithRetryAt(ctx context.Context, accountID int64, model string) (openAIFailbackAction, time.Time) {
 	if c == nil || !c.cfg.enabled {
-		return openAIFailbackAllow
+		return openAIFailbackAllow, time.Time{}
 	}
 	key, ok := openAIFailbackStateKey(accountID, model)
 	if !ok {
-		return openAIFailbackAllow
+		return openAIFailbackAllow, time.Time{}
 	}
 	state, found := c.readState(ctx, key)
 	if !found {
-		return openAIFailbackAllow
+		return openAIFailbackAllow, time.Time{}
 	}
 	switch state.Phase {
 	case openAIFailbackPhaseCooldown:
 		if c.now().UnixMilli() < state.CooldownUntilUnixMilli {
 			c.metrics.blocked.Add(1)
-			return openAIFailbackBlock
+			return openAIFailbackBlock, time.UnixMilli(state.CooldownUntilUnixMilli)
 		}
-		return openAIFailbackProbe
+		return openAIFailbackProbe, time.Time{}
 	case openAIFailbackPhaseProbation:
-		return openAIFailbackAllow
+		return openAIFailbackAllow, time.Time{}
 	default:
-		return openAIFailbackAllow
+		return openAIFailbackAllow, time.Time{}
 	}
 }
 

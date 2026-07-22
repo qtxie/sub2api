@@ -187,6 +187,74 @@ func TestOpenAIFirstOutputTimeoutForReasoningEffort(t *testing.T) {
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("max"))
 }
 
+func TestOpenAIBoundedFirstOutputTimeoutUsesRequestRetryDeadline(t *testing.T) {
+	start := time.Date(2026, 7, 22, 13, 6, 0, 0, time.UTC)
+	ctx := WithOpenAIRequestRetryDeadline(context.Background(), start.Add(30*time.Second))
+
+	require.Equal(t, 30*time.Second, openAIBoundedFirstOutputTimeout(ctx, start, 0))
+	require.Equal(t, 10*time.Second, openAIBoundedFirstOutputTimeout(ctx, start, 10*time.Second))
+	require.Equal(t, 30*time.Second, openAIBoundedFirstOutputTimeout(ctx, start, time.Minute))
+}
+
+func TestOpenAIPassthroughRetryDeadlineStopsBeforeSemanticOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	start := time.Now()
+	ctx := WithOpenAIRequestRetryDeadline(context.Background(), start.Add(50*time.Millisecond))
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       reader,
+	}
+
+	_, err := svc.handleStreamingResponsePassthrough(ctx, resp, c, &Account{ID: 1}, start, "gpt-5.1", "gpt-5.1")
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusGatewayTimeout, failoverErr.StatusCode)
+	require.True(t, failoverErr.SafeToFailoverAfterWrite)
+}
+
+func TestOpenAIPassthroughRetryDeadlineDisarmsAfterSemanticOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	start := time.Now()
+	ctx := WithOpenAIRequestRetryDeadline(context.Background(), start.Add(50*time.Millisecond))
+	reader, writer := io.Pipe()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       reader,
+	}
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		_, _ = io.WriteString(writer, "event: response.output_text.delta\n"+
+			`data: {"type":"response.output_text.delta","delta":"ok"}`+"\n\n")
+		time.Sleep(75 * time.Millisecond)
+		_, _ = io.WriteString(writer, "event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"id":"resp_ok","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n")
+		_ = writer.Close()
+	}()
+
+	result, err := svc.handleStreamingResponsePassthrough(ctx, resp, c, &Account{ID: 1}, start, "gpt-5.1", "gpt-5.1")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Contains(t, rec.Body.String(), "response.completed")
+	select {
+	case <-writerDone:
+	case <-time.After(time.Second):
+		t.Fatal("passthrough writer did not finish")
+	}
+}
+
 func TestOpenAIFirstOutputTimeoutExcludedUserDisablesHTTPAndWebSocketGuards(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
 		OpenAIFirstOutputTimeoutSeconds:           120,

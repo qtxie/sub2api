@@ -918,6 +918,9 @@ type GatewayConfig struct {
 	OpenAICompactModel string `mapstructure:"openai_compact_model"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
+	// OpenAIRequestRetry: HTTP Responses requests may remain open and retry transient
+	// upstream failures until a total request budget is exhausted.
+	OpenAIRequestRetry GatewayOpenAIRequestRetryConfig `mapstructure:"openai_request_retry"`
 	// OpenAIScheduler: OpenAI 高级调度器粘性逃逸配置
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
@@ -1000,6 +1003,20 @@ type GatewayConfig struct {
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
 	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
+}
+
+// GatewayOpenAIRequestRetryConfig controls time-bounded retries for streaming
+// OpenAI Responses requests. MaxAttempts=0 means the time budget is the only
+// retry limit; non-retryable errors and client cancellation always stop early.
+type GatewayOpenAIRequestRetryConfig struct {
+	Enabled                  bool    `mapstructure:"enabled"`
+	TotalBudgetSeconds       int     `mapstructure:"total_budget_seconds"`
+	MaxAttempts              int     `mapstructure:"max_attempts"`
+	MaxWaitingRequests       int     `mapstructure:"max_waiting_requests"`
+	BackoffInitialSeconds    int     `mapstructure:"backoff_initial_seconds"`
+	BackoffMaxSeconds        int     `mapstructure:"backoff_max_seconds"`
+	JitterRatio              float64 `mapstructure:"jitter_ratio"`
+	WaitForTemporaryCapacity bool    `mapstructure:"wait_for_temporary_capacity"`
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -2241,6 +2258,14 @@ func setDefaults() {
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.4")
+	viper.SetDefault("gateway.openai_request_retry.enabled", true)
+	viper.SetDefault("gateway.openai_request_retry.total_budget_seconds", 1800)
+	viper.SetDefault("gateway.openai_request_retry.max_attempts", 0)
+	viper.SetDefault("gateway.openai_request_retry.max_waiting_requests", 1000)
+	viper.SetDefault("gateway.openai_request_retry.backoff_initial_seconds", 2)
+	viper.SetDefault("gateway.openai_request_retry.backoff_max_seconds", 30)
+	viper.SetDefault("gateway.openai_request_retry.jitter_ratio", 0.2)
+	viper.SetDefault("gateway.openai_request_retry.wait_for_temporary_capacity", true)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
@@ -2324,7 +2349,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.idle_conn_timeout_seconds", 90) // 空闲连接超时（秒）
 	viper.SetDefault("gateway.max_upstream_clients", 5000)
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
-	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
+	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 40) // 留出超过 30 分钟请求重试预算的槽位余量
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
 	viper.SetDefault("gateway.stream_keepalive_interval", 10)
 	viper.SetDefault("gateway.image_stream_data_interval_timeout", 900)
@@ -3269,6 +3294,27 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.RetryTotalBudgetMS < 0 {
 		return fmt.Errorf("gateway.openai_ws.retry_total_budget_ms must be non-negative")
+	}
+	requestRetry := c.Gateway.OpenAIRequestRetry
+	if requestRetry.MaxAttempts < 0 {
+		return fmt.Errorf("gateway.openai_request_retry.max_attempts must be non-negative")
+	}
+	if requestRetry.MaxWaitingRequests < 0 {
+		return fmt.Errorf("gateway.openai_request_retry.max_waiting_requests must be non-negative")
+	}
+	if requestRetry.JitterRatio < 0 || requestRetry.JitterRatio > 1 {
+		return fmt.Errorf("gateway.openai_request_retry.jitter_ratio must be within [0,1]")
+	}
+	if requestRetry.Enabled {
+		if requestRetry.TotalBudgetSeconds <= 0 {
+			return fmt.Errorf("gateway.openai_request_retry.total_budget_seconds must be positive when enabled")
+		}
+		if requestRetry.BackoffInitialSeconds <= 0 {
+			return fmt.Errorf("gateway.openai_request_retry.backoff_initial_seconds must be positive when enabled")
+		}
+		if requestRetry.BackoffMaxSeconds < requestRetry.BackoffInitialSeconds {
+			return fmt.Errorf("gateway.openai_request_retry.backoff_max_seconds must be >= backoff_initial_seconds")
+		}
 	}
 	if mode := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIWS.IngressModeDefault)); mode != "" {
 		switch mode {

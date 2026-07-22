@@ -39,6 +39,7 @@ type OpenAIGatewayHandler struct {
 	opsService                 *service.OpsService
 	concurrencyHelper          *ConcurrencyHelper
 	imageLimiter               *imageConcurrencyLimiter
+	requestRetryWaitLimiter    *openAIRequestRetryWaitLimiter
 	maxAccountSwitches         int
 	cfg                        *config.Config
 }
@@ -171,6 +172,7 @@ func NewOpenAIGatewayHandler(
 		opsService:               opsService,
 		concurrencyHelper:        NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		imageLimiter:             &imageConcurrencyLimiter{},
+		requestRetryWaitLimiter:  newOpenAIRequestRetryWaitLimiter(requestRetryMaxWaitingRequests(cfg)),
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
 	}
@@ -341,15 +343,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		defer userReleaseFunc()
 	}
 
-	// 2. Re-check billing eligibility after wait
-	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
-		reqLog.Info("openai.billing_eligibility_check_failed", zap.Error(err))
-		status, code, message, retryAfter := billingErrorDetails(err)
-		if retryAfter > 0 {
-			c.Header("Retry-After", strconv.Itoa(retryAfter))
+	// Billing is rechecked immediately before every upstream attempt. A request
+	// may remain open across several cooldown windows, so the pre-queue result is
+	// not sufficient for the full request lifetime.
+	checkBillingEligibility := func() bool {
+		if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
+			reqLog.Info("openai.billing_eligibility_check_failed", zap.Error(err))
+			status, code, message, retryAfter := billingErrorDetails(err)
+			if retryAfter > 0 {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+			}
+			h.handleStreamingAwareError(c, status, code, message, streamStarted)
+			return false
 		}
-		h.handleStreamingAwareError(c, status, code, message, streamStarted)
-		return
+		return true
 	}
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
@@ -369,6 +376,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var pendingSwitchStatus int
 	var pendingSwitchReason string
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
+	requestRetryCfg := config.GatewayOpenAIRequestRetryConfig{}
+	if h.cfg != nil {
+		requestRetryCfg = h.cfg.Gateway.OpenAIRequestRetry
+	}
+	requestRetry := newOpenAIRequestRetryController(requestRetryCfg, reqStream, time.Now())
 
 	// 生图意图的 /v1/responses 请求必须调度到确实支持 Responses API 的账号，否则
 	// 会在 forward 阶段被静默降级为无法生图的 Chat Completions 直转（#4417）。
@@ -376,12 +388,71 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 复用前置权限与并发阶段在未修改 body 上确认的显式生图意图，避免大 tools 请求重复扫描。
 	// 该判断已排除 Codex 被动 image_gen namespace，避免 CC-only 账号被误过滤（#4476）。
 	requiredCapability := openAIResponsesRequiredCapability(imageIntent, requestPlatform)
+	retryRequest := func(reason string, retryAt time.Time) (retry bool, handled bool) {
+		wait, ok := requestRetry.NextWait(time.Now(), retryAt)
+		if !ok {
+			return false, false
+		}
+		releaseWaiter, acquired := h.requestRetryWaitLimiter.Acquire()
+		if !acquired {
+			reqLog.Warn("openai.request_retry_wait_queue_full",
+				zap.Int("max_waiting_requests", requestRetryCfg.MaxWaitingRequests),
+			)
+			return false, false
+		}
+		defer releaseWaiter()
+		reqLog.Warn("openai.request_retry_waiting",
+			zap.String("reason", reason),
+			zap.Duration("wait", wait),
+			zap.Time("retry_at", retryAt),
+			zap.Int("attempts", requestRetry.attempts),
+			zap.Time("deadline", requestRetry.deadline),
+		)
+		if err := h.waitForOpenAIRequestRetry(c, wait, &streamStarted, true); err != nil {
+			if !failoverClientGone(c) {
+				reqLog.Warn("openai.request_retry_wait_failed", zap.Error(err))
+				_ = c.Error(err)
+			}
+			return false, true
+		}
+		if failoverClientGone(c) {
+			return false, true
+		}
+		if !requestRetry.CanAttempt(time.Now()) {
+			return false, false
+		}
+
+		failedAccountIDs = make(map[int64]struct{})
+		sameAccountRetryCount = make(map[int64]int)
+		switchCount = 0
+		firstOutputTimeoutSwitchCount = 0
+		pendingSwitchFrom = nil
+		pendingSwitchStatus = 0
+		pendingSwitchReason = ""
+		oauth429FailoverState = service.OpenAIOAuth429FailoverState{}
+		return true, true
+	}
 
 	for {
 		// Streaming Forward intentionally detaches the upstream request so usage can
 		// be drained after a disconnect. Re-check the client context before every
 		// account attempt so a canceled request never starts a failover replay.
 		if !openAIRequestAllowsFailoverReplay(c) {
+			return
+		}
+		if requestRetry.Enabled() && !requestRetry.CanAttempt(time.Now()) {
+			reqLog.Warn("openai.request_retry_budget_exhausted",
+				zap.Int("attempts", requestRetry.attempts),
+				zap.Time("deadline", requestRetry.deadline),
+			)
+			if lastFailoverErr != nil {
+				h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+			} else {
+				h.handleFailoverExhaustedSimple(c, http.StatusServiceUnavailable, streamStarted)
+			}
+			return
+		}
+		if !checkBillingEligibility() {
 			return
 		}
 		// Select account supporting the requested model
@@ -409,6 +480,28 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Error(openAICompatibleSelectionErrorForLog(err, requestPlatform)),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
+			var temporaryCapacityErr *service.OpenAITemporaryCapacityError
+			temporaryCapacity := errors.As(err, &temporaryCapacityErr)
+			retryAt := time.Time{}
+			if temporaryCapacity && requestRetryCfg.WaitForTemporaryCapacity {
+				retryAt = temporaryCapacityErr.RetryAt
+			}
+			shouldRetryRequest := requestRetry.Enabled() &&
+				((lastFailoverErr != nil && isOpenAIRequestRetryableStatus(lastFailoverErr.StatusCode)) ||
+					(temporaryCapacity && requestRetryCfg.WaitForTemporaryCapacity))
+			if shouldRetryRequest {
+				if retry, handled := retryRequest("temporary_capacity", retryAt); retry {
+					continue
+				} else if handled {
+					return
+				}
+				if lastFailoverErr != nil {
+					h.handleFailoverExhausted(c, lastFailoverErr, streamStarted)
+				} else {
+					h.handleFailoverExhaustedSimple(c, http.StatusServiceUnavailable, streamStarted)
+				}
+				return
+			}
 			if len(failedAccountIDs) == 0 {
 				if errors.Is(err, service.ErrNoAvailableCompactAccounts) {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
@@ -478,13 +571,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 用扣除 compact 心跳字节的口径快照：心跳注释不构成语义响应，
 		// 不能因心跳字节变化而放弃 failover 换号（#3887）。
 		writerSizeBeforeForward := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
+		requestRetry.RecordAttempt()
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
+			forwardCtx := c.Request.Context()
+			if requestRetry.Enabled() {
+				forwardCtx = service.WithOpenAIRequestRetryDeadline(forwardCtx, requestRetry.deadline)
+			}
+			return h.gatewayService.Forward(forwardCtx, c, account, forwardBody)
 		}()
 		cyberBlockKeyHTTP := ""
 		if service.GetOpsCyberPolicy(c) != nil {
@@ -533,11 +631,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						return
 					}
 					if openAIFirstOutputFailoverExhausted(failoverErr, &firstOutputTimeoutSwitchCount) {
+						lastFailoverErr = failoverErr
+						if requestRetry.Enabled() && isOpenAIRequestRetryableStatus(failoverErr.StatusCode) {
+							if retry, handled := retryRequest("first_output_timeout", time.Time{}); retry {
+								continue
+							} else if handled {
+								return
+							}
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
+					lastFailoverErr = failoverErr
 					// 池模式：同账号重试
-					if failoverErr.RetryableOnSameAccount {
+					if failoverErr.RetryableOnSameAccount && requestRetry.CanAttempt(time.Now()) {
 						retryLimit := account.GetPoolModeRetryCount()
 						if sameAccountRetryCount[account.ID] < retryLimit {
 							sameAccountRetryCount[account.ID]++
@@ -547,10 +654,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 								zap.Int("retry_limit", retryLimit),
 								zap.Int("retry_count", sameAccountRetryCount[account.ID]),
 							)
-							select {
-							case <-c.Request.Context().Done():
+							wait := sameAccountRetryDelay
+							if requestRetry.Enabled() {
+								if remaining := requestRetry.Remaining(time.Now()); remaining < wait {
+									wait = remaining
+								}
+							}
+							if err := h.waitForOpenAIRequestRetry(c, wait, &streamStarted, requestRetry.Enabled()); err != nil {
 								return
-							case <-time.After(sameAccountRetryDelay):
 							}
 							continue
 						}
@@ -559,8 +670,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					pendingSwitchStatus = failoverErr.StatusCode
 					pendingSwitchReason = string(failoverErr.Reason)
 					failedAccountIDs[account.ID] = struct{}{}
-					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
+						if requestRetry.Enabled() && isOpenAIRequestRetryableStatus(failoverErr.StatusCode) {
+							if retry, handled := retryRequest("max_account_switches", time.Time{}); retry {
+								continue
+							} else if handled {
+								return
+							}
+						}
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}

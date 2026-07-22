@@ -2112,6 +2112,24 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 
 	effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 	pendingProbes := make([]pendingFailbackProbe, 0, 1)
+	var earliestRetryAt time.Time
+	recordRetryAt := func(retryAt time.Time) {
+		if retryAt.IsZero() {
+			return
+		}
+		if earliestRetryAt.IsZero() || retryAt.Before(earliestRetryAt) {
+			earliestRetryAt = retryAt
+		}
+	}
+	temporaryCapacityError := func(err error) error {
+		if earliestRetryAt.IsZero() {
+			return err
+		}
+		if err == nil {
+			err = ErrNoAvailableAccounts
+		}
+		return &OpenAITemporaryCapacityError{Err: err, RetryAt: earliestRetryAt}
+	}
 	dispatchPendingProbes := func() {
 		for i := range pendingProbes {
 			pending := &pendingProbes[i]
@@ -2159,10 +2177,18 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 					releasePendingProbes()
 					return selected, selectedDecision, nil
 				}
+				action, retryAt := controller.selectionActionWithRetryAt(
+					ctx,
+					pending.selection.Account.ID,
+					pending.mappedModel,
+				)
+				if action == openAIFailbackBlock {
+					recordRetryAt(retryAt)
+				}
 				releaseSelection(pending.selection)
 			}
 			pendingProbes = nil
-			return selection, decision, err
+			return selection, decision, temporaryCapacityError(err)
 		}
 
 		account := selection.Account
@@ -2172,7 +2198,8 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 			return selection, decision, nil
 		}
 
-		switch controller.selectionAction(ctx, account.ID, mappedModel) {
+		action, retryAt := controller.selectionActionWithRetryAt(ctx, account.ID, mappedModel)
+		switch action {
 		case openAIFailbackAllow:
 			dispatchPendingProbes()
 			return selection, decision, nil
@@ -2187,6 +2214,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 				releaseSelection(selection)
 			}
 		default:
+			recordRetryAt(retryAt)
 			releaseSelection(selection)
 		}
 		if effectiveExcludedIDs == nil {
@@ -2194,7 +2222,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		}
 		if _, exists := effectiveExcludedIDs[account.ID]; exists {
 			releasePendingProbes()
-			return nil, decision, ErrNoAvailableAccounts
+			return nil, decision, temporaryCapacityError(ErrNoAvailableAccounts)
 		}
 		effectiveExcludedIDs[account.ID] = struct{}{}
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -26,6 +27,60 @@ type openAIResponsesFailoverCancelUpstream struct {
 	mu         sync.Mutex
 	accountIDs []int64
 	onFirstDo  func()
+}
+
+type openAIResponsesRequestRetryUpstream struct {
+	service.HTTPUpstream
+	mu    sync.Mutex
+	calls int
+}
+
+type openAIResponsesRequestRetryBlockingUpstream struct {
+	service.HTTPUpstream
+	mu    sync.Mutex
+	calls int
+}
+
+func (u *openAIResponsesRequestRetryBlockingUpstream) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	u.mu.Lock()
+	u.calls++
+	u.mu.Unlock()
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+func (u *openAIResponsesRequestRetryBlockingUpstream) callCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.calls
+}
+
+func (u *openAIResponsesRequestRetryUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+	u.mu.Lock()
+	u.calls++
+	call := u.calls
+	u.mu.Unlock()
+	if call <= 2 {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"error":{"message":"temporarily unavailable"}}`)),
+		}, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(bytes.NewBufferString(
+			"event: response.completed\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_retry_ok","object":"response","model":"gpt-5.1","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n",
+		)),
+	}, nil
+}
+
+func (u *openAIResponsesRequestRetryUpstream) callCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.calls
 }
 
 func (u *openAIResponsesFailoverCancelUpstream) Do(_ *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
@@ -191,4 +246,67 @@ func TestOpenAIGatewayHandlerResponses_FailoverContinuesForConnectedClient(t *te
 	require.Equal(t, []int64{1, 2}, upstream.calls(), "在线客户端应正常切换账号")
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 	require.Equal(t, "upstream_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+}
+
+func TestOpenAIGatewayHandlerResponses_RetriesNewRoundWithinTimeBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &openAIResponsesRequestRetryUpstream{}
+	handler := newOpenAIResponsesFailoverTestHandler(t, upstream)
+	handler.cfg.Gateway.OpenAIRequestRetry = config.GatewayOpenAIRequestRetryConfig{
+		Enabled:                  true,
+		TotalBudgetSeconds:       5,
+		MaxAttempts:              0,
+		BackoffInitialSeconds:    1,
+		BackoffMaxSeconds:        1,
+		JitterRatio:              0,
+		WaitForTemporaryCapacity: true,
+	}
+	c, rec := newOpenAIResponsesFailoverTestContext(t, nil)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/responses",
+		bytes.NewBufferString(`{"model":"gpt-5.1","stream":true,"input":"hello"}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	started := time.Now()
+	handler.Responses(c)
+
+	require.Equal(t, 3, upstream.callCount())
+	require.GreaterOrEqual(t, time.Since(started), time.Second)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "response.completed")
+}
+
+func TestOpenAIGatewayHandlerResponses_RetryBudgetBoundsInflightAttempt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &openAIResponsesRequestRetryBlockingUpstream{}
+	handler := newOpenAIResponsesFailoverTestHandler(t, upstream)
+	handler.cfg.Gateway.OpenAIRequestRetry = config.GatewayOpenAIRequestRetryConfig{
+		Enabled:                  true,
+		TotalBudgetSeconds:       1,
+		MaxAttempts:              0,
+		BackoffInitialSeconds:    1,
+		BackoffMaxSeconds:        1,
+		JitterRatio:              0,
+		WaitForTemporaryCapacity: true,
+	}
+	c, rec := newOpenAIResponsesFailoverTestContext(t, nil)
+	c.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/v1/responses",
+		bytes.NewBufferString(`{"model":"gpt-5.1","stream":true,"input":"hello"}`),
+	)
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	started := time.Now()
+	handler.Responses(c)
+	elapsed := time.Since(started)
+
+	require.Equal(t, 1, upstream.callCount())
+	require.GreaterOrEqual(t, elapsed, 900*time.Millisecond)
+	require.Less(t, elapsed, 2*time.Second)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
 }

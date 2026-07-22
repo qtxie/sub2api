@@ -405,6 +405,29 @@ func TestOpenAIFailbackSelectionSuccessfulProbeUsesFallbackWithoutWaiting(t *tes
 	}
 }
 
+func TestOpenAIFailbackSelectionReportsEarliestTemporaryCapacityRetry(t *testing.T) {
+	now := time.Date(2026, 7, 22, 13, 6, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	t.Cleanup(controller.stopBackgroundProbes)
+	controller.now = func() time.Time { return now }
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
+	controller.recordProductionResult(context.Background(), 52, "gpt-5-mini", false, nil)
+
+	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+
+	require.Nil(t, selection)
+	require.ErrorIs(t, err, ErrNoAvailableAccounts)
+	var temporary *OpenAITemporaryCapacityError
+	require.ErrorAs(t, err, &temporary)
+	require.True(t, now.Add(2*time.Minute).Equal(temporary.RetryAt))
+}
+
 func TestOpenAIFailbackSelectionFailedProbeFallsBackAndEscalates(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())

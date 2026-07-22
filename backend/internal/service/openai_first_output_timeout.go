@@ -251,6 +251,43 @@ func (s *OpenAIGatewayService) openAIFirstOutputTimeoutForRequest(c *gin.Context
 	return s.openAIFirstOutputTimeout(reasoningEffort)
 }
 
+type openAIRequestRetryDeadlineContextKey struct{}
+
+// WithOpenAIRequestRetryDeadline carries the handler's total pre-output retry
+// deadline into the service layer without coupling it to client cancellation.
+func WithOpenAIRequestRetryDeadline(ctx context.Context, deadline time.Time) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if deadline.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, openAIRequestRetryDeadlineContextKey{}, deadline)
+}
+
+func openAIRequestRetryDeadline(ctx context.Context) (time.Time, bool) {
+	if ctx == nil {
+		return time.Time{}, false
+	}
+	deadline, ok := ctx.Value(openAIRequestRetryDeadlineContextKey{}).(time.Time)
+	return deadline, ok && !deadline.IsZero()
+}
+
+func openAIBoundedFirstOutputTimeout(ctx context.Context, startTime time.Time, configured time.Duration) time.Duration {
+	deadline, ok := openAIRequestRetryDeadline(ctx)
+	if !ok {
+		return configured
+	}
+	budget := deadline.Sub(startTime)
+	if budget <= 0 {
+		budget = time.Nanosecond
+	}
+	if configured <= 0 || budget < configured {
+		return budget
+	}
+	return configured
+}
+
 func (s *OpenAIGatewayService) openAIFirstOutputTimeoutExcludedForRequest(c *gin.Context) bool {
 	if s == nil || s.cfg == nil || c == nil || c.Request == nil {
 		return false
