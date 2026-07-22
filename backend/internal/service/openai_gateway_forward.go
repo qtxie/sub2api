@@ -19,6 +19,7 @@ import (
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	clearGrokResponsesClientToolMapping(c)
 	return s.forwardWithSameAccountModelFallback(ctx, c, account, body, func(candidateBody []byte) (*OpenAIForwardResult, error) {
 		return s.forwardOnce(ctx, c, account, candidateBody)
 	})
