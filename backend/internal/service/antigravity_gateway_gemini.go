@@ -90,6 +90,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		return nil, s.writeGoogleError(c, http.StatusForbidden, fmt.Sprintf("model %s not in whitelist", originalModel))
 	}
+	activeRequestedModel := originalModel
 	billingModel := mappedModel
 
 	// 获取 access_token
@@ -194,14 +195,21 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		if s.settingService != nil && s.settingService.IsModelFallbackEnabled(ctx) &&
 			IsUpstreamModelUnavailableError(resp.StatusCode, respBody) {
 			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
-			activeModel := mappedModel
-			for _, fallbackModel := range s.settingService.GetFallbackModels(ctx, PlatformAntigravity) {
-				if fallbackModel == "" || fallbackModel == activeModel {
+			chain := s.settingService.BuildModelFallbackChain(ctx, PlatformAntigravity, originalModel)
+			attemptedMappedModels := map[string]struct{}{mappedModel: struct{}{}}
+			for _, fallbackModel := range chain[1:] {
+				fallbackMappedModel := s.getMappedModel(account, fallbackModel)
+				if fallbackMappedModel == "" {
+					logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Skipping unsupported fallback model %s on account %s", fallbackModel, account.Name)
 					continue
 				}
-				logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Model unavailable (%s), retrying with fallback model %s (account: %s)", activeModel, fallbackModel, account.Name)
+				if _, attempted := attemptedMappedModels[fallbackMappedModel]; attempted {
+					continue
+				}
+				attemptedMappedModels[fallbackMappedModel] = struct{}{}
+				logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Model unavailable (%s), retrying with fallback model %s -> %s (account: %s)", mappedModel, fallbackModel, fallbackMappedModel, account.Name)
 
-				fallbackWrapped, wrapErr := s.wrapV1InternalRequest(projectID, fallbackModel, injectedBody)
+				fallbackWrapped, wrapErr := s.wrapV1InternalRequest(projectID, fallbackMappedModel, injectedBody)
 				if wrapErr != nil {
 					return nil, fmt.Errorf("build Antigravity fallback request: %w", wrapErr)
 				}
@@ -239,11 +247,11 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 
 				_ = resp.Body.Close()
 				resp = fallbackResp
-				activeModel = fallbackModel
-				billingModel = fallbackModel
+				activeRequestedModel = fallbackModel
+				mappedModel = fallbackMappedModel
+				billingModel = fallbackMappedModel
 				contentType = resp.Header.Get("Content-Type")
 				if resp.StatusCode < 400 {
-					mappedModel = fallbackModel
 					break
 				}
 
@@ -253,7 +261,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 				if !IsUpstreamModelUnavailableError(resp.StatusCode, respBody) {
 					break
 				}
-				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, fallbackModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, activeRequestedModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
 			}
 			if resp.StatusCode >= 400 && IsUpstreamModelUnavailableError(resp.StatusCode, respBody) {
 				return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
@@ -302,7 +310,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 					settingService:  s.settingService,
 					accountRepo:     s.accountRepo,
 					handleError:     s.handleUpstreamError,
-					requestedModel:  originalModel,
+					requestedModel:  activeRequestedModel,
 					isStickySession: isStickySession,
 					groupID:         forwardOpts.groupID,
 					sessionHash:     forwardOpts.sessionHash,
@@ -381,7 +389,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		if unwrapErr != nil || len(unwrappedForOps) == 0 {
 			unwrappedForOps = respBody
 		}
-		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
+		s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, activeRequestedModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
 		upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(unwrappedForOps))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		upstreamDetail := s.getUpstreamErrorDetail(unwrappedForOps)

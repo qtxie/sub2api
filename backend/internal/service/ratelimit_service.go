@@ -196,7 +196,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		return false
 	}
 
-	if len(requestedModel) > 0 && s.HandleUpstreamModelNotFound(ctx, account, requestedModel[0], statusCode, responseBody) {
+	if len(requestedModel) > 0 && s.HandleUpstreamModelUnavailable(ctx, account, requestedModel[0], statusCode, responseBody) {
 		return true
 	}
 
@@ -2023,8 +2023,38 @@ const upstreamModelNotFoundCooldown = 30 * time.Minute
 const upstreamModelNotFoundReason = "upstream_404_model_not_found"
 const upstreamCodexPlanGatedModelCooldown = 30 * time.Minute
 const upstreamCodexPlanGatedModelReason = "upstream_400_codex_plan_gated_model"
+const upstreamModelUnavailableCooldown = 30 * time.Minute
+const upstreamModelUnavailableReason = "upstream_model_unavailable"
 const tempUnschedBodyMaxBytes = 64 << 10
 const tempUnschedMessageMaxBytes = 2048
+
+// HandleUpstreamModelUnavailable keeps deterministic model capability errors
+// scoped to the (account, model) pair. In particular, a model-specific 403
+// must not flow into generic credential handling and disable the whole account.
+func (s *RateLimitService) HandleUpstreamModelUnavailable(ctx context.Context, account *Account, requestedModel string, statusCode int, responseBody []byte) bool {
+	if s == nil || account == nil || s.accountRepo == nil ||
+		!account.ShouldHandleErrorCode(statusCode) ||
+		!IsUpstreamModelUnavailableError(statusCode, responseBody) {
+		return false
+	}
+	if s.HandleUpstreamModelNotFound(ctx, account, requestedModel, statusCode, responseBody) {
+		return true
+	}
+	// Generic 400 handling does not change account state. Preserve that behavior
+	// for API-key accounts that happen to return an OAuth-style plan-gating
+	// phrase, while still preventing 401/403/custom-code paths from widening a
+	// model capability error into an account failure.
+	if statusCode == http.StatusBadRequest {
+		return false
+	}
+	return s.setUpstreamModelUnavailableRateLimit(
+		ctx,
+		account,
+		requestedModel,
+		upstreamModelUnavailableCooldown,
+		upstreamModelUnavailableReason,
+	)
+}
 
 // HandleUpstreamModelNotFound marks the requested model as temporarily
 // unavailable on the account when the upstream deterministically reports it
@@ -2051,20 +2081,27 @@ func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, acco
 	default:
 		return false
 	}
-	modelKey := modelRateLimitKeyForUpstreamModelNotFound(ctx, account, requestedModel)
+	return s.setUpstreamModelUnavailableRateLimit(ctx, account, requestedModel, cooldown, reason)
+}
+
+func (s *RateLimitService) setUpstreamModelUnavailableRateLimit(ctx context.Context, account *Account, requestedModel string, cooldown time.Duration, reason string) bool {
+	if s == nil || account == nil || s.accountRepo == nil {
+		return false
+	}
+	modelKey := modelRateLimitKeyForUpstreamModelUnavailable(ctx, account, requestedModel)
 	if modelKey == "" {
 		return false
 	}
 	resetAt := time.Now().Add(cooldown)
 	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, modelKey, resetAt, reason); err != nil {
-		slog.Warn("upstream_model_not_found_set_model_rate_limit_failed", "account_id", account.ID, "model", modelKey, "reason", reason, "error", err)
+		slog.Warn("upstream_model_unavailable_set_model_rate_limit_failed", "account_id", account.ID, "model", modelKey, "reason", reason, "error", err)
 		return true
 	}
-	slog.Info("upstream_model_not_found_model_rate_limited", "account_id", account.ID, "model", modelKey, "reason", reason, "reset_at", resetAt)
+	slog.Info("upstream_model_unavailable_model_rate_limited", "account_id", account.ID, "model", modelKey, "reason", reason, "reset_at", resetAt)
 	return true
 }
 
-func modelRateLimitKeyForUpstreamModelNotFound(ctx context.Context, account *Account, requestedModel string) string {
+func modelRateLimitKeyForUpstreamModelUnavailable(ctx context.Context, account *Account, requestedModel string) string {
 	modelKey := strings.TrimSpace(requestedModel)
 	if account == nil || modelKey == "" {
 		return modelKey

@@ -88,6 +88,10 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	// 处理错误响应
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
+		if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", false)
+			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
+		}
 
 		// 429 错误时标记账号限流
 		if resp.StatusCode == http.StatusTooManyRequests {
@@ -142,6 +146,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 
 	return &ForwardResult{
 		Model:            originalModel,
+		UpstreamModel:    originalModel,
 		Stream:           claudeReq.Stream,
 		Duration:         duration,
 		FirstTokenMs:     firstTokenMs,

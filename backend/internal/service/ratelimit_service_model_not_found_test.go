@@ -23,8 +23,14 @@ type modelNotFoundRateLimitCall struct {
 type modelNotFoundAccountRepoStub struct {
 	mockAccountRepoForGemini
 	tempCalls           int
+	setErrorCalls       int
 	modelRateLimitCalls []modelNotFoundRateLimitCall
 	modelRateLimitErr   error
+}
+
+func (r *modelNotFoundAccountRepoStub) SetError(context.Context, int64, string) error {
+	r.setErrorCalls++
+	return nil
 }
 
 func (r *modelNotFoundAccountRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
@@ -86,6 +92,28 @@ func TestRateLimitService_HandleUpstreamError_ModelNotFoundWriteFailureDoesNotTe
 	require.True(t, handled)
 	require.Zero(t, repo.tempCalls)
 	require.Len(t, repo.modelRateLimitCalls, 1)
+}
+
+func TestRateLimitService_HandleUpstreamError_ModelAccess403StaysModelScoped(t *testing.T) {
+	repo := &modelNotFoundAccountRepoStub{}
+	svc := &RateLimitService{accountRepo: repo}
+	account := openAIModelNotFoundTempAccount()
+
+	handled := svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusForbidden,
+		http.Header{},
+		[]byte(`{"error":{"message":"You do not have access to model gpt-5.4"}}`),
+		"gpt-5.4",
+	)
+
+	require.True(t, handled)
+	require.Zero(t, repo.setErrorCalls)
+	require.Zero(t, repo.tempCalls)
+	require.Len(t, repo.modelRateLimitCalls, 1)
+	require.Equal(t, "gpt-5.4", repo.modelRateLimitCalls[0].scope)
+	require.Equal(t, upstreamModelUnavailableReason, repo.modelRateLimitCalls[0].reason)
 }
 
 func TestRateLimitService_HandleUpstreamError_Bare404UsesModelScopedTempUnschedulableWhenModelKnown(t *testing.T) {

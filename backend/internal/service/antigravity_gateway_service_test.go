@@ -372,7 +372,10 @@ func TestAntigravityGatewayService_ForwardGemini_TriesOrderedModelsOnSameAccount
 		Credentials: map[string]any{
 			"access_token": "token",
 			antigravityProjectIDFallbackCredentialKey: "project",
-			"model_mapping": map[string]any{"model-a": "model-a"},
+			"model_mapping": map[string]any{
+				"model-a": "model-a",
+				"model-b": "upstream-model-b",
+			},
 		},
 	}
 
@@ -380,13 +383,66 @@ func TestAntigravityGatewayService_ForwardGemini_TriesOrderedModelsOnSameAccount
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "model-a", result.Model)
-	require.Equal(t, "model-b", result.UpstreamModel)
+	require.Equal(t, "upstream-model-b", result.UpstreamModel)
 	require.Equal(t, []int64{77, 77}, upstream.accountIDs)
 	require.Len(t, upstream.requestBodies, 2)
-	for index, wantModel := range []string{"model-a", "model-b"} {
+	for index, wantModel := range []string{"model-a", "upstream-model-b"} {
 		var wrapped map[string]any
 		require.NoError(t, json.Unmarshal(upstream.requestBodies[index], &wrapped))
 		require.Equal(t, wantModel, wrapped["model"])
+	}
+}
+
+func TestAntigravityGatewayService_ForwardUpstream_TriesFallbackBeforeWriting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+	body := []byte(`{"model":"model-a","max_tokens":16,"messages":[{"role":"user","content":"hello"}],"stream":false}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{
+		{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"model not found"}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_1","type":"message","role":"assistant","model":"model-b","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		},
+	}}
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:       "true",
+		SettingKeyFallbackModelsAntigravity: `["model-b"]`,
+	}}, &config.Config{})
+	svc := &AntigravityGatewayService{
+		settingService: settings,
+		httpUpstream:   upstream,
+	}
+	account := &Account{
+		ID: 78, Name: "upstream-account", Platform: PlatformAntigravity, Type: AccountTypeUpstream, Status: StatusActive, Concurrency: 1,
+		Credentials: map[string]any{
+			"base_url": "https://example.test",
+			"api_key":  "test-key",
+		},
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "model-a", result.Model)
+	require.Equal(t, "model-b", result.UpstreamModel)
+	require.Equal(t, http.StatusOK, writer.Code)
+	require.Contains(t, writer.Body.String(), `"text":"ok"`)
+	require.Equal(t, []int64{78, 78}, upstream.accountIDs)
+	require.Len(t, upstream.requestBodies, 2)
+	for index, wantModel := range []string{"model-a", "model-b"} {
+		var request map[string]any
+		require.NoError(t, json.Unmarshal(upstream.requestBodies[index], &request))
+		require.Equal(t, wantModel, request["model"])
 	}
 }
 
