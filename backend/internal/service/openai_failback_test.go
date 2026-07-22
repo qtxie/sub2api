@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -184,6 +186,59 @@ type openAIFailbackProbeUpstream struct {
 	concurrency int
 }
 
+type blockingOpenAIFailbackProbeUpstream struct {
+	started     chan struct{}
+	unblock     chan struct{}
+	startOnce   sync.Once
+	unblockOnce sync.Once
+	calls       atomic.Int64
+}
+
+func newBlockingOpenAIFailbackProbeUpstream() *blockingOpenAIFailbackProbeUpstream {
+	return &blockingOpenAIFailbackProbeUpstream{
+		started: make(chan struct{}),
+		unblock: make(chan struct{}),
+	}
+}
+
+func (u *blockingOpenAIFailbackProbeUpstream) Do(
+	req *http.Request,
+	_ string,
+	_ int64,
+	_ int,
+) (*http.Response, error) {
+	u.calls.Add(1)
+	u.startOnce.Do(func() { close(u.started) })
+	select {
+	case <-u.unblock:
+		return failbackProbeResponse(
+			http.StatusOK,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n",
+		), nil
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+}
+
+func (u *blockingOpenAIFailbackProbeUpstream) DoWithTLS(
+	req *http.Request,
+	proxyURL string,
+	accountID int64,
+	concurrency int,
+	_ *tlsfingerprint.Profile,
+) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, concurrency)
+}
+
+func (u *blockingOpenAIFailbackProbeUpstream) release() {
+	u.unblockOnce.Do(func() { close(u.unblock) })
+}
+
+type rejectingOpenAIFailbackProbeExecutor struct{}
+
+func (rejectingOpenAIFailbackProbeExecutor) Submit(func()) bool { return false }
+func (rejectingOpenAIFailbackProbeExecutor) Stop()              {}
+
 type openAIFailbackStoreStub struct {
 	value       string
 	found       bool
@@ -285,32 +340,66 @@ func TestOpenAIFailbackProbeUsesSameMappedModelAndCheapOutput(t *testing.T) {
 	require.Equal(t, true, payload["stream"])
 }
 
-func TestOpenAIFailbackSelectionSuccessfulProbeAdmitsSameRequest(t *testing.T) {
+func TestOpenAIFailbackSelectionSuccessfulProbeUsesFallbackWithoutWaiting(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	t.Cleanup(controller.stopBackgroundProbes)
 	controller.now = func() time.Time { return now }
 	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
 	now = now.Add(2 * time.Minute)
 
-	upstream := &openAIFailbackProbeUpstream{response: failbackProbeResponse(
-		http.StatusOK,
-		"data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n",
-	)}
+	upstream := newBlockingOpenAIFailbackProbeUpstream()
+	t.Cleanup(upstream.release)
 	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
-	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+	type selectionResult struct {
+		selection *AccountSelectionResult
+		err       error
+	}
+	resultCh := make(chan selectionResult, 1)
+	go func() {
+		selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+			context.Background(), nil, "", "", "gpt-5", nil,
+			OpenAIUpstreamTransportAny,
+			OpenAIEndpointCapabilityChatCompletions,
+			false, false, true,
+		)
+		resultCh <- selectionResult{selection: selection, err: err}
+	}()
+
+	var result selectionResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("selection waited for the background failback probe")
+	}
+	require.NoError(t, result.err)
+	require.NotNil(t, result.selection)
+	require.Equal(t, int64(52), result.selection.Account.ID)
+	select {
+	case <-upstream.started:
+	case <-time.After(time.Second):
+		t.Fatal("background failback probe did not start")
+	}
+
+	upstream.release()
+	require.Eventually(t, func() bool {
+		state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
+		return state.Phase == openAIFailbackPhaseProbation
+	}, time.Second, 10*time.Millisecond)
+
+	next, _, err := svc.SelectAccountWithSchedulerForCapability(
 		context.Background(), nil, "", "", "gpt-5", nil,
 		OpenAIUpstreamTransportAny,
 		OpenAIEndpointCapabilityChatCompletions,
 		false, false, true,
 	)
 	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.Equal(t, int64(51), selection.Account.ID)
-	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
-
-	body, err := io.ReadAll(upstream.request.Body)
-	require.NoError(t, err)
-	require.Contains(t, string(body), `"model":"gpt-5-mini"`)
+	require.NotNil(t, next)
+	require.Equal(t, int64(51), next.Account.ID)
+	if next.ReleaseFunc != nil {
+		next.ReleaseFunc()
+	}
+	selection := result.selection
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
@@ -319,6 +408,7 @@ func TestOpenAIFailbackSelectionSuccessfulProbeAdmitsSameRequest(t *testing.T) {
 func TestOpenAIFailbackSelectionFailedProbeFallsBackAndEscalates(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	t.Cleanup(controller.stopBackgroundProbes)
 	controller.now = func() time.Time { return now }
 	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
 	now = now.Add(2 * time.Minute)
@@ -334,7 +424,11 @@ func TestOpenAIFailbackSelectionFailedProbeFallsBackAndEscalates(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.Equal(t, int64(52), selection.Account.ID)
-	state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
+	var state openAIFailbackState
+	require.Eventually(t, func() bool {
+		state = requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
+		return state.CooldownLevel == 1
+	}, time.Second, 10*time.Millisecond)
 	require.Equal(t, 1, state.CooldownLevel)
 	require.Equal(t, int64(300), state.CooldownSeconds)
 	if selection.ReleaseFunc != nil {
@@ -342,11 +436,228 @@ func TestOpenAIFailbackSelectionFailedProbeFallsBackAndEscalates(t *testing.T) {
 	}
 }
 
+func TestOpenAIFailbackConcurrentSelectionsRunOneProbeAndUseFallback(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	t.Cleanup(controller.stopBackgroundProbes)
+	controller.now = func() time.Time { return now }
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+
+	upstream := newBlockingOpenAIFailbackProbeUpstream()
+	t.Cleanup(upstream.release)
+	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
+
+	const requestCount = 20
+	type result struct {
+		selection *AccountSelectionResult
+		err       error
+	}
+	start := make(chan struct{})
+	results := make(chan result, requestCount)
+	var wg sync.WaitGroup
+	for i := 0; i < requestCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+				context.Background(), nil, "", "", "gpt-5", nil,
+				OpenAIUpstreamTransportAny,
+				OpenAIEndpointCapabilityChatCompletions,
+				false, false, true,
+			)
+			results <- result{selection: selection, err: err}
+		}()
+	}
+	close(start)
+
+	for i := 0; i < requestCount; i++ {
+		select {
+		case current := <-results:
+			require.NoError(t, current.err)
+			require.NotNil(t, current.selection)
+			require.Equal(t, int64(52), current.selection.Account.ID)
+			if current.selection.ReleaseFunc != nil {
+				current.selection.ReleaseFunc()
+			}
+		case <-time.After(time.Second):
+			t.Fatal("a selection waited for the background failback probe")
+		}
+	}
+	wg.Wait()
+	select {
+	case <-upstream.started:
+	case <-time.After(time.Second):
+		t.Fatal("background failback probe did not start")
+	}
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, int64(1), upstream.calls.Load())
+
+	upstream.release()
+	require.Eventually(t, func() bool {
+		state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
+		return state.Phase == openAIFailbackPhaseProbation
+	}, time.Second, 10*time.Millisecond)
+	controller.stopBackgroundProbes()
+	require.Equal(t, int64(1), upstream.calls.Load())
+}
+
+func TestOpenAIFailbackSelectionWithoutFallbackProbesSynchronously(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	t.Cleanup(controller.stopBackgroundProbes)
+	controller.now = func() time.Time { return now }
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+
+	upstream := &openAIFailbackProbeUpstream{response: failbackProbeResponse(
+		http.StatusOK,
+		"data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\n",
+	)}
+	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
+	svc.accountRepo = schedulerTestOpenAIAccountRepo{accounts: openAIFailbackSelectionTestAccounts()[:1]}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(51), selection.Account.ID)
+	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIFailbackRejectedBackgroundProbeReleasesSlot(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackControllerWithExecutor(
+		nil,
+		testOpenAIFailbackConfig(),
+		rejectingOpenAIFailbackProbeExecutor{},
+	)
+	t.Cleanup(controller.stopBackgroundProbes)
+	controller.now = func() time.Time { return now }
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+
+	releasedIDs := make([]int64, 0, 2)
+	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
+	svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{releasedIDs: &releasedIDs})
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(52), selection.Account.ID)
+	require.Contains(t, releasedIDs, int64(51))
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIFailbackWaitPlanDoesNotProbeWithoutSlot(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	t.Cleanup(controller.stopBackgroundProbes)
+	controller.now = func() time.Time { return now }
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+
+	upstream := newBlockingOpenAIFailbackProbeUpstream()
+	t.Cleanup(upstream.release)
+	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
+	svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{51: false, 52: false},
+	})
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(52), selection.Account.ID)
+	require.NotNil(t, selection.WaitPlan)
+	require.Equal(t, int64(0), upstream.calls.Load())
+}
+
+func TestOpenAIFailbackShutdownCancelsProbeAndReleasesSlot(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	controller.now = func() time.Time { return now }
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+
+	upstream := newBlockingOpenAIFailbackProbeUpstream()
+	t.Cleanup(upstream.release)
+	releasedIDs := make([]int64, 0, 2)
+	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
+	svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{releasedIDs: &releasedIDs})
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(52), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+	select {
+	case <-upstream.started:
+	case <-time.After(time.Second):
+		t.Fatal("background failback probe did not start")
+	}
+
+	svc.CloseOpenAIWSPool()
+	require.Contains(t, releasedIDs, int64(51))
+	require.Contains(t, releasedIDs, int64(52))
+	state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
+	require.Equal(t, 0, state.CooldownLevel)
+	require.Equal(t, openAIFailbackPhaseCooldown, state.Phase)
+}
+
+func TestOpenAIFailbackShutdownStopsLazilyInitializedController(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIScheduler.FailbackProbeEnabled = true
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	require.Nil(t, svc.openaiFailback)
+	svc.CloseOpenAIWSPool()
+
+	controller := svc.getOpenAIFailbackController()
+	require.NotNil(t, controller)
+	require.ErrorIs(t, controller.probeCtx.Err(), context.Canceled)
+	require.False(t, controller.probeExecutor.Submit(func() {}))
+}
+
 func newOpenAIFailbackSelectionTestService(
 	controller *openAIFailbackController,
 	upstream HTTPUpstream,
 ) *OpenAIGatewayService {
-	accounts := []Account{
+	accounts := openAIFailbackSelectionTestAccounts()
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	return &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+		httpUpstream:       upstream,
+		openaiFailback:     controller,
+	}
+}
+
+func openAIFailbackSelectionTestAccounts() []Account {
+	return []Account{
 		{
 			ID: 51, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
 			Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0,
@@ -363,15 +674,6 @@ func newOpenAIFailbackSelectionTestService(
 				"model_mapping": map[string]any{"gpt-5": "gpt-5-mini"},
 			},
 		},
-	}
-	cfg := &config.Config{}
-	cfg.Gateway.Scheduling.LoadBatchEnabled = false
-	return &OpenAIGatewayService{
-		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
-		cfg:                cfg,
-		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
-		httpUpstream:       upstream,
-		openaiFailback:     controller,
 	}
 }
 

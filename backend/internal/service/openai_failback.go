@@ -33,6 +33,14 @@ const (
 	openAIFailbackProbe
 )
 
+type openAIFailbackProbeSubmission int
+
+const (
+	openAIFailbackProbeRejected openAIFailbackProbeSubmission = iota
+	openAIFailbackProbeSubmitted
+	openAIFailbackProbeAlreadyScheduled
+)
+
 type openAIFailbackConfig struct {
 	enabled            bool
 	defaultCooldown    time.Duration
@@ -103,20 +111,53 @@ type openAIFailbackController struct {
 	cfg   openAIFailbackConfig
 	now   func() time.Time
 
-	mu      sync.Mutex
-	local   map[string]openAIFailbackLocalState
-	leases  map[string]openAIFailbackLocalLease
-	metrics openAIFailbackMetrics
+	probeCtx      context.Context
+	probeCancel   context.CancelFunc
+	probeExecutor openAIFailbackProbeExecutor
+	probeStopOnce sync.Once
+
+	mu              sync.Mutex
+	local           map[string]openAIFailbackLocalState
+	leases          map[string]openAIFailbackLocalLease
+	scheduledProbes map[string]struct{}
+	metrics         openAIFailbackMetrics
 }
 
 func newOpenAIFailbackController(store OpenAIFailbackStore, cfg openAIFailbackConfig) *openAIFailbackController {
+	return newOpenAIFailbackControllerWithExecutor(store, cfg, newOpenAIFailbackProbeExecutor())
+}
+
+func newOpenAIFailbackControllerWithExecutor(
+	store OpenAIFailbackStore,
+	cfg openAIFailbackConfig,
+	executor openAIFailbackProbeExecutor,
+) *openAIFailbackController {
+	probeCtx, probeCancel := context.WithCancel(context.Background())
 	return &openAIFailbackController{
-		store:  store,
-		cfg:    cfg,
-		now:    time.Now,
-		local:  make(map[string]openAIFailbackLocalState),
-		leases: make(map[string]openAIFailbackLocalLease),
+		store:           store,
+		cfg:             cfg,
+		now:             time.Now,
+		probeCtx:        probeCtx,
+		probeCancel:     probeCancel,
+		probeExecutor:   executor,
+		local:           make(map[string]openAIFailbackLocalState),
+		leases:          make(map[string]openAIFailbackLocalLease),
+		scheduledProbes: make(map[string]struct{}),
 	}
+}
+
+func (c *openAIFailbackController) stopBackgroundProbes() {
+	if c == nil {
+		return
+	}
+	c.probeStopOnce.Do(func() {
+		if c.probeCancel != nil {
+			c.probeCancel()
+		}
+		if c.probeExecutor != nil {
+			c.probeExecutor.Stop()
+		}
+	})
 }
 
 func (s *OpenAIGatewayService) getOpenAIFailbackController() *openAIFailbackController {
@@ -179,6 +220,17 @@ func (s *OpenAIGatewayService) allowOpenAIFailbackSelection(
 	if !acquired {
 		return false
 	}
+	return s.runAcquiredOpenAIFailbackProbe(ctx, controller, account, mappedModel, requiredCapability, owner)
+}
+
+func (s *OpenAIGatewayService) runAcquiredOpenAIFailbackProbe(
+	ctx context.Context,
+	controller *openAIFailbackController,
+	account *Account,
+	mappedModel string,
+	requiredCapability OpenAIEndpointCapability,
+	owner string,
+) bool {
 	defer func() {
 		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), openAIFailbackStoreTimeout)
 		controller.releaseProbe(releaseCtx, account.ID, mappedModel, owner)
@@ -211,6 +263,59 @@ func (s *OpenAIGatewayService) allowOpenAIFailbackSelection(
 	allowed := controller.recordProbeSuccess(stateCtx, account.ID, mappedModel, result.TTFTMS)
 	stateCancel()
 	return allowed
+}
+
+func (s *OpenAIGatewayService) submitOpenAIFailbackProbe(
+	controller *openAIFailbackController,
+	selection *AccountSelectionResult,
+	mappedModel string,
+	requiredCapability OpenAIEndpointCapability,
+) openAIFailbackProbeSubmission {
+	if s == nil || controller == nil || selection == nil || selection.Account == nil ||
+		!selection.Acquired || controller.probeExecutor == nil {
+		return openAIFailbackProbeRejected
+	}
+	account := selection.Account
+	probeKey, reserved := controller.reserveBackgroundProbe(account.ID, mappedModel)
+	if !reserved {
+		return openAIFailbackProbeAlreadyScheduled
+	}
+	releaseSlot := selection.ReleaseFunc
+	submitted := controller.probeExecutor.Submit(func() {
+		defer controller.releaseBackgroundProbeReservation(probeKey)
+		if releaseSlot != nil {
+			defer releaseSlot()
+		}
+		if controller.probeCtx == nil || controller.probeCtx.Err() != nil {
+			return
+		}
+
+		stateCtx, stateCancel := context.WithTimeout(controller.probeCtx, openAIFailbackStoreTimeout)
+		action := controller.selectionAction(stateCtx, account.ID, mappedModel)
+		if action != openAIFailbackProbe {
+			stateCancel()
+			return
+		}
+		owner, acquired := controller.acquireProbe(stateCtx, account.ID, mappedModel)
+		stateCancel()
+		if !acquired {
+			return
+		}
+		_ = s.runAcquiredOpenAIFailbackProbe(
+			controller.probeCtx,
+			controller,
+			account,
+			mappedModel,
+			requiredCapability,
+			owner,
+		)
+	})
+	if !submitted {
+		controller.releaseBackgroundProbeReservation(probeKey)
+		return openAIFailbackProbeRejected
+	}
+	selection.ReleaseFunc = nil
+	return openAIFailbackProbeSubmitted
 }
 
 func openAIFailbackStateKey(accountID int64, model string) (string, bool) {
@@ -471,6 +576,29 @@ func (c *openAIFailbackController) acquireLocalProbe(key, owner string, ttl time
 	}
 	c.leases[key] = openAIFailbackLocalLease{owner: owner, expiresAt: now.Add(ttl)}
 	return true
+}
+
+func (c *openAIFailbackController) reserveBackgroundProbe(accountID int64, model string) (string, bool) {
+	key, ok := openAIFailbackStateKey(accountID, model)
+	if c == nil || !ok {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.scheduledProbes[key]; exists {
+		return key, false
+	}
+	c.scheduledProbes[key] = struct{}{}
+	return key, true
+}
+
+func (c *openAIFailbackController) releaseBackgroundProbeReservation(key string) {
+	if c == nil || key == "" {
+		return
+	}
+	c.mu.Lock()
+	delete(c.scheduledProbes, key)
+	c.mu.Unlock()
 }
 
 func (c *openAIFailbackController) readState(ctx context.Context, key string) (openAIFailbackState, bool) {

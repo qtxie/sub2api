@@ -2096,7 +2096,46 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 		)
 	}
 
+	type pendingFailbackProbe struct {
+		selection   *AccountSelectionResult
+		decision    OpenAIAccountScheduleDecision
+		mappedModel string
+	}
+
+	releaseSelection := func(selection *AccountSelectionResult) {
+		if selection != nil && selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+			selection.ReleaseFunc = nil
+		}
+	}
+
 	effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
+	pendingProbes := make([]pendingFailbackProbe, 0, 1)
+	dispatchPendingProbes := func() {
+		for i := range pendingProbes {
+			pending := &pendingProbes[i]
+			submission := s.submitOpenAIFailbackProbe(controller, pending.selection, pending.mappedModel, requiredCapability)
+			if submission == openAIFailbackProbeSubmitted {
+				continue
+			}
+			releaseSelection(pending.selection)
+			if submission == openAIFailbackProbeRejected {
+				slog.Warn(
+					"openai_failback_probe_queue_full",
+					"account_id", pending.selection.Account.ID,
+					"model", pending.mappedModel,
+				)
+			}
+		}
+		pendingProbes = nil
+	}
+	releasePendingProbes := func() {
+		for i := range pendingProbes {
+			releaseSelection(pendingProbes[i].selection)
+		}
+		pendingProbes = nil
+	}
+
 	for {
 		selection, decision, err := s.selectAccountWithSchedulerOnce(
 			ctx, groupID, previousResponseID, sessionHash, requestedModel, effectiveExcludedIDs,
@@ -2104,23 +2143,56 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 			platform, previousResponseCanMove, useUpstreamTokenCost,
 		)
 		if err != nil || selection == nil || selection.Account == nil {
+			for i := range pendingProbes {
+				pending := &pendingProbes[i]
+				if s.allowOpenAIFailbackSelection(
+					ctx,
+					controller,
+					pending.selection.Account,
+					pending.mappedModel,
+					requiredCapability,
+				) {
+					selected := pending.selection
+					selectedDecision := pending.decision
+					pending.selection = nil
+					releasePendingProbes()
+					return selected, selectedDecision, nil
+				}
+				releaseSelection(pending.selection)
+			}
+			pendingProbes = nil
 			return selection, decision, err
 		}
 
 		account := selection.Account
 		mappedModel := canonicalOpenAIAccountSchedulingModel(account, requestedModel)
-		if !shouldApplyOpenAIFailback(platform, account, mappedModel, requiredCapability, requiredImageCapability) ||
-			s.allowOpenAIFailbackSelection(ctx, controller, account, mappedModel, requiredCapability) {
+		if !shouldApplyOpenAIFailback(platform, account, mappedModel, requiredCapability, requiredImageCapability) {
+			dispatchPendingProbes()
 			return selection, decision, nil
 		}
 
-		if selection.ReleaseFunc != nil {
-			selection.ReleaseFunc()
+		switch controller.selectionAction(ctx, account.ID, mappedModel) {
+		case openAIFailbackAllow:
+			dispatchPendingProbes()
+			return selection, decision, nil
+		case openAIFailbackProbe:
+			if selection.Acquired {
+				pendingProbes = append(pendingProbes, pendingFailbackProbe{
+					selection:   selection,
+					decision:    decision,
+					mappedModel: mappedModel,
+				})
+			} else {
+				releaseSelection(selection)
+			}
+		default:
+			releaseSelection(selection)
 		}
 		if effectiveExcludedIDs == nil {
 			effectiveExcludedIDs = make(map[int64]struct{})
 		}
 		if _, exists := effectiveExcludedIDs[account.ID]; exists {
+			releasePendingProbes()
 			return nil, decision, ErrNoAvailableAccounts
 		}
 		effectiveExcludedIDs[account.ID] = struct{}{}
