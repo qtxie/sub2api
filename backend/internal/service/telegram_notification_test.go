@@ -174,7 +174,14 @@ func TestOpenAIGatewayPublishesErrorTimeoutAndSwitchEvents(t *testing.T) {
 	gateway.SetGatewayNotificationPublisher(publisher)
 
 	gateway.ReportOpenAIAccountScheduleResult(7, "gpt-5", false, nil)
-	gateway.ReportOpenAIUpstreamTimeout(7, "gpt-5", http.StatusGatewayTimeout, "first output deadline exceeded", 1500*time.Millisecond)
+	gateway.ReportOpenAIUpstreamTimeout(
+		&Account{ID: 7, Name: "account A", Platform: PlatformOpenAI},
+		"gpt-5",
+		http.StatusGatewayTimeout,
+		"first_output",
+		"first output deadline exceeded",
+		1500*time.Millisecond,
+	)
 	gateway.ReportOpenAIAccountSwitchTransition(
 		&Account{ID: 7, Name: "account A", Priority: 0},
 		&Account{ID: 8, Name: "account B", Priority: 5},
@@ -214,31 +221,82 @@ func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
 	}{
 		{
 			name: "error",
-			event: TelegramNotificationOutboxEvent{Event: GatewayNotificationEvent{
-				Type: GatewayNotificationEventError, StatusCode: http.StatusBadGateway,
-			}},
-			want: "❌ ERROR 502",
+			event: TelegramNotificationOutboxEvent{
+				Event: GatewayNotificationEvent{
+					Type:        GatewayNotificationEventError,
+					Platform:    "openai",
+					AccountID:   7,
+					AccountName: "account A",
+					Model:       "gpt-5",
+					StatusCode:  http.StatusBadGateway,
+					Stage:       "inference",
+					Reason:      "upstream connection reset",
+				},
+				OccurrenceCount: 3,
+				LastOccurredAt:  time.Date(2026, time.July, 22, 1, 3, 55, 0, time.UTC),
+			},
+			want: "❌ ERROR 502\nPlatform: openai\nAccount: account A (7)\nModel: gpt-5\nStage: inference\nReason: upstream connection reset\nOccurrences: 3\nLast seen: 2026-07-22T01:03:55Z",
+		},
+		{
+			name: "error without status",
+			event: TelegramNotificationOutboxEvent{
+				Event: GatewayNotificationEvent{
+					Type:       GatewayNotificationEventError,
+					Platform:   "openai",
+					AccountID:  13,
+					Model:      "grok-4.5",
+					Reason:     "upstream request failed",
+					OccurredAt: time.Date(2026, time.July, 22, 1, 3, 55, 0, time.UTC),
+				},
+			},
+			want: "❌ ERROR\nPlatform: openai\nAccount: 13\nModel: grok-4.5\nReason: upstream request failed\nLast seen: 2026-07-22T01:03:55Z",
 		},
 		{
 			name: "timeout",
-			event: TelegramNotificationOutboxEvent{Event: GatewayNotificationEvent{
-				Type: GatewayNotificationEventTimeout, ElapsedMs: 1500,
-			}},
-			want: "⚠️ TIMEOUT 1.5s",
+			event: TelegramNotificationOutboxEvent{
+				Event: GatewayNotificationEvent{
+					Type:        GatewayNotificationEventTimeout,
+					Platform:    "openai",
+					AccountID:   7,
+					AccountName: "account A",
+					Model:       "gpt-5",
+					StatusCode:  http.StatusGatewayTimeout,
+					Stage:       "first_output",
+					Reason:      "first output deadline exceeded",
+					ElapsedMs:   1500,
+					OccurredAt:  time.Date(2026, time.July, 22, 1, 3, 55, 0, time.UTC),
+				},
+			},
+			want: "⚠️ TIMEOUT 1.5s\nPlatform: openai\nAccount: account A (7)\nModel: gpt-5\nStatus: 504\nStage: first_output\nReason: first output deadline exceeded\nLast seen: 2026-07-22T01:03:55Z",
 		},
 		{
 			name: "switch to backup",
-			event: TelegramNotificationOutboxEvent{Event: GatewayNotificationEvent{
-				Type: GatewayNotificationEventSwitch, FromAccountName: "A", ToAccountName: "B", FromPriority: 0, ToPriority: 5,
-			}},
-			want: "✅ account A -> account B",
+			event: TelegramNotificationOutboxEvent{
+				Event: GatewayNotificationEvent{
+					Type:            GatewayNotificationEventSwitch,
+					Platform:        "openai",
+					FromAccountID:   7,
+					FromAccountName: "A",
+					ToAccountID:     8,
+					ToAccountName:   "B",
+					Model:           "gpt-5",
+					StatusCode:      http.StatusBadGateway,
+					Stage:           "inference",
+					Reason:          "upstream unavailable",
+					FromPriority:    0,
+					ToPriority:      5,
+					OccurredAt:      time.Date(2026, time.July, 22, 1, 3, 55, 0, time.UTC),
+				},
+				OccurrenceCount: 2,
+			},
+			want: "✅ account A -> account B\nFrom: A (7); priority 0\nTo: B (8); priority 5\nPlatform: openai\nModel: gpt-5\nStatus: 502\nStage: inference\nReason: upstream unavailable\nOccurrences: 2\nLast seen: 2026-07-22T01:03:55Z",
 		},
 		{
 			name: "switch to primary",
 			event: TelegramNotificationOutboxEvent{Event: GatewayNotificationEvent{
 				Type: GatewayNotificationEventSwitch, FromAccountName: "B", ToAccountName: "A", FromPriority: 5, ToPriority: 0,
 			}},
-			want: "❤️ account B -> account A",
+			want: "❤️ account B -> account A\nFrom: B; priority 5\nTo: A; priority 0",
 		},
 	}
 	for _, tt := range tests {

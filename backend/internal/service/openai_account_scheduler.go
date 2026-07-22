@@ -2352,20 +2352,26 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountSwitchTransition(from, to *Acc
 
 // ReportOpenAIUpstreamTimeout publishes a typed timeout separately from a
 // generic upstream error so operators can route the two conditions differently.
-func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(accountID int64, model string, statusCode int, reason string, elapsed ...time.Duration) {
+func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(account *Account, model string, statusCode int, stage, reason string, elapsed ...time.Duration) {
 	var elapsedMs int64
 	if len(elapsed) > 0 && elapsed[0] > 0 {
 		elapsedMs = elapsed[0].Milliseconds()
 	}
-	s.publishGatewayNotification(GatewayNotificationEvent{
+	event := GatewayNotificationEvent{
 		Type:       GatewayNotificationEventTimeout,
 		Platform:   "openai",
-		AccountID:  accountID,
 		Model:      model,
 		StatusCode: statusCode,
+		Stage:      stage,
 		Reason:     reason,
 		ElapsedMs:  elapsedMs,
-	})
+	}
+	if account != nil {
+		event.Platform = account.Platform
+		event.AccountID = account.ID
+		event.AccountName = account.Name
+	}
+	s.publishGatewayNotification(event)
 }
 
 func (s *OpenAIGatewayService) SnapshotOpenAIAccountSchedulerMetrics() OpenAIAccountSchedulerMetricsSnapshot {

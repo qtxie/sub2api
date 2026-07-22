@@ -295,9 +295,10 @@ func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 		s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 	}
 	s.ReportOpenAIUpstreamTimeout(
-		account.ID,
+		account,
 		originalModel,
 		http.StatusGatewayTimeout,
+		phase,
 		"first output deadline exceeded",
 		elapsed,
 	)
