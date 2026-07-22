@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -2354,9 +2355,7 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 }
 
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64, model string, success bool, firstTokenMs *int) {
-	if success {
-		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
-	} else {
+	if !success {
 		s.publishGatewayNotification(GatewayNotificationEvent{
 			Type:      GatewayNotificationEventError,
 			Platform:  "openai",
@@ -2364,6 +2363,36 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64
 			Model:     model,
 			Reason:    "upstream request failed",
 		})
+	}
+	s.reportOpenAIAccountScheduleResult(accountID, model, success, firstTokenMs)
+}
+
+// ReportOpenAIAccountScheduleFailure records a failed scheduling result and
+// publishes the request context needed to identify the affected user and
+// upstream account. User email is preferred because it is the stable operator
+// identity used elsewhere in gateway diagnostics.
+func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleFailure(account *Account, user *User, model string, statusCode int) {
+	if account == nil {
+		return
+	}
+	userID, userName := gatewayNotificationUserIdentity(user)
+	s.publishGatewayNotification(GatewayNotificationEvent{
+		Type:        GatewayNotificationEventError,
+		Platform:    account.Platform,
+		UserID:      userID,
+		UserName:    userName,
+		AccountID:   account.ID,
+		AccountName: account.Name,
+		Model:       model,
+		StatusCode:  statusCode,
+		Reason:      "upstream request failed",
+	})
+	s.reportOpenAIAccountScheduleResult(account.ID, model, false, nil)
+}
+
+func (s *OpenAIGatewayService) reportOpenAIAccountScheduleResult(accountID int64, model string, success bool, firstTokenMs *int) {
+	if success {
+		s.clearOpenAIAccountModelTransientState(accountID, normalizeOpenAIAccountModelTransientModel(model))
 	}
 	if controller := s.getOpenAIFailbackController(); controller != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), openAIFailbackStoreTimeout)
@@ -2402,14 +2431,17 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountSwitchEvent(accountID int64, m
 // ReportOpenAIAccountSwitchTransition publishes an actual failover transition.
 // Lower account priority values are the primary tier; moving to a lower value
 // therefore represents a switch back to primary.
-func (s *OpenAIGatewayService) ReportOpenAIAccountSwitchTransition(from, to *Account, model string, statusCode int, reason string) {
+func (s *OpenAIGatewayService) ReportOpenAIAccountSwitchTransition(from, to *Account, user *User, model string, statusCode int, reason string) {
 	if from == nil || to == nil || from.ID == to.ID {
 		return
 	}
+	userID, userName := gatewayNotificationUserIdentity(user)
 	s.RecordOpenAIAccountSwitch()
 	s.publishGatewayNotification(GatewayNotificationEvent{
 		Type:            GatewayNotificationEventSwitch,
 		Platform:        to.Platform,
+		UserID:          userID,
+		UserName:        userName,
 		FromAccountID:   from.ID,
 		FromAccountName: from.Name,
 		ToAccountID:     to.ID,
@@ -2424,14 +2456,17 @@ func (s *OpenAIGatewayService) ReportOpenAIAccountSwitchTransition(from, to *Acc
 
 // ReportOpenAIUpstreamTimeout publishes a typed timeout separately from a
 // generic upstream error so operators can route the two conditions differently.
-func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(account *Account, model string, statusCode int, stage, reason string, elapsed ...time.Duration) {
+func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(ctx context.Context, account *Account, model string, statusCode int, stage, reason string, elapsed ...time.Duration) {
 	var elapsedMs int64
 	if len(elapsed) > 0 && elapsed[0] > 0 {
 		elapsedMs = elapsed[0].Milliseconds()
 	}
+	userID, userName := gatewayNotificationUserIdentityFromContext(ctx)
 	event := GatewayNotificationEvent{
 		Type:       GatewayNotificationEventTimeout,
 		Platform:   "openai",
+		UserID:     userID,
+		UserName:   userName,
 		Model:      model,
 		StatusCode: statusCode,
 		Stage:      stage,
@@ -2444,6 +2479,26 @@ func (s *OpenAIGatewayService) ReportOpenAIUpstreamTimeout(account *Account, mod
 		event.AccountName = account.Name
 	}
 	s.publishGatewayNotification(event)
+}
+
+func gatewayNotificationUserIdentity(user *User) (int64, string) {
+	if user == nil {
+		return 0, ""
+	}
+	name := strings.TrimSpace(user.Email)
+	if name == "" {
+		name = strings.TrimSpace(user.Username)
+	}
+	return user.ID, name
+}
+
+func gatewayNotificationUserIdentityFromContext(ctx context.Context) (int64, string) {
+	if ctx == nil {
+		return 0, ""
+	}
+	userID, _ := ctx.Value(ctxkey.UserID).(int64)
+	userName, _ := ctx.Value(ctxkey.UserDisplayName).(string)
+	return userID, strings.TrimSpace(userName)
 }
 
 func (s *OpenAIGatewayService) SnapshotOpenAIAccountSchedulerMetrics() OpenAIAccountSchedulerMetricsSnapshot {

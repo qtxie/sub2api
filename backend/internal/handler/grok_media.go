@@ -297,6 +297,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			h.gatewayService.ReportOpenAIAccountSwitchTransition(
 				pendingSwitchFrom,
 				account,
+				apiKey.User,
 				grokMediaScheduleModel(account, routingModel, nil),
 				pendingSwitchStatus,
 				pendingSwitchReason,
@@ -344,7 +345,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 					return
 				}
 				if failoverErr.ShouldReportAccountScheduleFailure() {
-					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, grokMediaScheduleModel(account, routingModel, nil), false, nil)
+					h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, grokMediaScheduleModel(account, routingModel, nil), failoverErr.StatusCode)
 				}
 				if c.Writer.Size() != writerSizeBeforeForward {
 					h.handleFailoverExhausted(c, failoverErr, true)
@@ -398,7 +399,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				)
 				continue
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, grokMediaScheduleModel(account, routingModel, nil), false, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, grokMediaScheduleModel(account, routingModel, nil), http.StatusBadGateway)
 			if !service.IsResponseCommitted(c) && c.Writer.Size() == writerSizeBeforeForward {
 				h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 			}

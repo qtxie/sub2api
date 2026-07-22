@@ -199,6 +199,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountSwitchTransition(
 				pendingSwitchFrom,
 				account,
+				apiKey.User,
 				account.GetMappedModel(reqModel),
 				pendingSwitchStatus,
 				pendingSwitchReason,
@@ -271,7 +272,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						return
 					}
 					if failoverErr.ShouldReportAccountScheduleFailure() {
-						h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+						h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, account.GetMappedModel(reqModel), failoverErr.StatusCode)
 					}
 					if !failoverErr.ShouldRetryNextAccount() {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
@@ -318,7 +319,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					)
 					continue
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, account.GetMappedModel(reqModel), http.StatusBadGateway)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {

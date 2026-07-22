@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 )
 
 type telegramOutboxStub struct {
@@ -103,6 +104,27 @@ func TestTelegramNotificationPersistsConfiguredGatewayEventWithDedupe(t *testing
 	}
 }
 
+func TestTelegramNotificationDedupeSeparatesUsers(t *testing.T) {
+	event := GatewayNotificationEvent{
+		Type:        GatewayNotificationEventError,
+		Platform:    PlatformOpenAI,
+		UserID:      1,
+		UserName:    "admin@sub2api.local",
+		AccountID:   13,
+		AccountName: "ciii_admin",
+		Model:       "grok-4.5",
+		StatusCode:  http.StatusServiceUnavailable,
+		Reason:      "upstream request failed",
+	}
+	otherUser := event
+	otherUser.UserID = 2
+	otherUser.UserName = "other@sub2api.local"
+
+	if telegramNotificationDedupeKey(event) == telegramNotificationDedupeKey(otherUser) {
+		t.Fatal("dedupe key must include the affected user")
+	}
+}
+
 func TestTelegramNotificationFiltersDisabledEventFromConfig(t *testing.T) {
 	configValue := &config.Config{Notifications: config.NotificationsConfig{Telegram: config.TelegramNotificationConfig{
 		Enabled:               true,
@@ -172,9 +194,17 @@ func TestOpenAIGatewayPublishesErrorTimeoutAndSwitchEvents(t *testing.T) {
 	publisher := &gatewayNotificationPublisherStub{}
 	gateway := &OpenAIGatewayService{}
 	gateway.SetGatewayNotificationPublisher(publisher)
+	notificationCtx := context.WithValue(context.Background(), ctxkey.UserID, int64(1))
+	notificationCtx = context.WithValue(notificationCtx, ctxkey.UserDisplayName, "admin@sub2api.local")
 
-	gateway.ReportOpenAIAccountScheduleResult(7, "gpt-5", false, nil)
+	gateway.ReportOpenAIAccountScheduleFailure(
+		&Account{ID: 7, Name: "account A", Platform: PlatformOpenAI},
+		&User{ID: 1, Email: "admin@sub2api.local"},
+		"gpt-5",
+		http.StatusBadGateway,
+	)
 	gateway.ReportOpenAIUpstreamTimeout(
+		notificationCtx,
 		&Account{ID: 7, Name: "account A", Platform: PlatformOpenAI},
 		"gpt-5",
 		http.StatusGatewayTimeout,
@@ -185,6 +215,7 @@ func TestOpenAIGatewayPublishesErrorTimeoutAndSwitchEvents(t *testing.T) {
 	gateway.ReportOpenAIAccountSwitchTransition(
 		&Account{ID: 7, Name: "account A", Priority: 0},
 		&Account{ID: 8, Name: "account B", Priority: 5},
+		&User{ID: 1, Email: "admin@sub2api.local"},
 		"gpt-5",
 		http.StatusBadGateway,
 		"inference",
@@ -205,10 +236,13 @@ func TestOpenAIGatewayPublishesErrorTimeoutAndSwitchEvents(t *testing.T) {
 			t.Fatalf("event %d type = %q, want %q", i, publisher.events[i].Type, want)
 		}
 	}
-	if publisher.events[2].StatusCode != http.StatusBadGateway || publisher.events[2].FromAccountID != 7 || publisher.events[2].ToAccountID != 8 {
+	if publisher.events[2].StatusCode != http.StatusBadGateway || publisher.events[2].FromAccountID != 7 || publisher.events[2].ToAccountID != 8 || publisher.events[2].UserID != 1 || publisher.events[2].UserName != "admin@sub2api.local" {
 		t.Fatalf("switch event = %#v", publisher.events[2])
 	}
-	if publisher.events[1].ElapsedMs != 1500 {
+	if publisher.events[0].StatusCode != http.StatusBadGateway || publisher.events[0].AccountName != "account A" || publisher.events[0].UserName != "admin@sub2api.local" || publisher.events[0].UserID != 1 {
+		t.Fatalf("error event = %#v", publisher.events[0])
+	}
+	if publisher.events[1].ElapsedMs != 1500 || publisher.events[1].UserID != 1 || publisher.events[1].UserName != "admin@sub2api.local" {
 		t.Fatalf("timeout elapsed_ms = %d, want 1500", publisher.events[1].ElapsedMs)
 	}
 }
@@ -225,6 +259,8 @@ func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
 				Event: GatewayNotificationEvent{
 					Type:        GatewayNotificationEventError,
 					Platform:    "openai",
+					UserID:      1,
+					UserName:    "admin@sub2api.local",
 					AccountID:   7,
 					AccountName: "account A",
 					Model:       "gpt-5",
@@ -235,7 +271,7 @@ func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
 				OccurrenceCount: 3,
 				LastOccurredAt:  time.Date(2026, time.July, 22, 1, 3, 55, 0, time.UTC),
 			},
-			want: "❌ ERROR 502\nPlatform: openai\nAccount: account A (7)\nModel: gpt-5\nStage: inference\nReason: upstream connection reset\nOccurrences: 3\nLast seen: 2026-07-22T01:03:55Z",
+			want: "❌ ERROR 502\nPlatform: openai\nUser: admin@sub2api.local (1)\nAccount: account A (7)\nModel: gpt-5\nStage: inference\nReason: upstream connection reset\nOccurrences: 3\nLast seen: 2026-07-22T01:03:55Z",
 		},
 		{
 			name: "error without status",
@@ -257,6 +293,8 @@ func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
 				Event: GatewayNotificationEvent{
 					Type:        GatewayNotificationEventTimeout,
 					Platform:    "openai",
+					UserID:      1,
+					UserName:    "admin@sub2api.local",
 					AccountID:   7,
 					AccountName: "account A",
 					Model:       "gpt-5",
@@ -267,7 +305,7 @@ func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
 					OccurredAt:  time.Date(2026, time.July, 22, 1, 3, 55, 0, time.UTC),
 				},
 			},
-			want: "⚠️ TIMEOUT 1.5s\nPlatform: openai\nAccount: account A (7)\nModel: gpt-5\nStatus: 504\nStage: first_output\nReason: first output deadline exceeded\nLast seen: 2026-07-22T01:03:55Z",
+			want: "⚠️ TIMEOUT 1.5s\nPlatform: openai\nUser: admin@sub2api.local (1)\nAccount: account A (7)\nModel: gpt-5\nStatus: 504\nStage: first_output\nReason: first output deadline exceeded\nLast seen: 2026-07-22T01:03:55Z",
 		},
 		{
 			name: "switch to backup",
@@ -275,6 +313,8 @@ func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
 				Event: GatewayNotificationEvent{
 					Type:            GatewayNotificationEventSwitch,
 					Platform:        "openai",
+					UserID:          1,
+					UserName:        "admin@sub2api.local",
 					FromAccountID:   7,
 					FromAccountName: "A",
 					ToAccountID:     8,
@@ -289,7 +329,7 @@ func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
 				},
 				OccurrenceCount: 2,
 			},
-			want: "✅ account A -> account B\nFrom: A (7); priority 0\nTo: B (8); priority 5\nPlatform: openai\nModel: gpt-5\nStatus: 502\nStage: inference\nReason: upstream unavailable\nOccurrences: 2\nLast seen: 2026-07-22T01:03:55Z",
+			want: "✅ account A -> account B\nFrom: A (7); priority 0\nTo: B (8); priority 5\nPlatform: openai\nUser: admin@sub2api.local (1)\nModel: gpt-5\nStatus: 502\nStage: inference\nReason: upstream unavailable\nOccurrences: 2\nLast seen: 2026-07-22T01:03:55Z",
 		},
 		{
 			name: "switch to primary",

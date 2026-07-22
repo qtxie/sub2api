@@ -295,6 +295,7 @@ func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(
 		s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 	}
 	s.ReportOpenAIUpstreamTimeout(
+		ctx,
 		account,
 		originalModel,
 		http.StatusGatewayTimeout,

@@ -53,6 +53,8 @@ const (
 type GatewayNotificationEvent struct {
 	Type            GatewayNotificationEventType `json:"type"`
 	Platform        string                       `json:"platform,omitempty"`
+	UserID          int64                        `json:"user_id,omitempty"`
+	UserName        string                       `json:"user_name,omitempty"`
 	AccountID       int64                        `json:"account_id,omitempty"`
 	AccountName     string                       `json:"account_name,omitempty"`
 	FromAccountID   int64                        `json:"from_account_id,omitempty"`
@@ -506,6 +508,7 @@ func normalizeGatewayNotificationEvent(event *GatewayNotificationEvent) bool {
 		return false
 	}
 	event.Platform = boundedTelegramField(event.Platform, 64)
+	event.UserName = boundedTelegramField(event.UserName, 128)
 	event.AccountName = boundedTelegramField(event.AccountName, 128)
 	event.FromAccountName = boundedTelegramField(event.FromAccountName, 128)
 	event.ToAccountName = boundedTelegramField(event.ToAccountName, 128)
@@ -539,6 +542,8 @@ func telegramNotificationDedupeKey(event GatewayNotificationEvent) string {
 	for _, value := range []string{
 		string(event.Type),
 		event.Platform,
+		fmt.Sprintf("%d", event.UserID),
+		event.UserName,
 		fmt.Sprintf("%d", event.AccountID),
 		event.AccountName,
 		fmt.Sprintf("%d", event.FromAccountID),
@@ -599,6 +604,9 @@ func appendTelegramEventDetails(lines []string, event TelegramNotificationOutbox
 	if event.Event.Platform != "" {
 		lines = append(lines, "Platform: "+event.Event.Platform)
 	}
+	if user := telegramDetailedUserLabel(event.Event.UserName, event.Event.UserID); user != "" {
+		lines = append(lines, "User: "+user)
+	}
 	if includeAccount {
 		if account := telegramDetailedAccountLabel(event.Event.AccountName, event.Event.AccountID); account != "" {
 			lines = append(lines, "Account: "+account)
@@ -625,7 +633,15 @@ func appendTelegramEventDetails(lines []string, event TelegramNotificationOutbox
 	return lines
 }
 
+func telegramDetailedUserLabel(name string, id int64) string {
+	return telegramDetailedEntityLabel(name, id)
+}
+
 func telegramDetailedAccountLabel(name string, id int64) string {
+	return telegramDetailedEntityLabel(name, id)
+}
+
+func telegramDetailedEntityLabel(name string, id int64) string {
 	name = strings.TrimSpace(name)
 	if name != "" && id > 0 {
 		return fmt.Sprintf("%s (%d)", name, id)

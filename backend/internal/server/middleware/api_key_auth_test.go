@@ -64,6 +64,7 @@ func TestSimpleModeBypassesQuotaCheck(t *testing.T) {
 	}
 	user := &service.User{
 		ID:          7,
+		Email:       "user@example.com",
 		Role:        service.RoleUser,
 		Status:      service.StatusActive,
 		Balance:     10,
@@ -319,6 +320,11 @@ func TestAPIKeyAuthSetsGroupContext(t *testing.T) {
 		}
 		userIDFromCtx, ok := c.Request.Context().Value(ctxkey.UserID).(int64)
 		if !ok || userIDFromCtx != user.ID {
+			c.JSON(http.StatusInternalServerError, gin.H{"ok": false})
+			return
+		}
+		userDisplayName, ok := c.Request.Context().Value(ctxkey.UserDisplayName).(string)
+		if !ok || userDisplayName != user.Email {
 			c.JSON(http.StatusInternalServerError, gin.H{"ok": false})
 			return
 		}

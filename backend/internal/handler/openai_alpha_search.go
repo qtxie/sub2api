@@ -157,6 +157,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountSwitchTransition(
 				pendingSwitchFrom,
 				account,
+				apiKey.User,
 				account.GetMappedModel(requestedModel),
 				pendingSwitchStatus,
 				pendingSwitchReason,
@@ -192,7 +193,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 
 		var failoverErr *service.UpstreamFailoverError
 		if !errors.As(err, &failoverErr) {
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestedModel), false, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, account.GetMappedModel(requestedModel), http.StatusBadGateway)
 			if c.Writer.Size() == writerSizeBeforeForward {
 				h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 			}
@@ -200,7 +201,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			return
 		}
 
-		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(requestedModel), false, nil)
+		h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, account.GetMappedModel(requestedModel), failoverErr.StatusCode)
 		if c.Writer.Size() != writerSizeBeforeForward {
 			h.handleFailoverExhausted(c, failoverErr, true)
 			return

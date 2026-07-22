@@ -129,6 +129,7 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 			elapsed = time.Duration(elapsedMs) * time.Millisecond
 		}
 		s.ReportOpenAIUpstreamTimeout(
+			ctx,
 			account,
 			"",
 			http.StatusGatewayTimeout,

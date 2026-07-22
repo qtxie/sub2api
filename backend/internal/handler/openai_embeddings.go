@@ -165,6 +165,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountSwitchTransition(
 				pendingSwitchFrom,
 				account,
+				apiKey.User,
 				account.GetMappedModel(reqModel),
 				pendingSwitchStatus,
 				pendingSwitchReason,
@@ -212,7 +213,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 					h.handleFailoverExhausted(c, failoverErr, true)
 					return
 				}
-				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+				h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, account.GetMappedModel(reqModel), failoverErr.StatusCode)
 				if failoverClientGone(c) {
 					reqLog.Info("openai_embeddings.failover_aborted_client_disconnected",
 						zap.Int64("account_id", account.ID),
@@ -238,7 +239,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 				)
 				continue
 			}
-			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+			h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, account.GetMappedModel(reqModel), http.StatusBadGateway)
 			if c.Writer.Size() == writerSizeBeforeForward {
 				h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 			}
