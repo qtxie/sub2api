@@ -337,6 +337,50 @@ func TestLoadOpenAIFirstOutputTimeoutsFromEnv(t *testing.T) {
 	require.Equal(t, 240, cfg.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds)
 }
 
+func TestLoadOpenAIFirstOutputTimeoutExcludedUserIDsFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_EXCLUDED_USER_IDS", "1001, 1002,1001")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, []int64{1001, 1002}, cfg.Gateway.OpenAIFirstOutputTimeoutExcludedUserIDs)
+}
+
+func TestLoadOpenAIFirstOutputTimeoutExcludedUserIDsRejectsInvalidEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_EXCLUDED_USER_IDS", "1001,not-a-user")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_EXCLUDED_USER_IDS")
+}
+
+func TestLoadOpenAIFirstOutputTimeoutExcludedUserIDsFromYAML(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	configDir := t.TempDir()
+	configYAML := "gateway:\n  openai_first_output_timeout_excluded_user_ids:\n    - 1001\n    - 1002\n"
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600))
+	t.Setenv("DATA_DIR", configDir)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, []int64{1001, 1002}, cfg.Gateway.OpenAIFirstOutputTimeoutExcludedUserIDs)
+}
+
+func TestParsePositiveInt64CSV(t *testing.T) {
+	require.Equal(t, []int64{1, 2}, mustParsePositiveInt64CSV(t, " 1,2,1 "))
+	require.Nil(t, mustParsePositiveInt64CSV(t, ""))
+	_, err := parsePositiveInt64CSV("0")
+	require.Error(t, err)
+}
+
+func mustParsePositiveInt64CSV(t *testing.T, raw string) []int64 {
+	t.Helper()
+	values, err := parsePositiveInt64CSV(raw)
+	require.NoError(t, err)
+	return values
+}
+
 func TestValidateOpenAIFirstOutputTimeoutMinimum(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()
@@ -1673,6 +1717,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "gateway openai high effort first output timeout too large",
 			mutate:  func(c *Config) { c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds = 1801 },
 			wantErr: "gateway.openai_high_effort_first_output_timeout_seconds",
+		},
+		{
+			name:    "gateway openai first output timeout excluded user ID is not positive",
+			mutate:  func(c *Config) { c.Gateway.OpenAIFirstOutputTimeoutExcludedUserIDs = []int64{0} },
+			wantErr: "gateway.openai_first_output_timeout_excluded_user_ids",
 		},
 		{
 			name:    "gateway max idle conns",

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 )
@@ -244,10 +245,26 @@ func (s *OpenAIGatewayService) openAIFirstOutputTimeout(reasoningEffort string) 
 }
 
 func (s *OpenAIGatewayService) openAIFirstOutputTimeoutForRequest(c *gin.Context, body []byte, reasoningEffort string) time.Duration {
-	if IsOpenAIRemoteCompactionV2Request(c, body) {
+	if IsOpenAIRemoteCompactionV2Request(c, body) || s.openAIFirstOutputTimeoutExcludedForRequest(c) {
 		return 0
 	}
 	return s.openAIFirstOutputTimeout(reasoningEffort)
+}
+
+func (s *OpenAIGatewayService) openAIFirstOutputTimeoutExcludedForRequest(c *gin.Context) bool {
+	if s == nil || s.cfg == nil || c == nil || c.Request == nil {
+		return false
+	}
+	userID, ok := c.Request.Context().Value(ctxkey.UserID).(int64)
+	if !ok || userID <= 0 {
+		return false
+	}
+	for _, excludedUserID := range s.cfg.Gateway.OpenAIFirstOutputTimeoutExcludedUserIDs {
+		if excludedUserID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *OpenAIGatewayService) newOpenAIFirstOutputTimeoutError(

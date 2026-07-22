@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -184,6 +185,27 @@ func TestOpenAIFirstOutputTimeoutForReasoningEffort(t *testing.T) {
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("high"))
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("xhigh"))
 	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeout("max"))
+}
+
+func TestOpenAIFirstOutputTimeoutExcludedUserDisablesHTTPAndWebSocketGuards(t *testing.T) {
+	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{
+		OpenAIFirstOutputTimeoutSeconds:           120,
+		OpenAIHighEffortFirstOutputTimeoutSeconds: 300,
+		OpenAIFirstOutputTimeoutExcludedUserIDs:   []int64{42},
+		OpenAIWS:                                  config.GatewayOpenAIWSConfig{ReadTimeoutSeconds: 180},
+	}}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.UserID, int64(42)))
+	regularFrame := []byte(`{"type":"response.create","model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":"hello"}],"reasoning":{"effort":"max"}}`)
+
+	require.Zero(t, svc.openAIFirstOutputTimeoutForRequest(c, nil, "max"))
+	require.Equal(t, 180*time.Second, svc.openAIWSPassthroughFirstOutputTimeout(c, regularFrame, "max"))
+
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.UserID, int64(43)))
+	require.Equal(t, 300*time.Second, svc.openAIFirstOutputTimeoutForRequest(c, nil, "max"))
+	require.Equal(t, 300*time.Second, svc.openAIWSPassthroughFirstOutputTimeout(c, regularFrame, "max"))
 }
 
 func TestOpenAIFirstOutputTimeoutDoesNotApplyToRemoteCompactionV2(t *testing.T) {

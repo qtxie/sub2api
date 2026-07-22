@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -882,6 +883,9 @@ type GatewayConfig struct {
 	// OpenAIHighEffortFirstOutputTimeoutSeconds: high/xhigh/max 推理的首个语义输出超时（秒）。
 	// 0 表示回退到 OpenAIFirstOutputTimeoutSeconds。
 	OpenAIHighEffortFirstOutputTimeoutSeconds int `mapstructure:"openai_high_effort_first_output_timeout_seconds"`
+	// OpenAIFirstOutputTimeoutExcludedUserIDs disables both first-output timeout
+	// variants for the listed authenticated Sub2API user IDs.
+	OpenAIFirstOutputTimeoutExcludedUserIDs []int64 `mapstructure:"openai_first_output_timeout_excluded_user_ids"`
 	// 请求体最大字节数，用于网关请求体大小限制
 	MaxBodySize int64 `mapstructure:"max_body_size"`
 	// TextMaxBodySize limits endpoints that cannot carry inline image/video payloads.
@@ -1692,6 +1696,14 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	}
 	trustedProxiesEnv, trustedProxiesEnvConfigured := os.LookupEnv("SERVER_TRUSTED_PROXIES")
 	forwardedClientIPHeadersEnv, forwardedClientIPHeadersEnvConfigured := os.LookupEnv("SECURITY_FORWARDED_CLIENT_IP_HEADERS")
+	openAIFirstOutputTimeoutExcludedUserIDsEnv, openAIFirstOutputTimeoutExcludedUserIDsEnvConfigured := os.LookupEnv("GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_EXCLUDED_USER_IDS")
+	if openAIFirstOutputTimeoutExcludedUserIDsEnvConfigured {
+		parsedUserIDs, parseErr := parsePositiveInt64CSV(openAIFirstOutputTimeoutExcludedUserIDsEnv)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_EXCLUDED_USER_IDS: %w", parseErr)
+		}
+		viper.Set("gateway.openai_first_output_timeout_excluded_user_ids", parsedUserIDs)
+	}
 	trustedProxiesConfigured := viper.InConfig("server.trusted_proxies") ||
 		viper.IsSet("server.trusted_proxies") || trustedProxiesEnvConfigured
 
@@ -2218,6 +2230,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 0)
+	viper.SetDefault("gateway.openai_first_output_timeout_excluded_user_ids", []int64{})
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
@@ -3084,6 +3097,11 @@ func (c *Config) Validate() error {
 		(c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_high_effort_first_output_timeout_seconds must be 0 or between 30-1800 seconds")
 	}
+	for _, userID := range c.Gateway.OpenAIFirstOutputTimeoutExcludedUserIDs {
+		if userID <= 0 {
+			return fmt.Errorf("gateway.openai_first_output_timeout_excluded_user_ids must contain positive user IDs")
+		}
+	}
 	if strings.TrimSpace(c.Gateway.ConnectionPoolIsolation) != "" {
 		switch c.Gateway.ConnectionPoolIsolation {
 		case ConnectionPoolIsolationProxy, ConnectionPoolIsolationAccount, ConnectionPoolIsolationAccountProxy:
@@ -3486,6 +3504,34 @@ func normalizeStringSlice(values []string) []string {
 		normalized = append(normalized, trimmed)
 	}
 	return normalized
+}
+
+func parsePositiveInt64CSV(raw string) ([]int64, error) {
+	parts := strings.Split(raw, ",")
+	if len(parts) == 1 && strings.TrimSpace(parts[0]) == "" {
+		return nil, nil
+	}
+	ids := make([]int64, 0, len(parts))
+	seen := make(map[int64]struct{}, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id <= 0 {
+			if err == nil {
+				err = fmt.Errorf("must be positive")
+			}
+			return nil, fmt.Errorf("invalid user ID %q: %w", value, err)
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func isWeakJWTSecret(secret string) bool {

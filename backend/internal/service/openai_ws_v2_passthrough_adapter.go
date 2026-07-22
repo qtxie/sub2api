@@ -535,7 +535,7 @@ func openAIWSPassthroughIsTerminalOutput(payload []byte) bool {
 }
 
 func (s *OpenAIGatewayService) openAIWSPassthroughFirstOutputTimeout(c *gin.Context, payload []byte, reasoningEffort string) time.Duration {
-	if !isOpenAIRemoteCompactionV2WebSocketTurn(c, payload) {
+	if !isOpenAIRemoteCompactionV2WebSocketTurn(c, payload) && !s.openAIFirstOutputTimeoutExcludedForRequest(c) {
 		if timeout := s.openAIFirstOutputTimeout(reasoningEffort); timeout > 0 {
 			return timeout
 		}

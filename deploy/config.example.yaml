@@ -195,6 +195,9 @@ gateway:
   openai_first_output_timeout_seconds: 0
   # Optional high/xhigh/max override (seconds, 0=use the standard timeout)
   openai_high_effort_first_output_timeout_seconds: 0
+  # Authenticated Sub2API user IDs excluded from both first-output timeouts.
+  # Environment form: GATEWAY_OPENAI_FIRST_OUTPUT_TIMEOUT_EXCLUDED_USER_IDS=1001,1002
+  openai_first_output_timeout_excluded_user_ids: []
   # Max request body size in bytes (default: 256MB)
   # 请求体最大字节数（默认 256MB）
   max_body_size: 268435456
