@@ -1234,8 +1234,12 @@ type GatewayOpenAISchedulerConfig struct {
 	FailbackProbeEnabled bool `mapstructure:"failback_probe_enabled"`
 	// FailbackDefaultCooldownSeconds is the first cooldown after a production failure.
 	FailbackDefaultCooldownSeconds int `mapstructure:"failback_default_cooldown_seconds"`
-	// FailbackCooldownIncrementSeconds is added after each failed probe or quick relapse.
+	// FailbackCooldownIncrementSeconds is added after the configured number of
+	// failed probes at one level, or immediately after a quick relapse.
 	FailbackCooldownIncrementSeconds int `mapstructure:"failback_cooldown_increment_seconds"`
+	// FailbackProbeFailuresPerIncrement is the number of consecutive failed probes
+	// required at one cooldown level before that level increases.
+	FailbackProbeFailuresPerIncrement int `mapstructure:"failback_probe_failures_per_increment"`
 	// FailbackCooldownMaxSeconds caps the adaptive cooldown.
 	FailbackCooldownMaxSeconds int `mapstructure:"failback_cooldown_max_seconds"`
 	// FailbackProbationSeconds is the observation window after a successful probe.
@@ -2469,6 +2473,7 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.failback_probe_enabled", true)
 	viper.SetDefault("gateway.openai_scheduler.failback_default_cooldown_seconds", 120)
 	viper.SetDefault("gateway.openai_scheduler.failback_cooldown_increment_seconds", 180)
+	viper.SetDefault("gateway.openai_scheduler.failback_probe_failures_per_increment", 2)
 	viper.SetDefault("gateway.openai_scheduler.failback_cooldown_max_seconds", 1560)
 	viper.SetDefault("gateway.openai_scheduler.failback_probation_seconds", 300)
 	viper.SetDefault("gateway.openai_scheduler.failback_probe_timeout_seconds", 20)
@@ -3385,9 +3390,10 @@ func (c *Config) Validate() error {
 	failback := c.Gateway.OpenAIScheduler
 	if failback.FailbackProbeEnabled {
 		if failback.FailbackDefaultCooldownSeconds <= 0 || failback.FailbackCooldownIncrementSeconds < 0 ||
+			failback.FailbackProbeFailuresPerIncrement <= 0 ||
 			failback.FailbackCooldownMaxSeconds < failback.FailbackDefaultCooldownSeconds || failback.FailbackProbationSeconds <= 0 ||
 			failback.FailbackProbeTimeoutSeconds <= 0 || failback.FailbackMaxTTFTMs <= 0 || failback.FailbackMinHealthyRequests <= 0 {
-			return fmt.Errorf("gateway.openai_scheduler failback durations, TTFT, and healthy request count must be positive; max cooldown must be at least the default")
+			return fmt.Errorf("gateway.openai_scheduler failback durations, probe failure threshold, TTFT, and healthy request count must be positive; max cooldown must be at least the default")
 		}
 	}
 	if c.Gateway.MaxLineSize < 0 {

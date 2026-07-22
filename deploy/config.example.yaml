@@ -415,6 +415,8 @@ gateway:
     failback_probe_enabled: true
     failback_default_cooldown_seconds: 120
     failback_cooldown_increment_seconds: 180
+    # Repeat the current cooldown after one failed probe; increase it after the second.
+    failback_probe_failures_per_increment: 2
     failback_cooldown_max_seconds: 1560
     # A passed probe immediately admits the account into this probation window.
     failback_probation_seconds: 300

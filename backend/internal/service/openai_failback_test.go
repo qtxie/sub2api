@@ -19,14 +19,15 @@ import (
 
 func testOpenAIFailbackConfig() openAIFailbackConfig {
 	return openAIFailbackConfig{
-		enabled:            true,
-		defaultCooldown:    2 * time.Minute,
-		cooldownIncrement:  3 * time.Minute,
-		maxCooldown:        26 * time.Minute,
-		probation:          5 * time.Minute,
-		probeTimeout:       20 * time.Second,
-		maxTTFT:            20 * time.Second,
-		minHealthyRequests: 3,
+		enabled:                   true,
+		defaultCooldown:           2 * time.Minute,
+		cooldownIncrement:         3 * time.Minute,
+		probeFailuresPerIncrement: 2,
+		maxCooldown:               26 * time.Minute,
+		probation:                 5 * time.Minute,
+		probeTimeout:              20 * time.Second,
+		maxTTFT:                   20 * time.Second,
+		minHealthyRequests:        3,
 	}
 }
 
@@ -56,7 +57,15 @@ func TestOpenAIFailbackControllerAdaptiveCooldownAndHealthyReset(t *testing.T) {
 	now = now.Add(5 * time.Minute)
 	controller.recordProbeFailure(ctx, 10, "gpt-5-mini", "probe_error")
 	state = requireOpenAIFailbackState(t, controller, 10, "gpt-5-mini")
+	require.Equal(t, 1, state.CooldownLevel)
+	require.Equal(t, 1, state.ProbeFailuresAtLevel)
+	require.Equal(t, int64(300), state.CooldownSeconds)
+
+	now = now.Add(5 * time.Minute)
+	controller.recordProbeFailure(ctx, 10, "gpt-5-mini", "probe_error")
+	state = requireOpenAIFailbackState(t, controller, 10, "gpt-5-mini")
 	require.Equal(t, 2, state.CooldownLevel)
+	require.Zero(t, state.ProbeFailuresAtLevel)
 	require.Equal(t, int64(480), state.CooldownSeconds)
 
 	now = now.Add(8 * time.Minute)
@@ -428,7 +437,7 @@ func TestOpenAIFailbackSelectionReportsEarliestTemporaryCapacityRetry(t *testing
 	require.True(t, now.Add(2*time.Minute).Equal(temporary.RetryAt))
 }
 
-func TestOpenAIFailbackSelectionFailedProbeFallsBackAndEscalates(t *testing.T) {
+func TestOpenAIFailbackSelectionFirstFailedProbeRepeatsCooldown(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -450,13 +459,28 @@ func TestOpenAIFailbackSelectionFailedProbeFallsBackAndEscalates(t *testing.T) {
 	var state openAIFailbackState
 	require.Eventually(t, func() bool {
 		state = requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
-		return state.CooldownLevel == 1
+		return state.ProbeFailuresAtLevel == 1
 	}, time.Second, 10*time.Millisecond)
-	require.Equal(t, 1, state.CooldownLevel)
-	require.Equal(t, int64(300), state.CooldownSeconds)
+	require.Equal(t, 0, state.CooldownLevel)
+	require.Equal(t, 1, state.ProbeFailuresAtLevel)
+	require.Equal(t, int64(120), state.CooldownSeconds)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestDecodeOpenAIFailbackStateAcceptsLegacyStateWithoutProbeFailureCounter(t *testing.T) {
+	state, ok := decodeOpenAIFailbackState(`{
+		"phase":"cooldown",
+		"cooldown_level":1,
+		"cooldown_seconds":300,
+		"cooldown_until_unix_ms":1784592300000,
+		"updated_at_unix_ms":1784592000000
+	}`)
+
+	require.True(t, ok)
+	require.Equal(t, 1, state.CooldownLevel)
+	require.Zero(t, state.ProbeFailuresAtLevel)
 }
 
 func TestOpenAIFailbackConcurrentSelectionsRunOneProbeAndUseFallback(t *testing.T) {

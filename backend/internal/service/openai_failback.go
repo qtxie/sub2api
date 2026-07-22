@@ -64,32 +64,35 @@ const (
 )
 
 type openAIFailbackConfig struct {
-	enabled            bool
-	defaultCooldown    time.Duration
-	cooldownIncrement  time.Duration
-	maxCooldown        time.Duration
-	probation          time.Duration
-	probeTimeout       time.Duration
-	maxTTFT            time.Duration
-	minHealthyRequests int
+	enabled                   bool
+	defaultCooldown           time.Duration
+	cooldownIncrement         time.Duration
+	probeFailuresPerIncrement int
+	maxCooldown               time.Duration
+	probation                 time.Duration
+	probeTimeout              time.Duration
+	maxTTFT                   time.Duration
+	minHealthyRequests        int
 }
 
 func newOpenAIFailbackConfig(cfg config.GatewayOpenAISchedulerConfig) openAIFailbackConfig {
 	return openAIFailbackConfig{
-		enabled:            cfg.FailbackProbeEnabled,
-		defaultCooldown:    time.Duration(cfg.FailbackDefaultCooldownSeconds) * time.Second,
-		cooldownIncrement:  time.Duration(cfg.FailbackCooldownIncrementSeconds) * time.Second,
-		maxCooldown:        time.Duration(cfg.FailbackCooldownMaxSeconds) * time.Second,
-		probation:          time.Duration(cfg.FailbackProbationSeconds) * time.Second,
-		probeTimeout:       time.Duration(cfg.FailbackProbeTimeoutSeconds) * time.Second,
-		maxTTFT:            time.Duration(cfg.FailbackMaxTTFTMs) * time.Millisecond,
-		minHealthyRequests: cfg.FailbackMinHealthyRequests,
+		enabled:                   cfg.FailbackProbeEnabled,
+		defaultCooldown:           time.Duration(cfg.FailbackDefaultCooldownSeconds) * time.Second,
+		cooldownIncrement:         time.Duration(cfg.FailbackCooldownIncrementSeconds) * time.Second,
+		probeFailuresPerIncrement: cfg.FailbackProbeFailuresPerIncrement,
+		maxCooldown:               time.Duration(cfg.FailbackCooldownMaxSeconds) * time.Second,
+		probation:                 time.Duration(cfg.FailbackProbationSeconds) * time.Second,
+		probeTimeout:              time.Duration(cfg.FailbackProbeTimeoutSeconds) * time.Second,
+		maxTTFT:                   time.Duration(cfg.FailbackMaxTTFTMs) * time.Millisecond,
+		minHealthyRequests:        cfg.FailbackMinHealthyRequests,
 	}
 }
 
 type openAIFailbackState struct {
 	Phase                   string `json:"phase"`
 	CooldownLevel           int    `json:"cooldown_level"`
+	ProbeFailuresAtLevel    int    `json:"probe_failures_at_level,omitempty"`
 	CooldownSeconds         int64  `json:"cooldown_seconds"`
 	CooldownUntilUnixMilli  int64  `json:"cooldown_until_unix_ms"`
 	ProbationUntilUnixMilli int64  `json:"probation_until_unix_ms,omitempty"`
@@ -474,10 +477,22 @@ func (c *openAIFailbackController) recordProbeFailure(ctx context.Context, accou
 	now := c.now()
 	state, _ := c.mutateState(ctx, key, func(current openAIFailbackState, exists bool) (openAIFailbackState, bool) {
 		level := 0
+		failuresAtLevel := 1
 		if exists {
-			level = current.CooldownLevel + 1
+			level = current.CooldownLevel
+			failuresAtLevel = current.ProbeFailuresAtLevel + 1
 		}
-		return c.cooldownState(level, now, reason), true
+		failuresPerIncrement := c.cfg.probeFailuresPerIncrement
+		if failuresPerIncrement <= 0 {
+			failuresPerIncrement = 1
+		}
+		if failuresAtLevel >= failuresPerIncrement {
+			level++
+			failuresAtLevel = 0
+		}
+		next := c.cooldownState(level, now, reason)
+		next.ProbeFailuresAtLevel = failuresAtLevel
+		return next, true
 	})
 	c.metrics.probeFailure.Add(1)
 	slog.Warn("openai_failback_probe_failed",
@@ -486,6 +501,8 @@ func (c *openAIFailbackController) recordProbeFailure(ctx context.Context, accou
 		"reason", reason,
 		"cooldown_level", state.CooldownLevel,
 		"cooldown_seconds", state.CooldownSeconds,
+		"probe_failures_at_level", state.ProbeFailuresAtLevel,
+		"probe_failures_per_increment", c.cfg.probeFailuresPerIncrement,
 	)
 }
 
@@ -506,6 +523,7 @@ func (c *openAIFailbackController) recordProbeSuccess(ctx context.Context, accou
 		current.CooldownUntilUnixMilli = 0
 		current.ProbationUntilUnixMilli = now.Add(c.cfg.probation).UnixMilli()
 		current.HealthyRequests = 0
+		current.ProbeFailuresAtLevel = 0
 		current.LastProbeTTFTMS = ttftMS
 		current.LastFailure = ""
 		current.UpdatedAtUnixMilli = now.UnixMilli()
