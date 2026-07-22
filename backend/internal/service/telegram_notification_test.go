@@ -341,9 +341,27 @@ func TestFormatTelegramGatewayNotificationUsesRequestedFormats(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := formatTelegramGatewayNotification(tt.event); got != tt.want {
+			if got := formatTelegramGatewayNotificationInLocation(tt.event, time.UTC); got != tt.want {
 				t.Fatalf("formatTelegramGatewayNotification() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFormatTelegramGatewayNotificationUsesLocalTime(t *testing.T) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load Asia/Shanghai: %v", err)
+	}
+
+	message := formatTelegramGatewayNotificationInLocation(TelegramNotificationOutboxEvent{
+		Event: GatewayNotificationEvent{
+			Type:       GatewayNotificationEventError,
+			OccurredAt: time.Date(2026, time.July, 22, 1, 3, 55, 0, time.UTC),
+		},
+	}, shanghai)
+
+	if !strings.Contains(message, "Last seen: 2026-07-22T09:03:55+08:00") {
+		t.Fatalf("message = %q, want Asia/Shanghai timestamp", message)
 	}
 }

@@ -564,6 +564,10 @@ func telegramNotificationDedupeKey(event GatewayNotificationEvent) string {
 }
 
 func formatTelegramGatewayNotification(event TelegramNotificationOutboxEvent) string {
+	return formatTelegramGatewayNotificationInLocation(event, time.Local)
+}
+
+func formatTelegramGatewayNotificationInLocation(event TelegramNotificationOutboxEvent, location *time.Location) string {
 	var message string
 	switch event.Event.Type {
 	case GatewayNotificationEventError:
@@ -571,11 +575,11 @@ func formatTelegramGatewayNotification(event TelegramNotificationOutboxEvent) st
 		if event.Event.StatusCode > 0 {
 			lines[0] += " " + strconv.Itoa(event.Event.StatusCode)
 		}
-		lines = appendTelegramEventDetails(lines, event, true, false)
+		lines = appendTelegramEventDetails(lines, event, true, false, location)
 		message = strings.Join(lines, "\n")
 	case GatewayNotificationEventTimeout:
 		lines := []string{"⚠️ TIMEOUT " + formatTelegramElapsed(event.Event.ElapsedMs)}
-		lines = appendTelegramEventDetails(lines, event, true, true)
+		lines = appendTelegramEventDetails(lines, event, true, true, location)
 		message = strings.Join(lines, "\n")
 	case GatewayNotificationEventSwitch:
 		from := telegramAccountLabel(event.Event.FromAccountName, event.Event.FromAccountID, event.Event.AccountName, event.Event.AccountID)
@@ -589,7 +593,7 @@ func formatTelegramGatewayNotification(event TelegramNotificationOutboxEvent) st
 			fmt.Sprintf("From: %s; priority %d", telegramDetailedAccountLabel(event.Event.FromAccountName, event.Event.FromAccountID), event.Event.FromPriority),
 			fmt.Sprintf("To: %s; priority %d", telegramDetailedAccountLabel(event.Event.ToAccountName, event.Event.ToAccountID), event.Event.ToPriority),
 		}
-		lines = appendTelegramEventDetails(lines, event, false, true)
+		lines = appendTelegramEventDetails(lines, event, false, true, location)
 		message = strings.Join(lines, "\n")
 	default:
 		message = "[sub2api] " + string(event.Event.Type)
@@ -600,7 +604,7 @@ func formatTelegramGatewayNotification(event TelegramNotificationOutboxEvent) st
 	return message
 }
 
-func appendTelegramEventDetails(lines []string, event TelegramNotificationOutboxEvent, includeAccount, includeStatus bool) []string {
+func appendTelegramEventDetails(lines []string, event TelegramNotificationOutboxEvent, includeAccount, includeStatus bool, location *time.Location) []string {
 	if event.Event.Platform != "" {
 		lines = append(lines, "Platform: "+event.Event.Platform)
 	}
@@ -628,7 +632,10 @@ func appendTelegramEventDetails(lines []string, event TelegramNotificationOutbox
 		lines = append(lines, fmt.Sprintf("Occurrences: %d", event.OccurrenceCount))
 	}
 	if at := telegramNotificationOccurredAt(event); !at.IsZero() {
-		lines = append(lines, "Last seen: "+at.UTC().Format(time.RFC3339))
+		if location == nil {
+			location = time.Local
+		}
+		lines = append(lines, "Last seen: "+at.In(location).Format(time.RFC3339))
 	}
 	return lines
 }

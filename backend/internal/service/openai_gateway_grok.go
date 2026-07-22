@@ -1050,12 +1050,25 @@ func applyGrokCLIHeaders(headers http.Header) {
 }
 
 func (s *OpenAIGatewayService) updateGrokUsageSnapshot(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot) {
+	s.updateGrokUsageSnapshotWithRateLimit(ctx, account, snapshot, true)
+}
+
+// updateGrokUsageSnapshotWithoutRateLimit preserves the latest quota data
+// without allowing an upstream response to choose the account cooldown.
+func (s *OpenAIGatewayService) updateGrokUsageSnapshotWithoutRateLimit(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot) {
+	s.updateGrokUsageSnapshotWithRateLimit(ctx, account, snapshot, false)
+}
+
+func (s *OpenAIGatewayService) updateGrokUsageSnapshotWithRateLimit(ctx context.Context, account *Account, snapshot *xai.QuotaSnapshot, applyRateLimit bool) {
 	if s == nil || account == nil || account.ID <= 0 || snapshot == nil {
 		return
 	}
 	accountID := account.ID
 	now := time.Now()
 	resetAt, hasActiveLimit := grokRateLimitResetAtForAccount(account, snapshot, now)
+	if !applyRateLimit {
+		hasActiveLimit = false
+	}
 	if hasActiveLimit {
 		normalizeGrokExhaustedWindowResets(snapshot, resetAt, now)
 	}
@@ -1297,19 +1310,46 @@ func (s *OpenAIGatewayService) rateLimitGrok(ctx context.Context, account *Accou
 	persistGrokRateLimit(ctx, s.accountRepo, account, resetAt)
 }
 
+func (s *OpenAIGatewayService) rateLimitGrokForDuration(ctx context.Context, account *Account, cooldown time.Duration) {
+	if s == nil || account == nil {
+		return
+	}
+	resetAt := time.Now().Add(cooldown)
+	if account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(resetAt) {
+		resetAt = *account.TempUnschedulableUntil
+	}
+	s.BlockAccountScheduling(account, resetAt, "429")
+	if s.accountRepo == nil {
+		return
+	}
+	stateCtx, cancel := openAIAccountStateContext(ctx)
+	defer cancel()
+	if err := s.accountRepo.SetRateLimited(stateCtx, account.ID, resetAt); err != nil {
+		slog.Warn("persist_grok_rate_limit_failed", "account_id", account.ID, "reset_at", resetAt.UTC(), "error", err)
+	}
+}
+
 func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) {
 	if s == nil || account == nil {
 		return
 	}
 	now := time.Now()
-	s.updateGrokUsageSnapshot(ctx, account, parseGrokQuotaSnapshot(headers, statusCode, now))
+	snapshot := parseGrokQuotaSnapshot(headers, statusCode, now)
+	if statusCode == http.StatusTooManyRequests {
+		s.updateGrokUsageSnapshotWithoutRateLimit(ctx, account, snapshot)
+		s.rateLimitGrokForDuration(ctx, account, time.Minute)
+	} else {
+		s.updateGrokUsageSnapshot(ctx, account, snapshot)
+	}
 	switch statusCode {
 	case http.StatusUnauthorized:
 		s.tempUnscheduleGrok(ctx, account, 10*time.Minute, "grok credentials unauthorized")
 	case http.StatusForbidden:
 		s.tempUnscheduleGrok(ctx, account, 30*time.Minute, "grok access or entitlement denied")
 	case http.StatusTooManyRequests:
-		// updateGrokUsageSnapshot installs both runtime and durable rate-limit state.
+		// A 429 has already installed the fixed one-minute rate-limit window above.
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
+		s.tempUnscheduleGrok(ctx, account, time.Minute, "grok upstream temporary error")
 	default:
 		if statusCode >= 500 {
 			s.tempUnscheduleGrok(ctx, account, 2*time.Minute, "grok upstream temporary error")

@@ -2433,7 +2433,21 @@ func TestHandleGrokAccountUpstreamErrorTempUnschedulesNonRateLimitStates(t *test
 			wantMaxCooldown: 30*time.Minute + time.Second,
 		},
 		{
-			name:            "upstream temporary error",
+			name:            "bad gateway uses short cooldown",
+			status:          http.StatusBadGateway,
+			wantReason:      "grok upstream temporary error",
+			wantMinCooldown: time.Minute - time.Second,
+			wantMaxCooldown: time.Minute + time.Second,
+		},
+		{
+			name:            "service unavailable uses short cooldown",
+			status:          http.StatusServiceUnavailable,
+			wantReason:      "grok upstream temporary error",
+			wantMinCooldown: time.Minute - time.Second,
+			wantMaxCooldown: time.Minute + time.Second,
+		},
+		{
+			name:            "other upstream temporary error",
 			status:          http.StatusInternalServerError,
 			wantReason:      "grok upstream temporary error",
 			wantMinCooldown: 2*time.Minute - time.Second,
@@ -2461,8 +2475,8 @@ func TestHandleGrokAccountUpstreamErrorTempUnschedulesNonRateLimitStates(t *test
 	}
 }
 
-func TestHandleGrokAccountUpstreamError429SetsRateLimitedFromRetryAfter(t *testing.T) {
-	account := &Account{ID: 61, Platform: PlatformGrok, Type: AccountTypeOAuth}
+func TestHandleGrokAccountUpstreamError429SetsOneMinuteRateLimit(t *testing.T) {
+	account := &Account{ID: 61, Platform: PlatformGrok, Type: AccountTypeAPIKey}
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	before := time.Now()
@@ -2472,11 +2486,11 @@ func TestHandleGrokAccountUpstreamError429SetsRateLimitedFromRetryAfter(t *testi
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	require.Equal(t, 1, repo.rateLimitedCalls)
 	require.Equal(t, account.ID, repo.lastRateLimitedID)
-	require.WithinDuration(t, before.Add(45*time.Second), repo.lastRateLimitResetAt, time.Second)
+	require.WithinDuration(t, before.Add(time.Minute), repo.lastRateLimitResetAt, time.Second)
 	require.Zero(t, repo.tempUnschedCalls)
 }
 
-func TestHandleGrokAccountUpstreamError429UsesLatestExhaustedWindowReset(t *testing.T) {
+func TestHandleGrokAccountUpstreamError429IgnoresLongerQuotaWindowReset(t *testing.T) {
 	now := time.Now()
 	requestReset := now.Add(10 * time.Minute).Truncate(time.Second)
 	tokenReset := now.Add(20 * time.Minute).Truncate(time.Second)
@@ -2495,11 +2509,11 @@ func TestHandleGrokAccountUpstreamError429UsesLatestExhaustedWindowReset(t *test
 	svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, headers, nil)
 
 	require.Equal(t, 1, repo.rateLimitedCalls)
-	require.WithinDuration(t, tokenReset, repo.lastRateLimitResetAt, time.Second)
+	require.WithinDuration(t, now.Add(time.Minute), repo.lastRateLimitResetAt, time.Second)
 	require.Zero(t, repo.tempUnschedCalls)
 }
 
-func TestHandleGrokAccountUpstreamError429UsesFallbackReset(t *testing.T) {
+func TestHandleGrokAccountUpstreamError429UsesOneMinuteRateLimitWithoutHeaders(t *testing.T) {
 	account := &Account{ID: 63, Platform: PlatformGrok, Type: AccountTypeOAuth}
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
@@ -2508,7 +2522,7 @@ func TestHandleGrokAccountUpstreamError429UsesFallbackReset(t *testing.T) {
 	svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, nil, nil)
 
 	require.Equal(t, 1, repo.rateLimitedCalls)
-	require.WithinDuration(t, before.Add(grokRateLimitFallbackCooldown), repo.lastRateLimitResetAt, time.Second)
+	require.WithinDuration(t, before.Add(time.Minute), repo.lastRateLimitResetAt, time.Second)
 	require.Zero(t, repo.tempUnschedCalls)
 }
 
@@ -2645,7 +2659,7 @@ func TestHandleGrokAccountUpstreamError429DoesNotShortenExistingPause(t *testing
 	svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{"Retry-After": []string{"45"}}, nil)
 
 	require.Equal(t, 1, repo.rateLimitedCalls)
-	require.WithinDuration(t, time.Now().Add(45*time.Second), repo.lastRateLimitResetAt, time.Second)
+	require.WithinDuration(t, existingUntil, repo.lastRateLimitResetAt, time.Second)
 	require.Zero(t, repo.tempUnschedCalls)
 	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
 	require.True(t, ok)
@@ -2822,7 +2836,7 @@ func TestOpenAIWSHTTPBridgeGrok429PersistsRateLimit(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, result)
 	require.Equal(t, 1, repo.rateLimitedCalls)
-	require.WithinDuration(t, before.Add(45*time.Second), repo.lastRateLimitResetAt, time.Second)
+	require.WithinDuration(t, before.Add(time.Minute), repo.lastRateLimitResetAt, time.Second)
 	require.Zero(t, repo.tempUnschedCalls)
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
