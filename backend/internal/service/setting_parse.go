@@ -168,11 +168,15 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeySMTPPort:                                  "587",
 		SettingKeySMTPUseTLS:                                "false",
 		// Model fallback defaults
-		SettingKeyEnableModelFallback:      "false",
-		SettingKeyFallbackModelAnthropic:   "claude-3-5-sonnet-20241022",
-		SettingKeyFallbackModelOpenAI:      "gpt-4o",
-		SettingKeyFallbackModelGemini:      "gemini-2.5-pro",
-		SettingKeyFallbackModelAntigravity: "gemini-2.5-pro",
+		SettingKeyEnableModelFallback:       "false",
+		SettingKeyFallbackModelAnthropic:    "claude-3-5-sonnet-20241022",
+		SettingKeyFallbackModelOpenAI:       "gpt-4o",
+		SettingKeyFallbackModelGemini:       "gemini-2.5-pro",
+		SettingKeyFallbackModelAntigravity:  "gemini-2.5-pro",
+		SettingKeyFallbackModelsAnthropic:   `["claude-3-5-sonnet-20241022"]`,
+		SettingKeyFallbackModelsOpenAI:      `["gpt-4o"]`,
+		SettingKeyFallbackModelsGemini:      `["gemini-2.5-pro"]`,
+		SettingKeyFallbackModelsAntigravity: `["gemini-2.5-pro"]`,
 		// Identity patch defaults
 		SettingKeyEnableIdentityPatch: "true",
 		SettingKeyIdentityPatchPrompt: "",
@@ -727,6 +731,14 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.FallbackModelOpenAI = s.getStringOrDefault(settings, SettingKeyFallbackModelOpenAI, "gpt-4o")
 	result.FallbackModelGemini = s.getStringOrDefault(settings, SettingKeyFallbackModelGemini, "gemini-2.5-pro")
 	result.FallbackModelAntigravity = s.getStringOrDefault(settings, SettingKeyFallbackModelAntigravity, "gemini-2.5-pro")
+	result.FallbackModelsAnthropic = parseStoredFallbackModels(settings, SettingKeyFallbackModelsAnthropic, result.FallbackModelAnthropic)
+	result.FallbackModelsOpenAI = parseStoredFallbackModels(settings, SettingKeyFallbackModelsOpenAI, result.FallbackModelOpenAI)
+	result.FallbackModelsGemini = parseStoredFallbackModels(settings, SettingKeyFallbackModelsGemini, result.FallbackModelGemini)
+	result.FallbackModelsAntigravity = parseStoredFallbackModels(settings, SettingKeyFallbackModelsAntigravity, result.FallbackModelAntigravity)
+	result.FallbackModelAnthropic = firstFallbackModel(result.FallbackModelsAnthropic)
+	result.FallbackModelOpenAI = firstFallbackModel(result.FallbackModelsOpenAI)
+	result.FallbackModelGemini = firstFallbackModel(result.FallbackModelsGemini)
+	result.FallbackModelAntigravity = firstFallbackModel(result.FallbackModelsAntigravity)
 
 	// Identity patch settings (default: enabled, to preserve existing behavior)
 	if v, ok := settings[SettingKeyEnableIdentityPatch]; ok && v != "" {

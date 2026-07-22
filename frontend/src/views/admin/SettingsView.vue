@@ -4470,6 +4470,103 @@
                 <Toggle v-model="form.enable_cch_signing" />
               </div>
 
+              <!-- Ordered same-account model fallback -->
+              <div
+                class="border-t border-gray-100 pt-5 dark:border-dark-700"
+              >
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <label
+                      class="text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ t("admin.settings.modelFallback.title") }}
+                    </label>
+                    <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.modelFallback.hint") }}
+                    </p>
+                  </div>
+                  <Toggle v-model="form.enable_model_fallback" />
+                </div>
+
+                <div
+                  v-if="form.enable_model_fallback"
+                  class="mt-4 grid gap-x-6 gap-y-5 xl:grid-cols-2"
+                >
+                  <div
+                    v-for="field in modelFallbackFields"
+                    :key="field.key"
+                    class="min-w-0"
+                  >
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{ field.label }}
+                    </label>
+                    <div class="space-y-2">
+                      <div
+                        v-for="index in form[field.key].length"
+                        :key="`${field.key}-${index - 1}`"
+                        class="grid grid-cols-[24px_minmax(0,1fr)_104px] items-center gap-2"
+                      >
+                        <span
+                          class="text-center text-xs tabular-nums text-gray-400 dark:text-gray-500"
+                        >
+                          {{ index }}
+                        </span>
+                        <input
+                          v-model="form[field.key][index - 1]"
+                          type="text"
+                          maxlength="200"
+                          class="input min-w-0 font-mono text-sm"
+                          :placeholder="field.placeholder"
+                          :aria-label="`${field.label} ${index}`"
+                        />
+                        <div class="grid grid-cols-3 gap-1">
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-sm px-2"
+                            :disabled="index === 1"
+                            :title="t('admin.settings.modelFallback.moveUp')"
+                            :aria-label="t('admin.settings.modelFallback.moveUp')"
+                            @click="moveModelFallback(field.key, index - 1, -1)"
+                          >
+                            <Icon name="arrowUp" size="xs" />
+                          </button>
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-sm px-2"
+                            :disabled="index === form[field.key].length"
+                            :title="t('admin.settings.modelFallback.moveDown')"
+                            :aria-label="t('admin.settings.modelFallback.moveDown')"
+                            @click="moveModelFallback(field.key, index - 1, 1)"
+                          >
+                            <Icon name="arrowDown" size="xs" />
+                          </button>
+                          <button
+                            type="button"
+                            class="btn btn-secondary btn-sm px-2 text-red-600 hover:text-red-700 dark:text-red-400"
+                            :title="t('admin.settings.modelFallback.remove')"
+                            :aria-label="t('admin.settings.modelFallback.remove')"
+                            @click="removeModelFallback(field.key, index - 1)"
+                          >
+                            <Icon name="trash" size="xs" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm mt-2"
+                      :disabled="form[field.key].length >= maxModelFallbacks"
+                      @click="addModelFallback(field.key)"
+                    >
+                      <Icon name="plus" size="xs" />
+                      {{ t("admin.settings.modelFallback.add") }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <!-- Claude OAuth System Prompt Injection -->
               <div class="flex items-center justify-between">
                 <div>
@@ -8543,6 +8640,10 @@ const form = reactive<SettingsForm>({
   fallback_model_openai: "gpt-4o",
   fallback_model_gemini: "gemini-2.5-pro",
   fallback_model_antigravity: "gemini-2.5-pro",
+  fallback_models_anthropic: ["claude-3-5-sonnet-20241022"],
+  fallback_models_openai: ["gpt-4o"],
+  fallback_models_gemini: ["gemini-2.5-pro"],
+  fallback_models_antigravity: ["gemini-2.5-pro"],
   // Identity patch (Claude -> Gemini)
   enable_identity_patch: true,
   identity_patch_prompt: "",
@@ -8608,6 +8709,76 @@ const form = reactive<SettingsForm>({
   // Allow user view error requests
   allow_user_view_error_requests: false,
 });
+
+type ModelFallbackListKey =
+  | "fallback_models_anthropic"
+  | "fallback_models_openai"
+  | "fallback_models_gemini"
+  | "fallback_models_antigravity";
+
+const maxModelFallbacks = 8;
+const modelFallbackFields = computed<
+  Array<{ key: ModelFallbackListKey; label: string; placeholder: string }>
+>(() => [
+  {
+    key: "fallback_models_anthropic",
+    label: t("admin.settings.modelFallback.anthropic"),
+    placeholder: "claude-3-5-sonnet-20241022",
+  },
+  {
+    key: "fallback_models_openai",
+    label: t("admin.settings.modelFallback.openai"),
+    placeholder: "gpt-4o",
+  },
+  {
+    key: "fallback_models_gemini",
+    label: t("admin.settings.modelFallback.gemini"),
+    placeholder: "gemini-2.5-pro",
+  },
+  {
+    key: "fallback_models_antigravity",
+    label: t("admin.settings.modelFallback.antigravity"),
+    placeholder: "gemini-2.5-pro",
+  },
+]);
+
+function addModelFallback(key: ModelFallbackListKey): void {
+  if (form[key].length < maxModelFallbacks) {
+    form[key].push("");
+  }
+}
+
+function removeModelFallback(key: ModelFallbackListKey, index: number): void {
+  form[key].splice(index, 1);
+}
+
+function moveModelFallback(
+  key: ModelFallbackListKey,
+  index: number,
+  direction: -1 | 1,
+): void {
+  const target = index + direction;
+  const models = form[key];
+  if (target < 0 || target >= models.length) return;
+  [models[index], models[target]] = [models[target], models[index]];
+}
+
+function normalizeModelFallbacks(models: string[]): string[] {
+  return Array.from(
+    new Set(models.map((model) => model.trim()).filter(Boolean)),
+  ).slice(0, maxModelFallbacks);
+}
+
+function resolveLoadedModelFallbacks(
+  models: unknown,
+  legacyModel: unknown,
+): string[] {
+  if (Array.isArray(models)) {
+    return normalizeModelFallbacks(models.map((model) => String(model)));
+  }
+  const legacy = String(legacyModel || "").trim();
+  return legacy ? [legacy] : [];
+}
 
 type OpenAIAdvancedSchedulerOverrideKey =
   | "openai_advanced_scheduler_lb_top_k"
@@ -9512,6 +9683,22 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    form.fallback_models_anthropic = resolveLoadedModelFallbacks(
+      settings.fallback_models_anthropic,
+      settings.fallback_model_anthropic,
+    );
+    form.fallback_models_openai = resolveLoadedModelFallbacks(
+      settings.fallback_models_openai,
+      settings.fallback_model_openai,
+    );
+    form.fallback_models_gemini = resolveLoadedModelFallbacks(
+      settings.fallback_models_gemini,
+      settings.fallback_model_gemini,
+    );
+    form.fallback_models_antigravity = resolveLoadedModelFallbacks(
+      settings.fallback_models_antigravity,
+      settings.fallback_model_antigravity,
+    );
     if (!form.claude_oauth_system_prompt_blocks?.trim()) {
       form.claude_oauth_system_prompt_blocks =
         defaultClaudeOAuthSystemPromptBlocks;
@@ -9874,6 +10061,19 @@ async function saveSettings() {
     form.claude_oauth_system_prompt_blocks =
       claudeOAuthSystemPromptBlocksJSON;
 
+    const fallbackModelsAnthropic = normalizeModelFallbacks(
+      form.fallback_models_anthropic,
+    );
+    const fallbackModelsOpenAI = normalizeModelFallbacks(
+      form.fallback_models_openai,
+    );
+    const fallbackModelsGemini = normalizeModelFallbacks(
+      form.fallback_models_gemini,
+    );
+    const fallbackModelsAntigravity = normalizeModelFallbacks(
+      form.fallback_models_antigravity,
+    );
+
     const payload: UpdateSettingsRequest = {
       registration_enabled: form.registration_enabled,
       email_verify_enabled: form.email_verify_enabled,
@@ -10023,10 +10223,14 @@ async function saveSettings() {
       google_oauth_frontend_redirect_url:
         form.google_oauth_frontend_redirect_url,
       enable_model_fallback: form.enable_model_fallback,
-      fallback_model_anthropic: form.fallback_model_anthropic,
-      fallback_model_openai: form.fallback_model_openai,
-      fallback_model_gemini: form.fallback_model_gemini,
-      fallback_model_antigravity: form.fallback_model_antigravity,
+      fallback_model_anthropic: fallbackModelsAnthropic[0] || "",
+      fallback_model_openai: fallbackModelsOpenAI[0] || "",
+      fallback_model_gemini: fallbackModelsGemini[0] || "",
+      fallback_model_antigravity: fallbackModelsAntigravity[0] || "",
+      fallback_models_anthropic: fallbackModelsAnthropic,
+      fallback_models_openai: fallbackModelsOpenAI,
+      fallback_models_gemini: fallbackModelsGemini,
+      fallback_models_antigravity: fallbackModelsAntigravity,
       enable_identity_patch: form.enable_identity_patch,
       identity_patch_prompt: form.identity_patch_prompt,
       min_claude_code_version: form.min_claude_code_version,

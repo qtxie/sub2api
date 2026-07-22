@@ -86,8 +86,51 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// Forward 转发请求到Claude API
+// Forward tries the requested model and its configured fallbacks on the same
+// selected account before returning an error to the handler's account failover.
 func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (*ForwardResult, error) {
+	if parsed == nil || parsed.Body == nil || account == nil {
+		return s.forwardOnce(ctx, c, account, parsed)
+	}
+	originalModel := parsed.Model
+	originalBody := append([]byte(nil), parsed.Body.Bytes()...)
+	chain := []string{originalModel}
+	var lastErr error
+	for index := 0; index < len(chain); index++ {
+		candidate := chain[index]
+		candidateBody := originalBody
+		if candidate != originalModel {
+			candidateBody = ReplaceModelInBody(originalBody, candidate)
+		}
+		attempt, err := parsed.CloneForBody(candidateBody)
+		if err != nil {
+			return nil, err
+		}
+		attempt.Model = candidate
+		attempt.OnUpstreamAccepted = parsed.OnUpstreamAccepted
+		result, err := s.forwardOnce(ctx, c, account, attempt)
+		if err == nil {
+			if replaceErr := parsed.ReplaceBody(attempt.Body.Bytes()); replaceErr != nil {
+				return nil, replaceErr
+			}
+			parsed.Model = originalModel
+			if result != nil {
+				result.Model = originalModel
+			}
+			return result, nil
+		}
+		lastErr = err
+		if !IsModelUnavailableFailover(err) {
+			return nil, err
+		}
+		if len(chain) == 1 && s.settingService != nil {
+			chain = s.settingService.BuildModelFallbackChain(ctx, account.Platform, originalModel)
+		}
+	}
+	return nil, lastErr
+}
+
+func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (*ForwardResult, error) {
 	startTime := time.Now()
 	if parsed == nil {
 		return nil, fmt.Errorf("parse request: empty request")
@@ -586,6 +629,27 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				}
 
 				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			}
+		}
+
+		if resp.StatusCode >= 400 {
+			respBody, _ := s.readUpstreamErrorBody(resp)
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+				if s.rateLimitService != nil {
+					s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, reqModel)
+				}
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-request-id"),
+					Kind:               "model_fallback",
+					Message:            extractUpstreamErrorMessage(respBody),
+				})
+				return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
 			}
 		}
 

@@ -188,26 +188,75 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
-		// 模型兜底：模型不存在且开启 fallback 时，自动用 fallback 模型重试一次
+		// Try the ordered fallback chain on this account before allowing the
+		// handler to switch accounts. Each next model is attempted only after a
+		// deterministic model-unavailable response.
 		if s.settingService != nil && s.settingService.IsModelFallbackEnabled(ctx) &&
-			isModelNotFoundError(resp.StatusCode, respBody) {
-			fallbackModel := s.settingService.GetFallbackModel(ctx, PlatformAntigravity)
-			if fallbackModel != "" && fallbackModel != mappedModel {
-				logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Model not found (%s), retrying with fallback model %s (account: %s)", mappedModel, fallbackModel, account.Name)
+			IsUpstreamModelUnavailableError(resp.StatusCode, respBody) {
+			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
+			activeModel := mappedModel
+			for _, fallbackModel := range s.settingService.GetFallbackModels(ctx, PlatformAntigravity) {
+				if fallbackModel == "" || fallbackModel == activeModel {
+					continue
+				}
+				logger.LegacyPrintf("service.antigravity_gateway", "[Antigravity] Model unavailable (%s), retrying with fallback model %s (account: %s)", activeModel, fallbackModel, account.Name)
 
-				fallbackWrapped, err := s.wrapV1InternalRequest(projectID, fallbackModel, injectedBody)
-				if err == nil {
-					fallbackReq, err := antigravity.NewAPIRequest(ctx, upstreamAction, accessToken, fallbackWrapped)
-					if err == nil {
-						fallbackResp, err := s.httpUpstream.Do(fallbackReq, proxyURL, account.ID, account.Concurrency)
-						if err == nil && fallbackResp.StatusCode < 400 {
-							_ = resp.Body.Close()
-							resp = fallbackResp
-						} else if fallbackResp != nil {
-							_ = fallbackResp.Body.Close()
+				fallbackWrapped, wrapErr := s.wrapV1InternalRequest(projectID, fallbackModel, injectedBody)
+				if wrapErr != nil {
+					return nil, fmt.Errorf("build Antigravity fallback request: %w", wrapErr)
+				}
+				fallbackResult, fallbackErr := s.antigravityRetryLoop(antigravityRetryLoopParams{
+					ctx:             ctx,
+					prefix:          prefix,
+					account:         account,
+					proxyURL:        proxyURL,
+					accessToken:     accessToken,
+					action:          upstreamAction,
+					body:            fallbackWrapped,
+					c:               c,
+					httpUpstream:    s.httpUpstream,
+					settingService:  s.settingService,
+					accountRepo:     s.accountRepo,
+					handleError:     s.handleUpstreamError,
+					requestedModel:  fallbackModel,
+					isStickySession: isStickySession,
+					groupID:         forwardOpts.groupID,
+					sessionHash:     forwardOpts.sessionHash,
+				})
+				if fallbackErr != nil {
+					if switchErr, ok := IsAntigravityAccountSwitchError(fallbackErr); ok {
+						return nil, &UpstreamFailoverError{
+							StatusCode:        http.StatusServiceUnavailable,
+							ForceCacheBilling: switchErr.IsStickySession,
 						}
 					}
+					return nil, fallbackErr
 				}
+				if fallbackResult == nil || fallbackResult.resp == nil {
+					return nil, fmt.Errorf("Antigravity fallback returned no response")
+				}
+				fallbackResp := fallbackResult.resp
+
+				_ = resp.Body.Close()
+				resp = fallbackResp
+				activeModel = fallbackModel
+				billingModel = fallbackModel
+				contentType = resp.Header.Get("Content-Type")
+				if resp.StatusCode < 400 {
+					mappedModel = fallbackModel
+					break
+				}
+
+				respBody = s.readUpstreamErrorBody(resp)
+				_ = resp.Body.Close()
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+				if !IsUpstreamModelUnavailableError(resp.StatusCode, respBody) {
+					break
+				}
+				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, fallbackModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
+			}
+			if resp.StatusCode >= 400 && IsUpstreamModelUnavailableError(resp.StatusCode, respBody) {
+				return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
 			}
 		}
 

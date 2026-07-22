@@ -173,6 +173,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 7. Handle error response with failover
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
+		if account.Platform != PlatformGrok && shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+			}
+			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
+		}
 		if account.Platform == PlatformGrok {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,

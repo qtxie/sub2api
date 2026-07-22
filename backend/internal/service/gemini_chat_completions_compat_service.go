@@ -22,7 +22,7 @@ import (
 // ForwardAsChatCompletions serves OpenAI Chat Completions clients through
 // Gemini accounts. It keeps the client-facing response in Chat Completions
 // format while routing the upstream call through Gemini native endpoints.
-func (s *GeminiMessagesCompatService) ForwardAsChatCompletions(
+func (s *GeminiMessagesCompatService) forwardAsChatCompletionsOnce(
 	ctx context.Context,
 	c *gin.Context,
 	account *Account,
@@ -211,6 +211,12 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
+		if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+			}
+			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
+		}
 		policy := ErrorPolicyNone
 		if s.rateLimitService != nil {
 			policy = s.rateLimitService.CheckErrorPolicy(ctx, account, resp.StatusCode, respBody, mappedModel)

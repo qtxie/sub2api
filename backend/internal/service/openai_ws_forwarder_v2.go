@@ -200,6 +200,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			}
 			return nil, &agentIdentityTaskRecoveredError{}
 		}
+		var modelDialErr *openAIWSDialError
+		if errors.As(err, &modelDialErr) && modelDialErr != nil &&
+			shouldTriggerModelFallback(ctx, s.settingService, modelDialErr.StatusCode, modelDialErr.ResponseBody) {
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody, originalModel)
+			}
+			return nil, newModelUnavailableFailoverError(modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody)
+		}
 		s.handleOpenAIWSDialTransientFailure(ctx, account, mappedModel, err)
 		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
 		logOpenAIWSModeInfo(
@@ -564,6 +572,13 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		imageCounter.AddSSEData(message)
 
 		if eventType == "response.failed" {
+			if !wroteDownstream && shouldTriggerModelFallback(ctx, s.settingService, http.StatusBadRequest, message) {
+				if s.rateLimitService != nil {
+					s.rateLimitService.HandleUpstreamError(ctx, account, http.StatusBadRequest, lease.HandshakeHeaders(), message, originalModel)
+				}
+				lease.MarkBroken()
+				return nil, newModelUnavailableFailoverError(http.StatusBadRequest, lease.HandshakeHeaders(), message)
+			}
 			if hit, code, msg := detectOpenAICyberPolicy(message); hit {
 				MarkOpsCyberPolicy(c, CyberPolicyMark{
 					Code:           code,
@@ -577,8 +592,16 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 
 		if eventType == "error" {
-			s.handleOpenAIWSErrorEventTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
+			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
+			if !wroteDownstream && shouldTriggerModelFallback(ctx, s.settingService, statusCode, message) {
+				if s.rateLimitService != nil {
+					s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, lease.HandshakeHeaders(), message, originalModel)
+				}
+				lease.MarkBroken()
+				return nil, newModelUnavailableFailoverError(statusCode, lease.HandshakeHeaders(), message)
+			}
+			s.handleOpenAIWSErrorEventTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
 			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)
 			errMsg := strings.TrimSpace(errMsgRaw)
 			if errMsg == "" {
@@ -628,7 +651,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if !wroteDownstream && canFallback {
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
-			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 			setOpsUpstreamError(c, statusCode, errMsg, "")
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")

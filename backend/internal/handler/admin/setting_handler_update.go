@@ -195,11 +195,15 @@ type UpdateSettingsRequest struct {
 	ForceEmailOnThirdPartySignup              *bool                             `json:"force_email_on_third_party_signup"`
 
 	// Model fallback configuration
-	EnableModelFallback      bool   `json:"enable_model_fallback"`
-	FallbackModelAnthropic   string `json:"fallback_model_anthropic"`
-	FallbackModelOpenAI      string `json:"fallback_model_openai"`
-	FallbackModelGemini      string `json:"fallback_model_gemini"`
-	FallbackModelAntigravity string `json:"fallback_model_antigravity"`
+	EnableModelFallback       bool      `json:"enable_model_fallback"`
+	FallbackModelAnthropic    *string   `json:"fallback_model_anthropic"`
+	FallbackModelOpenAI       *string   `json:"fallback_model_openai"`
+	FallbackModelGemini       *string   `json:"fallback_model_gemini"`
+	FallbackModelAntigravity  *string   `json:"fallback_model_antigravity"`
+	FallbackModelsAnthropic   *[]string `json:"fallback_models_anthropic"`
+	FallbackModelsOpenAI      *[]string `json:"fallback_models_openai"`
+	FallbackModelsGemini      *[]string `json:"fallback_models_gemini"`
+	FallbackModelsAntigravity *[]string `json:"fallback_models_antigravity"`
 
 	// Identity patch configuration (Claude -> Gemini)
 	EnableIdentityPatch bool   `json:"enable_identity_patch"`
@@ -371,6 +375,27 @@ func (h *SettingHandler) ensureActorTotpForStepUp(c *gin.Context) bool {
 		return false
 	}
 	return true
+}
+
+func resolveFallbackModelsUpdate(list *[]string, legacy *string, previous []string) []string {
+	if list != nil {
+		return *list
+	}
+	if legacy != nil {
+		model := strings.TrimSpace(*legacy)
+		if model == "" {
+			return []string{}
+		}
+		return []string{model}
+	}
+	return previous
+}
+
+func firstFallbackModelUpdate(models []string) string {
+	if len(models) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(models[0])
 }
 
 func (h *SettingHandler) UpdateSettings(c *gin.Context) {
@@ -1238,6 +1263,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		response.BadRequest(c, "cyber_session_block_ttl_seconds must be > 0")
 		return
 	}
+	fallbackModelsAnthropic := resolveFallbackModelsUpdate(req.FallbackModelsAnthropic, req.FallbackModelAnthropic, previousSettings.FallbackModelsAnthropic)
+	fallbackModelsOpenAI := resolveFallbackModelsUpdate(req.FallbackModelsOpenAI, req.FallbackModelOpenAI, previousSettings.FallbackModelsOpenAI)
+	fallbackModelsGemini := resolveFallbackModelsUpdate(req.FallbackModelsGemini, req.FallbackModelGemini, previousSettings.FallbackModelsGemini)
+	fallbackModelsAntigravity := resolveFallbackModelsUpdate(req.FallbackModelsAntigravity, req.FallbackModelAntigravity, previousSettings.FallbackModelsAntigravity)
 
 	settings := &service.SystemSettings{
 		// 系统全局 platform quota 默认值（整体替换语义）
@@ -1367,10 +1396,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		DefaultUserRPMLimit:                    req.DefaultUserRPMLimit,
 		DefaultSubscriptions:                   defaultSubscriptions,
 		EnableModelFallback:                    req.EnableModelFallback,
-		FallbackModelAnthropic:                 req.FallbackModelAnthropic,
-		FallbackModelOpenAI:                    req.FallbackModelOpenAI,
-		FallbackModelGemini:                    req.FallbackModelGemini,
-		FallbackModelAntigravity:               req.FallbackModelAntigravity,
+		FallbackModelAnthropic:                 firstFallbackModelUpdate(fallbackModelsAnthropic),
+		FallbackModelOpenAI:                    firstFallbackModelUpdate(fallbackModelsOpenAI),
+		FallbackModelGemini:                    firstFallbackModelUpdate(fallbackModelsGemini),
+		FallbackModelAntigravity:               firstFallbackModelUpdate(fallbackModelsAntigravity),
+		FallbackModelsAnthropic:                fallbackModelsAnthropic,
+		FallbackModelsOpenAI:                   fallbackModelsOpenAI,
+		FallbackModelsGemini:                   fallbackModelsGemini,
+		FallbackModelsAntigravity:              fallbackModelsAntigravity,
 		EnableIdentityPatch:                    req.EnableIdentityPatch,
 		IdentityPatchPrompt:                    req.IdentityPatchPrompt,
 		MinClaudeCodeVersion:                   req.MinClaudeCodeVersion,
@@ -1899,6 +1932,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		FallbackModelOpenAI:                                    updatedSettings.FallbackModelOpenAI,
 		FallbackModelGemini:                                    updatedSettings.FallbackModelGemini,
 		FallbackModelAntigravity:                               updatedSettings.FallbackModelAntigravity,
+		FallbackModelsAnthropic:                                updatedSettings.FallbackModelsAnthropic,
+		FallbackModelsOpenAI:                                   updatedSettings.FallbackModelsOpenAI,
+		FallbackModelsGemini:                                   updatedSettings.FallbackModelsGemini,
+		FallbackModelsAntigravity:                              updatedSettings.FallbackModelsAntigravity,
 		EnableIdentityPatch:                                    updatedSettings.EnableIdentityPatch,
 		IdentityPatchPrompt:                                    updatedSettings.IdentityPatchPrompt,
 		OpsMonitoringEnabled:                                   updatedSettings.OpsMonitoringEnabled,

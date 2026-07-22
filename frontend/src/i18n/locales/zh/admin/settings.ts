@@ -326,6 +326,18 @@ export default {
         saved: '上游倍率自动探测设置已保存',
         saveFailed: '保存上游倍率自动探测设置失败'
       },
+      modelFallback: {
+        title: '同账号模型降级',
+        hint: '在当前选中账号上按顺序尝试；列表中的模型均不可用后，才会切换到其他账号。',
+        anthropic: 'Anthropic 降级模型',
+        openai: 'OpenAI 降级模型',
+        gemini: 'Gemini 降级模型',
+        antigravity: 'Antigravity 降级模型',
+        add: '添加模型',
+        moveUp: '上移模型',
+        moveDown: '下移模型',
+        remove: '删除模型',
+      },
       gatewayForwarding: {
         title: '请求转发行为',
         description: '控制请求转发到上游 OAuth 账号时的行为',

@@ -52,6 +52,22 @@ func (s *SettingService) UpdateSettingsWithAuthSourceDefaults(ctx context.Contex
 }
 
 func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, settings *SystemSettings) (map[string]string, error) {
+	if settings == nil {
+		return nil, infraerrors.BadRequest("INVALID_SETTINGS", "settings are required")
+	}
+	var err error
+	if settings.FallbackModelsAnthropic, err = NormalizeModelFallbackList(settings.FallbackModelsAnthropic); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_FALLBACK_MODELS_ANTHROPIC", err.Error())
+	}
+	if settings.FallbackModelsOpenAI, err = NormalizeModelFallbackList(settings.FallbackModelsOpenAI); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_FALLBACK_MODELS_OPENAI", err.Error())
+	}
+	if settings.FallbackModelsGemini, err = NormalizeModelFallbackList(settings.FallbackModelsGemini); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_FALLBACK_MODELS_GEMINI", err.Error())
+	}
+	if settings.FallbackModelsAntigravity, err = NormalizeModelFallbackList(settings.FallbackModelsAntigravity); err != nil {
+		return nil, infraerrors.BadRequest("INVALID_FALLBACK_MODELS_ANTIGRAVITY", err.Error())
+	}
 	if err := s.validateDefaultSubscriptionGroups(ctx, settings.DefaultSubscriptions); err != nil {
 		return nil, err
 	}
@@ -321,10 +337,19 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 
 	// Model fallback configuration
 	updates[SettingKeyEnableModelFallback] = strconv.FormatBool(settings.EnableModelFallback)
-	updates[SettingKeyFallbackModelAnthropic] = settings.FallbackModelAnthropic
-	updates[SettingKeyFallbackModelOpenAI] = settings.FallbackModelOpenAI
-	updates[SettingKeyFallbackModelGemini] = settings.FallbackModelGemini
-	updates[SettingKeyFallbackModelAntigravity] = settings.FallbackModelAntigravity
+	fallbackModelsAnthropicJSON, _ := json.Marshal(settings.FallbackModelsAnthropic)
+	fallbackModelsOpenAIJSON, _ := json.Marshal(settings.FallbackModelsOpenAI)
+	fallbackModelsGeminiJSON, _ := json.Marshal(settings.FallbackModelsGemini)
+	fallbackModelsAntigravityJSON, _ := json.Marshal(settings.FallbackModelsAntigravity)
+	updates[SettingKeyFallbackModelsAnthropic] = string(fallbackModelsAnthropicJSON)
+	updates[SettingKeyFallbackModelsOpenAI] = string(fallbackModelsOpenAIJSON)
+	updates[SettingKeyFallbackModelsGemini] = string(fallbackModelsGeminiJSON)
+	updates[SettingKeyFallbackModelsAntigravity] = string(fallbackModelsAntigravityJSON)
+	// Keep singular settings readable by older nodes during rolling upgrades.
+	updates[SettingKeyFallbackModelAnthropic] = firstFallbackModel(settings.FallbackModelsAnthropic)
+	updates[SettingKeyFallbackModelOpenAI] = firstFallbackModel(settings.FallbackModelsOpenAI)
+	updates[SettingKeyFallbackModelGemini] = firstFallbackModel(settings.FallbackModelsGemini)
+	updates[SettingKeyFallbackModelAntigravity] = firstFallbackModel(settings.FallbackModelsAntigravity)
 
 	// Identity patch configuration (Claude -> Gemini)
 	updates[SettingKeyEnableIdentityPatch] = strconv.FormatBool(settings.EnableIdentityPatch)

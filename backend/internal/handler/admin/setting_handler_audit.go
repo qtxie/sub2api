@@ -2,6 +2,7 @@ package admin
 
 import (
 	"log/slog"
+	"slices"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -337,6 +338,18 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.FallbackModelAntigravity != after.FallbackModelAntigravity {
 		changed = append(changed, "fallback_model_antigravity")
+	}
+	if !slices.Equal(before.FallbackModelsAnthropic, after.FallbackModelsAnthropic) {
+		changed = append(changed, "fallback_models_anthropic")
+	}
+	if !slices.Equal(before.FallbackModelsOpenAI, after.FallbackModelsOpenAI) {
+		changed = append(changed, "fallback_models_openai")
+	}
+	if !slices.Equal(before.FallbackModelsGemini, after.FallbackModelsGemini) {
+		changed = append(changed, "fallback_models_gemini")
+	}
+	if !slices.Equal(before.FallbackModelsAntigravity, after.FallbackModelsAntigravity) {
+		changed = append(changed, "fallback_models_antigravity")
 	}
 	if before.EnableIdentityPatch != after.EnableIdentityPatch {
 		changed = append(changed, "enable_identity_patch")

@@ -410,6 +410,10 @@ const baseSettingsResponse = {
   fallback_model_openai: "",
   fallback_model_gemini: "",
   fallback_model_antigravity: "",
+  fallback_models_anthropic: [],
+  fallback_models_openai: [],
+  fallback_models_gemini: [],
+  fallback_models_antigravity: [],
   enable_identity_patch: false,
   identity_patch_prompt: "",
   ops_monitoring_enabled: false,
@@ -809,6 +813,34 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({
         rewrite_message_cache_control: true,
+      }),
+    );
+  });
+
+  it("submits ordered same-account model fallback lists", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      enable_model_fallback: true,
+      fallback_models_anthropic: ["claude-b", "claude-c"],
+      fallback_models_openai: ["gpt-b", "gpt-c", "gpt-b", "  "],
+      fallback_models_gemini: ["gemini-b"],
+      fallback_models_antigravity: ["antigravity-b"],
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enable_model_fallback: true,
+        fallback_models_anthropic: ["claude-b", "claude-c"],
+        fallback_models_openai: ["gpt-b", "gpt-c"],
+        fallback_models_gemini: ["gemini-b"],
+        fallback_models_antigravity: ["antigravity-b"],
+        fallback_model_openai: "gpt-b",
       }),
     );
   });

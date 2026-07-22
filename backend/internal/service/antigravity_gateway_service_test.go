@@ -148,11 +148,13 @@ type queuedHTTPUpstreamStub struct {
 	responses     []*http.Response
 	errors        []error
 	requestBodies [][]byte
+	accountIDs    []int64
 	callCount     int
 	onCall        func(*http.Request, *queuedHTTPUpstreamStub)
 }
 
-func (s *queuedHTTPUpstreamStub) Do(req *http.Request, _ string, _ int64, _ int) (*http.Response, error) {
+func (s *queuedHTTPUpstreamStub) Do(req *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
+	s.accountIDs = append(s.accountIDs, accountID)
 	if req != nil && req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
 		s.requestBodies = append(s.requestBodies, body)
@@ -333,6 +335,59 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 	var wrapped map[string]any
 	require.NoError(t, json.Unmarshal(upstream.requestBodies[0], &wrapped))
 	require.Equal(t, "configured-project", wrapped["project"])
+}
+
+func TestAntigravityGatewayService_ForwardGemini_TriesOrderedModelsOnSameAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	writer := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(writer)
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/antigravity/v1beta/models/model-a:streamGenerateContent", bytes.NewReader(body))
+
+	upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{
+		{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"model not found"}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(strings.NewReader(
+				"data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1}}}\n\n",
+			)),
+		},
+	}}
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:       "true",
+		SettingKeyFallbackModelsAntigravity: `["model-b","model-c"]`,
+	}}, &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}})
+	svc := &AntigravityGatewayService{
+		settingService: settings,
+		tokenProvider:  &AntigravityTokenProvider{},
+		httpUpstream:   upstream,
+	}
+	account := &Account{
+		ID: 77, Name: "same-account", Platform: PlatformAntigravity, Type: AccountTypeOAuth, Status: StatusActive, Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token": "token",
+			antigravityProjectIDFallbackCredentialKey: "project",
+			"model_mapping": map[string]any{"model-a": "model-a"},
+		},
+	}
+
+	result, err := svc.ForwardGemini(context.Background(), c, account, "model-a", "streamGenerateContent", true, body, false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "model-a", result.Model)
+	require.Equal(t, "model-b", result.UpstreamModel)
+	require.Equal(t, []int64{77, 77}, upstream.accountIDs)
+	require.Len(t, upstream.requestBodies, 2)
+	for index, wantModel := range []string{"model-a", "model-b"} {
+		var wrapped map[string]any
+		require.NoError(t, json.Unmarshal(upstream.requestBodies[index], &wrapped))
+		require.Equal(t, wantModel, wrapped["model"])
+	}
 }
 
 func TestAntigravityGatewayService_ForwardGemini_MissingProjectReturnsLocalError(t *testing.T) {

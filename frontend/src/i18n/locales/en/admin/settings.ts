@@ -333,6 +333,18 @@ export default {
         saved: 'Upstream rate auto detection settings saved',
         saveFailed: 'Failed to save upstream rate auto detection settings'
       },
+      modelFallback: {
+        title: 'Same-account Model Fallback',
+        hint: 'Try these models in order on the selected account. Another account is selected only after every listed model is unavailable.',
+        anthropic: 'Anthropic fallbacks',
+        openai: 'OpenAI fallbacks',
+        gemini: 'Gemini fallbacks',
+        antigravity: 'Antigravity fallbacks',
+        add: 'Add model',
+        moveUp: 'Move model up',
+        moveDown: 'Move model down',
+        remove: 'Remove model',
+      },
       gatewayForwarding: {
         title: 'Request Forwarding',
         description: 'Control how requests are forwarded to upstream OAuth accounts',
