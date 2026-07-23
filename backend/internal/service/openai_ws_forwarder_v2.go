@@ -202,7 +202,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		var modelDialErr *openAIWSDialError
 		if errors.As(err, &modelDialErr) && modelDialErr != nil &&
-			shouldTriggerModelFallback(ctx, s.settingService, modelDialErr.StatusCode, modelDialErr.ResponseBody) {
+			shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, modelDialErr.StatusCode, modelDialErr.ResponseBody) {
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody, originalModel)
 			}
@@ -572,7 +572,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		imageCounter.AddSSEData(message)
 
 		if eventType == "response.failed" {
-			if !wroteDownstream && shouldTriggerModelFallback(ctx, s.settingService, http.StatusBadRequest, message) {
+			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, http.StatusBadRequest, message) {
 				if s.rateLimitService != nil {
 					s.rateLimitService.HandleUpstreamError(ctx, account, http.StatusBadRequest, lease.HandshakeHeaders(), message, originalModel)
 				}
@@ -594,7 +594,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
-			if !wroteDownstream && shouldTriggerModelFallback(ctx, s.settingService, statusCode, message) {
+			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, statusCode, message) {
 				if s.rateLimitService != nil {
 					s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, lease.HandshakeHeaders(), message, originalModel)
 				}

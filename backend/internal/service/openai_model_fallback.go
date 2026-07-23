@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -9,6 +10,24 @@ import (
 )
 
 type openAIModelForward func(body []byte) (*OpenAIForwardResult, error)
+
+// shouldTriggerOpenAISameAccountModelFallback decides whether the selected
+// OpenAI account should try its configured fallback models before the handler
+// moves on to another account.
+func shouldTriggerOpenAISameAccountModelFallback(ctx context.Context, settings *SettingService, statusCode int, body []byte) bool {
+	if settings == nil || !settings.IsModelFallbackEnabled(ctx) {
+		return false
+	}
+	if IsUpstreamModelUnavailableError(statusCode, body) {
+		return true
+	}
+	switch statusCode {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
 
 func mappedModelHintForFallbackAttempt(originalBody, attemptBody []byte, defaultMappedModel string) string {
 	originalModel := strings.TrimSpace(gjson.GetBytes(originalBody, "model").String())

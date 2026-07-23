@@ -105,6 +105,63 @@ func TestOpenAIModelFallbackStopsOnNonModelError(t *testing.T) {
 	}
 }
 
+func TestOpenAISameAccountModelFallbackRetriesGatewayErrors(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+
+	for _, statusCode := range []int{
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			var attempts []string
+			result, err := service.forwardWithSameAccountModelFallback(context.Background(), &gin.Context{}, &Account{ID: 42, Platform: PlatformOpenAI}, []byte(`{"model":"model-a"}`), func(attemptBody []byte) (*OpenAIForwardResult, error) {
+				model := gjson.GetBytes(attemptBody, "model").String()
+				attempts = append(attempts, model)
+				if model == "model-a" {
+					return nil, newModelUnavailableFailoverError(statusCode, nil, []byte(`{"error":{"message":"upstream gateway error"}}`))
+				}
+				return &OpenAIForwardResult{Model: model, UpstreamModel: model}, nil
+			})
+			if err != nil {
+				t.Fatalf("forwardWithSameAccountModelFallback() error = %v", err)
+			}
+			if want := []string{"model-a", "model-b"}; !reflect.DeepEqual(attempts, want) {
+				t.Fatalf("attempts = %v, want %v", attempts, want)
+			}
+			if result == nil || result.Model != "model-a" || result.UpstreamModel != "model-b" {
+				t.Fatalf("result = %#v, want requested model model-a and upstream model model-b", result)
+			}
+		})
+	}
+}
+
+func TestShouldTriggerOpenAISameAccountModelFallback(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback: "true",
+	}}, nil)
+
+	for _, statusCode := range []int{
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, statusCode, nil) {
+			t.Errorf("status %d should trigger OpenAI same-account model fallback", statusCode)
+		}
+	}
+	if shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, http.StatusInternalServerError, nil) {
+		t.Error("status 500 should not trigger OpenAI same-account model fallback")
+	}
+	if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
+		t.Error("deterministic model-unavailable response should trigger OpenAI same-account model fallback")
+	}
+}
+
 func TestMappedModelHintForFallbackAttempt(t *testing.T) {
 	original := []byte(`{"model":"model-a"}`)
 	if got := mappedModelHintForFallbackAttempt(original, original, "mapped-a"); got != "mapped-a" {
