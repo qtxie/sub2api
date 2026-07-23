@@ -44,7 +44,8 @@ func TestOpenAIFailbackControllerAdaptiveCooldownAndHealthyReset(t *testing.T) {
 	require.Equal(t, openAIFailbackBlock, controller.selectionAction(ctx, 10, "gpt-5-mini"))
 
 	now = now.Add(2 * time.Minute)
-	require.Equal(t, openAIFailbackAllow, controller.selectionAction(ctx, 10, "gpt-5-mini"))
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(ctx, 10, "gpt-5-mini"))
+	require.True(t, controller.recordProbeSuccess(ctx, 10, "gpt-5-mini", 250))
 	state = requireOpenAIFailbackState(t, controller, 10, "gpt-5-mini")
 	require.Equal(t, openAIFailbackPhaseProbation, state.Phase)
 
@@ -69,7 +70,8 @@ func TestOpenAIFailbackControllerAdaptiveCooldownAndHealthyReset(t *testing.T) {
 	require.Equal(t, int64(480), state.CooldownSeconds)
 
 	now = now.Add(8 * time.Minute)
-	require.Equal(t, openAIFailbackAllow, controller.selectionAction(ctx, 10, "gpt-5-mini"))
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(ctx, 10, "gpt-5-mini"))
+	require.True(t, controller.recordProbeSuccess(ctx, 10, "gpt-5-mini", 250))
 	fastTTFT := 300
 	controller.recordProductionResult(ctx, 10, "gpt-5-mini", true, &fastTTFT)
 	controller.recordProductionResult(ctx, 10, "gpt-5-mini", true, &fastTTFT)
@@ -349,7 +351,9 @@ func TestOpenAIFailbackProbeUsesSameMappedModelAndCheapOutput(t *testing.T) {
 	require.Equal(t, true, payload["stream"])
 }
 
-func TestOpenAIFailbackSelectionExpiredCooldownAdmitsWithoutProbe(t *testing.T) {
+func TestOpenAIFailbackSelectionExpiredCooldownProbesBackgroundAndUsesLowerPriority(t *testing.T) {
+	// Higher-priority account needs preflight probe after cooldown; failover uses
+	// the lower-priority Allow account without waiting on that probe.
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -368,12 +372,23 @@ func TestOpenAIFailbackSelectionExpiredCooldownAdmitsWithoutProbe(t *testing.T) 
 	)
 	require.NoError(t, err)
 	require.NotNil(t, selection)
-	require.Equal(t, int64(51), selection.Account.ID)
-	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
-	require.Equal(t, int64(0), upstream.calls.Load())
+	require.Equal(t, int64(52), selection.Account.ID)
+	// Still in cooldown until the background probe succeeds.
+	require.Equal(t, openAIFailbackPhaseCooldown, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(context.Background(), 51, "gpt-5-mini"))
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+
+	select {
+	case <-upstream.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected background preflight probe for higher-priority account")
+	}
+	upstream.release()
+	require.Eventually(t, func() bool {
+		return requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase == openAIFailbackPhaseProbation
+	}, 2*time.Second, 20*time.Millisecond)
 }
 
 func TestOpenAIFailbackSelectionReportsEarliestTemporaryCapacityRetry(t *testing.T) {
@@ -400,14 +415,13 @@ func TestOpenAIFailbackSelectionReportsEarliestTemporaryCapacityRetry(t *testing
 }
 
 func TestOpenAIFailbackSelectionFirstFailedProbeRepeatsCooldown(t *testing.T) {
-	// Probe failure path remains available for explicit probe tooling; selection no
-	// longer requires a probe after cooldown expiry.
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
 	controller.now = func() time.Time { return now }
 	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
 	now = now.Add(2 * time.Minute)
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(context.Background(), 51, "gpt-5-mini"))
 
 	controller.recordProbeFailure(context.Background(), 51, "gpt-5-mini", "probe_error")
 	state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
@@ -431,7 +445,7 @@ func TestDecodeOpenAIFailbackStateAcceptsLegacyStateWithoutProbeFailureCounter(t
 	require.Zero(t, state.ProbeFailuresAtLevel)
 }
 
-func TestOpenAIFailbackConcurrentSelectionsAdmitExpiredCooldownWithoutProbe(t *testing.T) {
+func TestOpenAIFailbackConcurrentSelectionsFailoverWithoutBlockingOnProbe(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -472,22 +486,25 @@ func TestOpenAIFailbackConcurrentSelectionsAdmitExpiredCooldownWithoutProbe(t *t
 		case current := <-results:
 			require.NoError(t, current.err)
 			require.NotNil(t, current.selection)
-			// Account 51 is higher priority and should be admitted after cooldown
-			// without falling through to the fallback account.
-			require.Equal(t, int64(51), current.selection.Account.ID)
+			// Requests must not wait on higher-priority preflight; use fallback.
+			require.Equal(t, int64(52), current.selection.Account.ID)
 			if current.selection.ReleaseFunc != nil {
 				current.selection.ReleaseFunc()
 			}
-		case <-time.After(time.Second):
+		case <-time.After(2 * time.Second):
 			t.Fatal("selection timed out")
 		}
 	}
 	wg.Wait()
-	require.Equal(t, int64(0), upstream.calls.Load())
-	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
+	// One preflight probe may be in flight; it must not block selection.
+	require.GreaterOrEqual(t, upstream.calls.Load(), int64(0))
+	require.Equal(t, openAIFailbackPhaseCooldown, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
+	upstream.release()
 }
 
-func TestOpenAIFailbackSelectionWithoutFallbackAdmitsWithoutProbe(t *testing.T) {
+func TestOpenAIFailbackSelectionWithoutFallbackProbesSync(t *testing.T) {
+	// No lower-priority fallback: selection runs a synchronous preflight probe
+	// before returning the recovered higher-priority account.
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -512,7 +529,7 @@ func TestOpenAIFailbackSelectionWithoutFallbackAdmitsWithoutProbe(t *testing.T) 
 	require.NotNil(t, selection)
 	require.Equal(t, int64(51), selection.Account.ID)
 	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
-	require.Nil(t, upstream.request)
+	require.NotNil(t, upstream.request)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
@@ -546,6 +563,8 @@ func TestOpenAIFailbackRejectedBackgroundProbeReleasesSlot(t *testing.T) {
 }
 
 func TestOpenAIFailbackWaitPlanDoesNotProbeWithoutSlot(t *testing.T) {
+	// Probe-needed higher-priority account without a concurrency slot is skipped;
+	// a healthy lower-priority wait-plan can still be returned without probing.
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -569,8 +588,8 @@ func TestOpenAIFailbackWaitPlanDoesNotProbeWithoutSlot(t *testing.T) {
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.WaitPlan)
 	require.Equal(t, int64(0), upstream.calls.Load())
-	// Expired cooldown is admitted to probation even when only a wait-plan is returned.
-	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
+	// No slot → no probe → still cooldown until a real probe can run.
+	require.Equal(t, openAIFailbackPhaseCooldown, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
 }
 
 func TestOpenAIFailbackShutdownCancelsProbeAndReleasesSlot(t *testing.T) {

@@ -375,20 +375,11 @@ func (c *openAIFailbackController) selectionActionWithRetryAt(ctx context.Contex
 			c.metrics.blocked.Add(1)
 			return openAIFailbackBlock, time.UnixMilli(state.CooldownUntilUnixMilli)
 		}
-		// Cooldown elapsed: re-admit without a preflight probe so lower-priority
-		// accounts are not stuck "needs probe" until the primary fails over.
-		if c.admitExpiredCooldownToProbation(ctx, accountID, model, 0, false) {
-			return openAIFailbackAllow, time.Time{}
-		}
-		state, found = c.readState(ctx, key)
-		if !found || state.Phase == openAIFailbackPhaseProbation {
-			return openAIFailbackAllow, time.Time{}
-		}
-		if state.Phase == openAIFailbackPhaseCooldown && c.now().UnixMilli() < state.CooldownUntilUnixMilli {
-			c.metrics.blocked.Add(1)
-			return openAIFailbackBlock, time.UnixMilli(state.CooldownUntilUnixMilli)
-		}
-		return openAIFailbackAllow, time.Time{}
+		// Cooldown elapsed: require a preflight probe before this account/model can
+		// be selected again (switch-back to higher priority). Failover to a lower-
+		// priority Allow account does not probe — the scheduler queues this probe
+		// in the background and continues.
+		return openAIFailbackProbe, time.Time{}
 	case openAIFailbackPhaseProbation:
 		return openAIFailbackAllow, time.Time{}
 	default:
@@ -523,9 +514,8 @@ func (c *openAIFailbackController) recordProbeSuccess(ctx context.Context, accou
 	return c.admitExpiredCooldownToProbation(ctx, accountID, model, ttftMS, true)
 }
 
-// admitExpiredCooldownToProbation moves an expired cooldown into probation so the
-// account/model can be scheduled again. When fromProbe is false, admission is
-// unconditional after cooldown (no preflight HTTP probe).
+// admitExpiredCooldownToProbation moves an expired cooldown into probation after a
+// successful preflight probe so the account/model can be scheduled again.
 func (c *openAIFailbackController) admitExpiredCooldownToProbation(
 	ctx context.Context,
 	accountID int64,
@@ -535,6 +525,10 @@ func (c *openAIFailbackController) admitExpiredCooldownToProbation(
 ) bool {
 	if c == nil || !c.cfg.enabled {
 		return true
+	}
+	if !fromProbe {
+		// Switch-back admission must go through a real probe success path.
+		return false
 	}
 	key, ok := openAIFailbackStateKey(accountID, model)
 	if !ok {
@@ -556,22 +550,13 @@ func (c *openAIFailbackController) admitExpiredCooldownToProbation(
 		return current, true
 	})
 	if found && state.Phase == openAIFailbackPhaseProbation {
-		if fromProbe {
-			c.metrics.probeSuccess.Add(1)
-			slog.Info("openai_failback_probation_started",
-				"account_id", accountID,
-				"model", model,
-				"probe_ttft_ms", ttftMS,
-				"probation_seconds", int64(c.cfg.probation/time.Second),
-			)
-		} else {
-			slog.Info("openai_failback_cooldown_expired_admit",
-				"account_id", accountID,
-				"model", model,
-				"cooldown_level", state.CooldownLevel,
-				"probation_seconds", int64(c.cfg.probation/time.Second),
-			)
-		}
+		c.metrics.probeSuccess.Add(1)
+		slog.Info("openai_failback_probation_started",
+			"account_id", accountID,
+			"model", model,
+			"probe_ttft_ms", ttftMS,
+			"probation_seconds", int64(c.cfg.probation/time.Second),
+		)
 		return true
 	}
 	return false

@@ -1243,8 +1243,9 @@ type GatewayOpenAISchedulerConfig struct {
 	// StickyEscapeErrorRate: 错误率 EWMA 超过该阈值时跳过 sticky
 	StickyEscapeErrorRate float64 `mapstructure:"sticky_escape_error_rate"`
 	// FailbackProbeEnabled enables OpenAI failback cooldown/probation. After
-	// cooldown expires the account/model is re-admitted to probation without a
-	// preflight HTTP probe (production traffic still observes TTFT/errors).
+	// cooldown expires, re-selecting that account/model requires a preflight
+	// HTTP probe (switch-back). Failover to a healthy lower-priority account
+	// does not probe; production traffic still observes TTFT/errors in probation.
 	FailbackProbeEnabled bool `mapstructure:"failback_probe_enabled"`
 	// FailbackDefaultCooldownSeconds is the first cooldown after a production failure.
 	FailbackDefaultCooldownSeconds int `mapstructure:"failback_default_cooldown_seconds"`
