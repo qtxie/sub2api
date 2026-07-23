@@ -44,9 +44,9 @@ func TestOpenAIFailbackControllerAdaptiveCooldownAndHealthyReset(t *testing.T) {
 	require.Equal(t, openAIFailbackBlock, controller.selectionAction(ctx, 10, "gpt-5-mini"))
 
 	now = now.Add(2 * time.Minute)
-	require.Equal(t, openAIFailbackProbe, controller.selectionAction(ctx, 10, "gpt-5-mini"))
-	require.True(t, controller.recordProbeSuccess(ctx, 10, "gpt-5-mini", 250))
 	require.Equal(t, openAIFailbackAllow, controller.selectionAction(ctx, 10, "gpt-5-mini"))
+	state = requireOpenAIFailbackState(t, controller, 10, "gpt-5-mini")
+	require.Equal(t, openAIFailbackPhaseProbation, state.Phase)
 
 	now = now.Add(time.Minute)
 	controller.recordProductionResult(ctx, 10, "gpt-5-mini", false, nil)
@@ -69,7 +69,7 @@ func TestOpenAIFailbackControllerAdaptiveCooldownAndHealthyReset(t *testing.T) {
 	require.Equal(t, int64(480), state.CooldownSeconds)
 
 	now = now.Add(8 * time.Minute)
-	require.True(t, controller.recordProbeSuccess(ctx, 10, "gpt-5-mini", 300))
+	require.Equal(t, openAIFailbackAllow, controller.selectionAction(ctx, 10, "gpt-5-mini"))
 	fastTTFT := 300
 	controller.recordProductionResult(ctx, 10, "gpt-5-mini", true, &fastTTFT)
 	controller.recordProductionResult(ctx, 10, "gpt-5-mini", true, &fastTTFT)
@@ -349,7 +349,7 @@ func TestOpenAIFailbackProbeUsesSameMappedModelAndCheapOutput(t *testing.T) {
 	require.Equal(t, true, payload["stream"])
 }
 
-func TestOpenAIFailbackSelectionSuccessfulProbeUsesFallbackWithoutWaiting(t *testing.T) {
+func TestOpenAIFailbackSelectionExpiredCooldownAdmitsWithoutProbe(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -360,55 +360,17 @@ func TestOpenAIFailbackSelectionSuccessfulProbeUsesFallbackWithoutWaiting(t *tes
 	upstream := newBlockingOpenAIFailbackProbeUpstream()
 	t.Cleanup(upstream.release)
 	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
-	type selectionResult struct {
-		selection *AccountSelectionResult
-		err       error
-	}
-	resultCh := make(chan selectionResult, 1)
-	go func() {
-		selection, _, err := svc.SelectAccountWithSchedulerForCapability(
-			context.Background(), nil, "", "", "gpt-5", nil,
-			OpenAIUpstreamTransportAny,
-			OpenAIEndpointCapabilityChatCompletions,
-			false, false, true,
-		)
-		resultCh <- selectionResult{selection: selection, err: err}
-	}()
-
-	var result selectionResult
-	select {
-	case result = <-resultCh:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("selection waited for the background failback probe")
-	}
-	require.NoError(t, result.err)
-	require.NotNil(t, result.selection)
-	require.Equal(t, int64(52), result.selection.Account.ID)
-	select {
-	case <-upstream.started:
-	case <-time.After(time.Second):
-		t.Fatal("background failback probe did not start")
-	}
-
-	upstream.release()
-	require.Eventually(t, func() bool {
-		state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
-		return state.Phase == openAIFailbackPhaseProbation
-	}, time.Second, 10*time.Millisecond)
-
-	next, _, err := svc.SelectAccountWithSchedulerForCapability(
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
 		context.Background(), nil, "", "", "gpt-5", nil,
 		OpenAIUpstreamTransportAny,
 		OpenAIEndpointCapabilityChatCompletions,
 		false, false, true,
 	)
 	require.NoError(t, err)
-	require.NotNil(t, next)
-	require.Equal(t, int64(51), next.Account.ID)
-	if next.ReleaseFunc != nil {
-		next.ReleaseFunc()
-	}
-	selection := result.selection
+	require.NotNil(t, selection)
+	require.Equal(t, int64(51), selection.Account.ID)
+	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
+	require.Equal(t, int64(0), upstream.calls.Load())
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
@@ -438,6 +400,8 @@ func TestOpenAIFailbackSelectionReportsEarliestTemporaryCapacityRetry(t *testing
 }
 
 func TestOpenAIFailbackSelectionFirstFailedProbeRepeatsCooldown(t *testing.T) {
+	// Probe failure path remains available for explicit probe tooling; selection no
+	// longer requires a probe after cooldown expiry.
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -445,28 +409,12 @@ func TestOpenAIFailbackSelectionFirstFailedProbeRepeatsCooldown(t *testing.T) {
 	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
 	now = now.Add(2 * time.Minute)
 
-	upstream := &openAIFailbackProbeUpstream{response: failbackProbeResponse(http.StatusServiceUnavailable, `{"error":{"message":"busy"}}`)}
-	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
-	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
-		context.Background(), nil, "", "", "gpt-5", nil,
-		OpenAIUpstreamTransportAny,
-		OpenAIEndpointCapabilityChatCompletions,
-		false, false, true,
-	)
-	require.NoError(t, err)
-	require.NotNil(t, selection)
-	require.Equal(t, int64(52), selection.Account.ID)
-	var state openAIFailbackState
-	require.Eventually(t, func() bool {
-		state = requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
-		return state.ProbeFailuresAtLevel == 1
-	}, time.Second, 10*time.Millisecond)
+	controller.recordProbeFailure(context.Background(), 51, "gpt-5-mini", "probe_error")
+	state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
 	require.Equal(t, 0, state.CooldownLevel)
 	require.Equal(t, 1, state.ProbeFailuresAtLevel)
 	require.Equal(t, int64(120), state.CooldownSeconds)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
+	require.Equal(t, openAIFailbackBlock, controller.selectionAction(context.Background(), 51, "gpt-5-mini"))
 }
 
 func TestDecodeOpenAIFailbackStateAcceptsLegacyStateWithoutProbeFailureCounter(t *testing.T) {
@@ -483,7 +431,7 @@ func TestDecodeOpenAIFailbackStateAcceptsLegacyStateWithoutProbeFailureCounter(t
 	require.Zero(t, state.ProbeFailuresAtLevel)
 }
 
-func TestOpenAIFailbackConcurrentSelectionsRunOneProbeAndUseFallback(t *testing.T) {
+func TestOpenAIFailbackConcurrentSelectionsAdmitExpiredCooldownWithoutProbe(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -524,33 +472,22 @@ func TestOpenAIFailbackConcurrentSelectionsRunOneProbeAndUseFallback(t *testing.
 		case current := <-results:
 			require.NoError(t, current.err)
 			require.NotNil(t, current.selection)
-			require.Equal(t, int64(52), current.selection.Account.ID)
+			// Account 51 is higher priority and should be admitted after cooldown
+			// without falling through to the fallback account.
+			require.Equal(t, int64(51), current.selection.Account.ID)
 			if current.selection.ReleaseFunc != nil {
 				current.selection.ReleaseFunc()
 			}
 		case <-time.After(time.Second):
-			t.Fatal("a selection waited for the background failback probe")
+			t.Fatal("selection timed out")
 		}
 	}
 	wg.Wait()
-	select {
-	case <-upstream.started:
-	case <-time.After(time.Second):
-		t.Fatal("background failback probe did not start")
-	}
-	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, int64(1), upstream.calls.Load())
-
-	upstream.release()
-	require.Eventually(t, func() bool {
-		state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
-		return state.Phase == openAIFailbackPhaseProbation
-	}, time.Second, 10*time.Millisecond)
-	controller.stopBackgroundProbes()
-	require.Equal(t, int64(1), upstream.calls.Load())
+	require.Equal(t, int64(0), upstream.calls.Load())
+	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
 }
 
-func TestOpenAIFailbackSelectionWithoutFallbackProbesSynchronously(t *testing.T) {
+func TestOpenAIFailbackSelectionWithoutFallbackAdmitsWithoutProbe(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 	t.Cleanup(controller.stopBackgroundProbes)
@@ -575,38 +512,37 @@ func TestOpenAIFailbackSelectionWithoutFallbackProbesSynchronously(t *testing.T)
 	require.NotNil(t, selection)
 	require.Equal(t, int64(51), selection.Account.ID)
 	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
+	require.Nil(t, upstream.request)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
 }
 
 func TestOpenAIFailbackRejectedBackgroundProbeReleasesSlot(t *testing.T) {
-	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	// Explicit background probe submission returns rejected; caller releases the slot
+	// (same as dispatchPendingProbes).
 	controller := newOpenAIFailbackControllerWithExecutor(
 		nil,
 		testOpenAIFailbackConfig(),
 		rejectingOpenAIFailbackProbeExecutor{},
 	)
 	t.Cleanup(controller.stopBackgroundProbes)
-	controller.now = func() time.Time { return now }
-	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
-	now = now.Add(2 * time.Minute)
-
-	releasedIDs := make([]int64, 0, 2)
-	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
-	svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{releasedIDs: &releasedIDs})
-	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
-		context.Background(), nil, "", "", "gpt-5", nil,
-		OpenAIUpstreamTransportAny,
-		OpenAIEndpointCapabilityChatCompletions,
-		false, false, true,
-	)
-	require.NoError(t, err)
-	require.Equal(t, int64(52), selection.Account.ID)
-	require.Contains(t, releasedIDs, int64(51))
+	releasedIDs := make([]int64, 0, 1)
+	selection := &AccountSelectionResult{
+		Account:  &Account{ID: 51, Platform: PlatformOpenAI},
+		Acquired: true,
+		ReleaseFunc: func() {
+			releasedIDs = append(releasedIDs, 51)
+		},
+	}
+	svc := &OpenAIGatewayService{openaiFailback: controller}
+	require.Equal(t, openAIFailbackProbeRejected, svc.submitOpenAIFailbackProbe(
+		controller, selection, "gpt-5-mini", OpenAIEndpointCapabilityChatCompletions,
+	))
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+	require.Contains(t, releasedIDs, int64(51))
 }
 
 func TestOpenAIFailbackWaitPlanDoesNotProbeWithoutSlot(t *testing.T) {
@@ -631,46 +567,36 @@ func TestOpenAIFailbackWaitPlanDoesNotProbeWithoutSlot(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, selection)
-	require.Equal(t, int64(52), selection.Account.ID)
 	require.NotNil(t, selection.WaitPlan)
 	require.Equal(t, int64(0), upstream.calls.Load())
+	// Expired cooldown is admitted to probation even when only a wait-plan is returned.
+	require.Equal(t, openAIFailbackPhaseProbation, requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini").Phase)
 }
 
 func TestOpenAIFailbackShutdownCancelsProbeAndReleasesSlot(t *testing.T) {
-	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
-	controller.now = func() time.Time { return now }
-	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", false, nil)
-	now = now.Add(2 * time.Minute)
-
-	upstream := newBlockingOpenAIFailbackProbeUpstream()
-	t.Cleanup(upstream.release)
-	releasedIDs := make([]int64, 0, 2)
-	svc := newOpenAIFailbackSelectionTestService(controller, upstream)
-	svc.concurrencyService = NewConcurrencyService(schedulerTestConcurrencyCache{releasedIDs: &releasedIDs})
-	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
-		context.Background(), nil, "", "", "gpt-5", nil,
-		OpenAIUpstreamTransportAny,
-		OpenAIEndpointCapabilityChatCompletions,
-		false, false, true,
-	)
-	require.NoError(t, err)
-	require.Equal(t, int64(52), selection.Account.ID)
-	if selection.ReleaseFunc != nil {
-		selection.ReleaseFunc()
-	}
+	started := make(chan struct{})
+	released := make(chan struct{}, 1)
+	submitted := controller.probeExecutor.Submit(func() {
+		close(started)
+		<-controller.probeCtx.Done()
+		released <- struct{}{}
+	})
+	require.True(t, submitted)
 	select {
-	case <-upstream.started:
+	case <-started:
 	case <-time.After(time.Second):
-		t.Fatal("background failback probe did not start")
+		t.Fatal("background task did not start")
 	}
 
+	svc := &OpenAIGatewayService{openaiFailback: controller}
 	svc.CloseOpenAIWSPool()
-	require.Contains(t, releasedIDs, int64(51))
-	require.Contains(t, releasedIDs, int64(52))
-	state := requireOpenAIFailbackState(t, controller, 51, "gpt-5-mini")
-	require.Equal(t, 0, state.CooldownLevel)
-	require.Equal(t, openAIFailbackPhaseCooldown, state.Phase)
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not cancel in-flight failback work")
+	}
+	require.False(t, controller.probeExecutor.Submit(func() {}))
 }
 
 func TestOpenAIFailbackShutdownStopsLazilyInitializedController(t *testing.T) {

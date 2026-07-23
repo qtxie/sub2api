@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -159,6 +160,139 @@ func TestShouldTriggerOpenAISameAccountModelFallback(t *testing.T) {
 	}
 	if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
 		t.Error("deterministic model-unavailable response should trigger OpenAI same-account model fallback")
+	}
+}
+
+func TestShouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(t *testing.T) {
+	modelNotFoundBody := []byte(`{"error":{"message":"model not found"}}`)
+	if !shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(http.StatusNotFound, modelNotFoundBody) {
+		t.Error("model-unavailable should record before same-account retry")
+	}
+	for _, statusCode := range []int{
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(statusCode, []byte(`{"error":{"message":"busy"}}`)) {
+			t.Errorf("status %d must defer account penalties until same-account chain exhausts", statusCode)
+		}
+	}
+}
+
+type gatewayFallbackAccountRepoStub struct {
+	AccountRepository
+	tempCalls       int
+	modelLimitCalls int
+}
+
+func (r *gatewayFallbackAccountRepoStub) SetTempUnschedulable(context.Context, int64, time.Time, string) error {
+	r.tempCalls++
+	return nil
+}
+
+func (r *gatewayFallbackAccountRepoStub) SetModelRateLimit(context.Context, int64, string, time.Time, ...string) error {
+	r.modelLimitCalls++
+	return nil
+}
+
+func TestOpenAISameAccountGatewayFallbackSuccessDoesNotPenalizeAccount(t *testing.T) {
+	repo := &gatewayFallbackAccountRepoStub{}
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{
+		settingService:   settings,
+		rateLimitService: &RateLimitService{accountRepo: repo},
+	}
+	account := openAIGatewayFallbackTempAccount()
+
+	result, err := service.forwardWithSameAccountModelFallback(
+		context.Background(),
+		&gin.Context{},
+		account,
+		[]byte(`{"model":"model-a"}`),
+		func(attemptBody []byte) (*OpenAIForwardResult, error) {
+			model := gjson.GetBytes(attemptBody, "model").String()
+			if model == "model-a" {
+				statusCode := http.StatusServiceUnavailable
+				respBody := []byte(`{"error":{"message":"service unavailable"}}`)
+				// Mirror production forward paths: only model-unavailable records early.
+				if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(statusCode, respBody) {
+					service.recordOpenAISameAccountFallbackUpstreamError(
+						context.Background(), account, statusCode, nil, respBody, model,
+					)
+				}
+				return nil, newModelUnavailableFailoverError(statusCode, nil, respBody)
+			}
+			return &OpenAIForwardResult{Model: model, UpstreamModel: model}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("forwardWithSameAccountModelFallback() error = %v", err)
+	}
+	if result == nil || result.UpstreamModel != "model-b" {
+		t.Fatalf("result = %#v, want upstream model-b", result)
+	}
+	if repo.tempCalls != 0 || repo.modelLimitCalls != 0 {
+		t.Fatalf("successful same-account gateway fallback penalized account (temp=%d model=%d)", repo.tempCalls, repo.modelLimitCalls)
+	}
+}
+
+func TestOpenAISameAccountGatewayFallbackExhaustAppliesUpstreamError(t *testing.T) {
+	repo := &gatewayFallbackAccountRepoStub{}
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{
+		settingService:   settings,
+		rateLimitService: &RateLimitService{accountRepo: repo},
+	}
+	account := openAIGatewayFallbackTempAccount()
+	statusCode := http.StatusServiceUnavailable
+	respBody := []byte(`{"error":{"message":"service unavailable"}}`)
+
+	_, err := service.forwardWithSameAccountModelFallback(
+		context.Background(),
+		&gin.Context{},
+		account,
+		[]byte(`{"model":"model-a"}`),
+		func(attemptBody []byte) (*OpenAIForwardResult, error) {
+			model := gjson.GetBytes(attemptBody, "model").String()
+			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(statusCode, respBody) {
+				service.recordOpenAISameAccountFallbackUpstreamError(
+					context.Background(), account, statusCode, nil, respBody, model,
+				)
+			}
+			return nil, newModelUnavailableFailoverError(statusCode, nil, respBody)
+		},
+	)
+	if err == nil {
+		t.Fatal("expected exhausted same-account fallback error")
+	}
+	if repo.tempCalls+repo.modelLimitCalls != 1 {
+		t.Fatalf("penalty calls temp=%d model=%d, want exactly 1 after same-account chain exhausts", repo.tempCalls, repo.modelLimitCalls)
+	}
+}
+
+func openAIGatewayFallbackTempAccount() *Account {
+	return &Account{
+		ID:          77,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       float64(http.StatusServiceUnavailable),
+					"keywords":         []any{"unavailable"},
+					"duration_minutes": float64(10),
+				},
+			},
+		},
 	}
 }
 

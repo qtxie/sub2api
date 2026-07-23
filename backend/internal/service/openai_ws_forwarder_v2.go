@@ -203,8 +203,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		var modelDialErr *openAIWSDialError
 		if errors.As(err, &modelDialErr) && modelDialErr != nil &&
 			shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, modelDialErr.StatusCode, modelDialErr.ResponseBody) {
-			if s.rateLimitService != nil {
-				s.rateLimitService.HandleUpstreamError(ctx, account, modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody, originalModel)
+			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(modelDialErr.StatusCode, modelDialErr.ResponseBody) {
+				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody, originalModel)
 			}
 			return nil, newModelUnavailableFailoverError(modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody)
 		}
@@ -573,8 +573,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 
 		if eventType == "response.failed" {
 			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, http.StatusBadRequest, message) {
-				if s.rateLimitService != nil {
-					s.rateLimitService.HandleUpstreamError(ctx, account, http.StatusBadRequest, lease.HandshakeHeaders(), message, originalModel)
+				if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(http.StatusBadRequest, message) {
+					s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, http.StatusBadRequest, lease.HandshakeHeaders(), message, originalModel)
 				}
 				lease.MarkBroken()
 				return nil, newModelUnavailableFailoverError(http.StatusBadRequest, lease.HandshakeHeaders(), message)
@@ -595,8 +595,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, statusCode, message) {
-				if s.rateLimitService != nil {
-					s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, lease.HandshakeHeaders(), message, originalModel)
+				if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(statusCode, message) {
+					s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, statusCode, lease.HandshakeHeaders(), message, originalModel)
 				}
 				lease.MarkBroken()
 				return nil, newModelUnavailableFailoverError(statusCode, lease.HandshakeHeaders(), message)

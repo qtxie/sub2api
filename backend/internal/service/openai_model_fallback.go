@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -27,6 +28,54 @@ func shouldTriggerOpenAISameAccountModelFallback(ctx context.Context, settings *
 	default:
 		return false
 	}
+}
+
+// shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry reports whether
+// HandleUpstreamError is safe to run before trying other models on the same
+// account. Deterministic model-unavailable failures are model-scoped. Gateway
+// errors (502/503/504) can temp-unschedule the whole account and must wait until
+// the same-account chain is exhausted.
+func shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(statusCode int, body []byte) bool {
+	return IsUpstreamModelUnavailableError(statusCode, body)
+}
+
+func (s *OpenAIGatewayService) recordOpenAISameAccountFallbackUpstreamError(
+	ctx context.Context,
+	account *Account,
+	statusCode int,
+	headers http.Header,
+	body []byte,
+	requestedModel string,
+) {
+	if s == nil || s.rateLimitService == nil || account == nil {
+		return
+	}
+	s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, body, requestedModel)
+}
+
+func recordOpenAISameAccountFallbackUpstreamErrorFromFailover(
+	ctx context.Context,
+	s *OpenAIGatewayService,
+	account *Account,
+	err error,
+	requestedModel string,
+) {
+	var failoverErr *UpstreamFailoverError
+	if s == nil || account == nil || !errors.As(err, &failoverErr) || failoverErr == nil {
+		return
+	}
+	if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(failoverErr.StatusCode, failoverErr.ResponseBody) {
+		// Already applied when the attempt returned the same-account failover error.
+		return
+	}
+	s.recordOpenAISameAccountFallbackUpstreamError(
+		ctx,
+		account,
+		failoverErr.StatusCode,
+		failoverErr.ResponseHeaders,
+		failoverErr.ResponseBody,
+		requestedModel,
+	)
 }
 
 func mappedModelHintForFallbackAttempt(originalBody, attemptBody []byte, defaultMappedModel string) string {
@@ -77,5 +126,8 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 			return nil, err
 		}
 	}
+	// Gateway 502/503/504 deferred rate-limit handling: only penalize after the
+	// same-account chain cannot recover (successful fallback must not unsched the account).
+	recordOpenAISameAccountFallbackUpstreamErrorFromFailover(ctx, s, account, lastErr, requestedModel)
 	return nil, lastErr
 }

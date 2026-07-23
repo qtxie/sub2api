@@ -249,8 +249,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(probeBody))
 		if shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, resp.StatusCode, probeBody) {
-			if s.rateLimitService != nil {
-				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, probeBody, reqModel)
+			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(resp.StatusCode, probeBody) {
+				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, resp.StatusCode, resp.Header, probeBody, reqModel)
 			}
 			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, probeBody)
 		}
