@@ -143,10 +143,18 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)
 	}
 
-	return &UpstreamFailoverError{
+	failoverErr := &UpstreamFailoverError{
 		StatusCode:   http.StatusBadGateway,
 		ResponseBody: openAITransportFailoverBody,
 	}
+	// Response-header waits (gateway.openai_response_header_timeout / net/http)
+	// are pre-output timeouts: failover must avoid peers on the same base URL.
+	if isOpenAIResponseHeaderTimeoutError(err) {
+		failoverErr.StatusCode = http.StatusGatewayTimeout
+		failoverErr.Reason = GatewayFailureReasonResponseHeaderTimeout
+		failoverErr.ResponseBody = []byte(`{"error":{"type":"response_header_timeout","message":"Upstream produced no response headers before the deadline"}}`)
+	}
+	return failoverErr
 }
 
 // tempUnscheduleOpenAITransportError marks an account temporarily unschedulable

@@ -390,6 +390,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	switchCount := 0
 	firstOutputTimeoutSwitchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	excludedBaseURLs := make(map[string]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 	var pendingSwitchFrom *service.Account
@@ -443,6 +444,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 
 		failedAccountIDs = make(map[int64]struct{})
+		excludedBaseURLs = make(map[string]struct{})
 		sameAccountRetryCount = make(map[int64]int)
 		switchCount = 0
 		firstOutputTimeoutSwitchCount = 0
@@ -477,8 +479,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		selectCtx := service.WithOpenAIExcludedUpstreamBaseURLs(c.Request.Context(), excludedBaseURLs)
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
+			selectCtx,
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
@@ -689,7 +692,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					pendingSwitchFrom = account
 					pendingSwitchStatus = failoverErr.StatusCode
 					pendingSwitchReason = string(failoverErr.Reason)
-					failedAccountIDs[account.ID] = struct{}{}
+					service.MarkOpenAIFailoverAccountExcluded(failedAccountIDs, excludedBaseURLs, account, failoverErr)
 					if switchCount >= maxAccountSwitches {
 						if requestRetry.Enabled() && isOpenAIRequestRetryableStatus(failoverErr.StatusCode) {
 							if retry, handled := retryRequest("max_account_switches", time.Time{}); retry {
@@ -1061,6 +1064,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	excludedBaseURLs := make(map[string]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 	var pendingMessagesSwitchFrom *service.Account
@@ -1078,8 +1082,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			currentRoutingModel = effectiveMappedModel
 		}
 		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		selectCtx := service.WithOpenAIExcludedUpstreamBaseURLs(c.Request.Context(), excludedBaseURLs)
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			c.Request.Context(),
+			selectCtx,
 			apiKey.GroupID,
 			"", // no previous_response_id
 			sessionHash,
@@ -1231,7 +1236,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					pendingMessagesSwitchFrom = account
 					pendingMessagesSwitchStatus = failoverErr.StatusCode
 					pendingMessagesSwitchReason = string(failoverErr.Reason)
-					failedAccountIDs[account.ID] = struct{}{}
+					service.MarkOpenAIFailoverAccountExcluded(failedAccountIDs, excludedBaseURLs, account, failoverErr)
 					lastFailoverErr = failoverErr
 					if switchCount >= maxAccountSwitches {
 						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
@@ -1759,6 +1764,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	excludedBaseURLs := make(map[string]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
 	var pendingWSSwitchFrom *service.Account
 	var pendingWSSwitchStatus int
@@ -1782,7 +1788,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		pendingWSSwitchFrom = account
 		pendingWSSwitchStatus = failoverErr.StatusCode
 		pendingWSSwitchReason = string(failoverErr.Reason)
-		failedAccountIDs[account.ID] = struct{}{}
+		service.MarkOpenAIFailoverAccountExcluded(failedAccountIDs, excludedBaseURLs, account, failoverErr)
 		lastFailoverErr = failoverErr
 		if switchCount >= maxAccountSwitches {
 			closeOpenAIWSFailoverExhausted(wsConn, failoverErr)
@@ -1818,8 +1824,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			return
 		}
 		reqLog.Debug("openai.websocket_account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
+		selectCtx := service.WithOpenAIExcludedUpstreamBaseURLs(ctx, excludedBaseURLs)
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
-			ctx,
+			selectCtx,
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,

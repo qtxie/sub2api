@@ -20,6 +20,16 @@ func TestFilterSchedulerCredentialsKeepsSubscriptionPlanType(t *testing.T) {
 	require.NotContains(t, filtered, "refresh_token")
 }
 
+func TestFilterSchedulerCredentialsKeepsBaseURL(t *testing.T) {
+	filtered := filterSchedulerCredentials(map[string]any{
+		"base_url":     "https://relay.example/v1",
+		"access_token": "secret-access-token",
+	})
+
+	require.Equal(t, "https://relay.example/v1", filtered["base_url"])
+	require.NotContains(t, filtered, "access_token")
+}
+
 func TestSchedulerMetadataAccountKeepsOpenAISubscriptionIdentity(t *testing.T) {
 	account := service.Account{
 		ID:       24,

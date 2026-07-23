@@ -700,6 +700,9 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if err != nil {
 		return nil
 	}
+	if isAccountExcludedByUpstreamBaseURL(account, openAIExcludedUpstreamBaseURLsFromContext(ctx)) {
+		return nil
+	}
 
 	// 检查账号是否需要清理粘性会话
 	// Check if sticky session should be cleared
@@ -752,12 +755,16 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	eligible := make([]*Account, 0, len(accounts))
 	compactTiers := make(map[int64]int, len(accounts))
 
+	excludedBaseURLs := openAIExcludedUpstreamBaseURLsFromContext(ctx)
 	for i := range accounts {
 		acc := &accounts[i]
 
 		// 跳过被排除的账号
 		// Skip excluded accounts
 		if _, excluded := excludedIDs[acc.ID]; excluded {
+			continue
+		}
+		if isAccountExcludedByUpstreamBaseURL(acc, excludedBaseURLs) {
 			continue
 		}
 

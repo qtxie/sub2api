@@ -496,6 +496,9 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
+	if isAccountExcludedByUpstreamBaseURL(account, openAIExcludedUpstreamBaseURLsFromContext(ctx)) {
+		return nil, false, nil
+	}
 	if shouldClearStickySession(account, req.RequestedModel) || account.Platform != normalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() || !account.IsSchedulable() {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
@@ -1259,6 +1262,9 @@ func (s *defaultOpenAIAccountScheduler) tryFallbackToWeightedSticky(
 		if err != nil || account == nil {
 			continue
 		}
+		if isAccountExcludedByUpstreamBaseURL(account, openAIExcludedUpstreamBaseURLsFromContext(ctx)) {
+			continue
+		}
 		if !s.isAccountRequestCompatible(ctx, account, req) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 			continue
 		}
@@ -1377,6 +1383,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		schedGroup, _ = s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
 	}
 
+	excludedBaseURLs := openAIExcludedUpstreamBaseURLsFromContext(ctx)
 	filterStats := openAISelectionFilterStats{pool: len(accounts)}
 	filtered := make([]*Account, 0, len(accounts))
 	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
@@ -1387,6 +1394,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				filterStats.exclude("excluded")
 				continue
 			}
+		}
+		if isAccountExcludedByUpstreamBaseURL(account, excludedBaseURLs) {
+			filterStats.exclude("excluded_base_url")
+			continue
 		}
 		if !account.IsSchedulable() {
 			filterStats.exclude("not_schedulable")

@@ -99,7 +99,9 @@ func TestHandleOpenAIUpstreamTransportError_TransientFailsOverWithoutEviction(t 
 
 	var fo *UpstreamFailoverError
 	require.True(t, errors.As(err, &fo), "transient error must return *UpstreamFailoverError")
-	require.Equal(t, http.StatusBadGateway, fo.StatusCode)
+	require.Equal(t, http.StatusGatewayTimeout, fo.StatusCode)
+	require.Equal(t, GatewayFailureReasonResponseHeaderTimeout, fo.Reason)
+	require.True(t, fo.IsOpenAIPreOutputTimeout())
 
 	// Transient → do NOT evict.
 	require.Empty(t, repo.tempUnschedCalls)
