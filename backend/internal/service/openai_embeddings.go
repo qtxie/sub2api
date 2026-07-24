@@ -78,7 +78,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 			}
 		}
 	}
-	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
+	if customUA := account.ResolveOpenAIUserAgent(c.GetHeader("User-Agent")); customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
 

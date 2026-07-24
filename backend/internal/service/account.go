@@ -1359,6 +1359,12 @@ func (a *Account) GetOpenAIUserAgent() string {
 	return a.GetCredential("user_agent")
 }
 
+// ResolveOpenAIUserAgent returns the account custom User-Agent after smart multi-slot
+// selection against the client original User-Agent. Empty clientUA selects the fallback slot.
+func (a *Account) ResolveOpenAIUserAgent(clientUA string) string {
+	return ResolveSmartUserAgent(a.GetOpenAIUserAgent(), clientUA)
+}
+
 func (a *Account) GetChatGPTAccountID() string {
 	if !a.IsOpenAIOAuth() {
 		return ""

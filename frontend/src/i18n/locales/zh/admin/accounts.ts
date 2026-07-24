@@ -714,7 +714,7 @@ export default {
       headerOverride: {
         title: '请求头覆写',
         hint: '转发时用配置值覆盖同名请求头（不区分大小写）',
-        info: '仅对本账号的出站请求生效：配置的请求头会在转发前覆盖客户端/网关生成的同名头。认证头（authorization、x-api-key）与连接控制头不允许覆写。',
+        info: '仅对本账号的出站请求生效：配置的请求头会在转发前覆盖客户端/网关生成的同名头。认证头（authorization、x-api-key）与连接控制头不允许覆写。user-agent 支持用 "|" 分隔多个值：codex-tui 客户端映射第 1 个，Codex Desktop 映射第 2 个，其他客户端映射第 3 个（不足 3 个时用最后一个）。',
         namePlaceholder: '请求头名称（如 user-agent）',
         valuePlaceholder: '覆写值（留空表示不覆写）',
         addRow: '添加请求头',

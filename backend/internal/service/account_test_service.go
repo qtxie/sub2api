@@ -633,7 +633,8 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		req.Header.Set("accept", "text/event-stream")
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("Originator", "codex_cli_rs")
-		if customUA := strings.TrimSpace(credentialAccount.GetOpenAIUserAgent()); customUA != "" {
+		// Account tests have no client UA: smart multi-slot config resolves to the fallback slot.
+		if customUA := strings.TrimSpace(credentialAccount.ResolveOpenAIUserAgent("")); customUA != "" {
 			req.Header.Set("User-Agent", customUA)
 		} else {
 			req.Header.Set("User-Agent", codexCLIUserAgent)
@@ -1831,7 +1832,8 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("originator", "codex_cli_rs")
-	if customUA := strings.TrimSpace(credentialAccount.GetOpenAIUserAgent()); customUA != "" {
+	// Account tests have no client UA: smart multi-slot config resolves to the fallback slot.
+	if customUA := strings.TrimSpace(credentialAccount.ResolveOpenAIUserAgent("")); customUA != "" {
 		req.Header.Set("User-Agent", customUA)
 	} else {
 		req.Header.Set("User-Agent", codexCLIUserAgent)

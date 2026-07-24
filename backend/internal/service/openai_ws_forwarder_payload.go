@@ -134,16 +134,18 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	}
 	headers.Set("OpenAI-Beta", betaValue)
 
+	clientUA := ""
+	if c != nil {
+		clientUA = strings.TrimSpace(c.GetHeader("User-Agent"))
+	}
 	customUA := ""
 	if account != nil {
-		customUA = account.GetOpenAIUserAgent()
+		customUA = account.ResolveOpenAIUserAgent(clientUA)
 	}
 	if strings.TrimSpace(customUA) != "" {
 		headers.Set("user-agent", customUA)
-	} else if c != nil {
-		if ua := strings.TrimSpace(c.GetHeader("User-Agent")); ua != "" {
-			headers.Set("user-agent", ua)
-		}
+	} else if clientUA != "" {
+		headers.Set("user-agent", clientUA)
 	}
 	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		headers.Set("user-agent", codexCLIUserAgent)

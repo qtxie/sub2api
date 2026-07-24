@@ -170,14 +170,15 @@ func (s *OpenAIGatewayService) buildOpenAIFailbackProbeRequest(
 		req.Host = "chatgpt.com"
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		req.Header.Set("Originator", "codex_cli_rs")
-		if customUA := strings.TrimSpace(credentialAccount.GetOpenAIUserAgent()); customUA != "" {
+		// Probes have no client UA: smart multi-slot config resolves to the fallback slot.
+		if customUA := strings.TrimSpace(credentialAccount.ResolveOpenAIUserAgent("")); customUA != "" {
 			req.Header.Set("User-Agent", customUA)
 		} else {
 			req.Header.Set("User-Agent", codexCLIUserAgent)
 		}
 		setOpenAIChatGPTAccountHeaders(req.Header, credentialAccount)
 		enforceCodexIdentityHeaders(req.Header)
-	} else if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
+	} else if customUA := strings.TrimSpace(account.ResolveOpenAIUserAgent("")); customUA != "" {
 		req.Header.Set("User-Agent", customUA)
 	}
 	account.ApplyHeaderOverrides(req.Header)

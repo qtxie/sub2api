@@ -473,7 +473,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
-	customUA := account.GetOpenAIUserAgent()
+	// 自定义 UA 支持智能多槽映射（按客户端原始 User-Agent 选择）。
+	customUA := account.ResolveOpenAIUserAgent(c.GetHeader("User-Agent"))
 	if customUA != "" {
 		req.Header.Set("user-agent", customUA)
 	}

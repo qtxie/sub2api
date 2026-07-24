@@ -1077,8 +1077,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		req.Header.Set("accept", "application/json")
 	}
 
-	// Apply custom User-Agent if configured
-	customUA := account.GetOpenAIUserAgent()
+	// Apply custom User-Agent if configured (supports smart multi-slot mapping).
+	customUA := account.ResolveOpenAIUserAgent(c.GetHeader("User-Agent"))
 	if customUA != "" {
 		req.Header.Set("user-agent", customUA)
 	}

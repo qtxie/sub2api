@@ -180,10 +180,16 @@ func (a *Account) ApplyHeaderOverrides(h http.Header) {
 	if len(overrides) == 0 {
 		return
 	}
+	// Capture client original User-Agent before any override mutates headers so
+	// smart multi-slot user-agent values can map against the inbound client.
+	clientUA := h.Get("User-Agent")
 	// 覆写名两两不同（大小写不敏感）且各自只操作同名键，应用顺序不影响结果。
 	// 全量 EqualFold 扫描兜底删除任意 casing 的既有键：透传链路可能保留客户端
 	// 原始 casing，非 canonical/wire casing 的键 deleteHeaderAllForms 覆盖不到。
 	for name, value := range overrides {
+		if name == "user-agent" {
+			value = ResolveSmartUserAgent(value, clientUA)
+		}
 		for existing := range h {
 			if strings.EqualFold(existing, name) {
 				delete(h, existing)
