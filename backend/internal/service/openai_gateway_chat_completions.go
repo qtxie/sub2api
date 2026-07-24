@@ -627,8 +627,16 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				}
 				return true
 			}
-			if openAIStreamFailedEventShouldFailover(payloadBytes, message) {
+			// Once chat output has started, switching models/accounts would splice
+			// two streams on the same client response. Only pre-output failures may
+			// return UpstreamFailoverError for same-account model fallback / account switch.
+			if !clientOutputStarted && openAIStreamFailedEventShouldFailover(payloadBytes, message) {
 				streamFailoverErr = s.newOpenAIStreamFailoverError(c, account, false, requestID, payloadBytes, message)
+				// Keepalives may already have committed SSE comments without semantic
+				// content; mark those writes safe so failover remains allowed.
+				if c != nil && c.Writer != nil && c.Writer.Written() {
+					streamFailoverErr.SafeToFailoverAfterWrite = true
+				}
 				return true
 			}
 			message = s.recordOpenAIStreamUpstreamError(c, account, false, requestID, "http_error", payloadBytes, message)

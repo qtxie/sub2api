@@ -117,8 +117,9 @@ func mappedModelHintForFallbackAttempt(originalBody, attemptBody []byte, default
 	return defaultMappedModel
 }
 
-// openAIModelFallbackWriteSafety preserves the handler's failover contract when
-// a retryable attempt emitted only bytes explicitly marked safe for replay.
+// openAIModelFallbackWriteSafety tracks whether same-account model retries are still
+// safe on the current client response, and preserves SafeToFailoverAfterWrite when
+// only keepalive-style bytes were emitted.
 type openAIModelFallbackWriteSafety struct {
 	lastWrittenSize int
 	sawSafeWrite    bool
@@ -144,7 +145,13 @@ func (s *openAIModelFallbackWriteSafety) observe(c *gin.Context, err error) {
 		s.sawSafeWrite = true
 		return
 	}
+	// Semantic (or otherwise unmarked) bytes already went to the client. Another
+	// model attempt on this same response would splice two streams together.
 	s.sawUnsafeWrite = true
+}
+
+func (s *openAIModelFallbackWriteSafety) allowsModelRetry() bool {
+	return s == nil || !s.sawUnsafeWrite
 }
 
 func (s *openAIModelFallbackWriteSafety) preserve(err error) error {
@@ -174,6 +181,7 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 	result, err := forward(body)
 	writeSafety.observe(c, err)
 	if err == nil || requestedModel == "" || account == nil ||
+		!writeSafety.allowsModelRetry() ||
 		!shouldRetryOpenAISameAccountModelFallback(ctx, settings, err) {
 		return result, writeSafety.preserve(err)
 	}
@@ -201,7 +209,8 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 			return result, nil
 		}
 		lastErr = err
-		if !shouldRetryOpenAISameAccountModelFallback(ctx, settings, err) {
+		if !writeSafety.allowsModelRetry() ||
+			!shouldRetryOpenAISameAccountModelFallback(ctx, settings, err) {
 			return nil, writeSafety.preserve(err)
 		}
 	}

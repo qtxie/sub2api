@@ -387,6 +387,46 @@ func TestOpenAISameAccountModelFallbackPreservesSafeWrites(t *testing.T) {
 	}
 }
 
+func TestOpenAISameAccountModelFallbackDoesNotRetryAfterSemanticWrite(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	attempts := 0
+
+	_, err := service.forwardWithSameAccountModelFallback(
+		context.Background(),
+		c,
+		&Account{ID: 42, Platform: PlatformOpenAI},
+		[]byte(`{"model":"model-a"}`),
+		func([]byte) (*OpenAIForwardResult, error) {
+			attempts++
+			if _, writeErr := c.Writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")); writeErr != nil {
+				t.Fatalf("write semantic output: %v", writeErr)
+			}
+			c.Writer.Flush()
+			return nil, &UpstreamFailoverError{
+				StatusCode:   http.StatusBadGateway,
+				ResponseBody: []byte(`{"error":{"message":"stream failed after output"}}`),
+			}
+		},
+	)
+
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("error = %v, want UpstreamFailoverError", err)
+	}
+	if failoverErr.SafeToFailoverAfterWrite {
+		t.Fatal("semantic output must not remain safe for failover")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
 func TestShouldTriggerOpenAISameAccountModelFallback(t *testing.T) {
 	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
 		SettingKeyEnableModelFallback: "true",
