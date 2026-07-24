@@ -141,6 +141,149 @@ func TestOpenAISameAccountModelFallbackRetriesGatewayErrors(t *testing.T) {
 	}
 }
 
+func TestOpenAISameAccountModelFallbackRetriesSyntheticGatewayFailures(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+
+	for _, test := range []struct {
+		name string
+		err  *UpstreamFailoverError
+	}{
+		{
+			name: "first output timeout",
+			err: &UpstreamFailoverError{
+				StatusCode: http.StatusGatewayTimeout,
+				Reason:     GatewayFailureReasonFirstOutputTimeout,
+			},
+		},
+		{
+			name: "pre-output stream failure",
+			err: &UpstreamFailoverError{
+				StatusCode:   http.StatusBadGateway,
+				ResponseBody: []byte(`{"error":{"message":"stream failed before output"}}`),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var attempts []string
+			result, err := service.forwardWithSameAccountModelFallback(
+				context.Background(),
+				&gin.Context{},
+				&Account{ID: 42, Platform: PlatformOpenAI},
+				[]byte(`{"model":"model-a"}`),
+				func(attemptBody []byte) (*OpenAIForwardResult, error) {
+					model := gjson.GetBytes(attemptBody, "model").String()
+					attempts = append(attempts, model)
+					if model == "model-a" {
+						return nil, test.err
+					}
+					return &OpenAIForwardResult{Model: model, UpstreamModel: model}, nil
+				},
+			)
+
+			if err != nil {
+				t.Fatalf("forwardWithSameAccountModelFallback() error = %v", err)
+			}
+			if want := []string{"model-a", "model-b"}; !reflect.DeepEqual(attempts, want) {
+				t.Fatalf("attempts = %v, want %v", attempts, want)
+			}
+			if result == nil || result.Model != "model-a" || result.UpstreamModel != "model-b" {
+				t.Fatalf("result = %#v, want requested model-a and upstream model-b", result)
+			}
+		})
+	}
+}
+
+func TestOpenAISameAccountModelFallbackContinuesAfterSyntheticGatewayFailure(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b","model-c"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+	var attempts []string
+
+	result, err := service.forwardWithSameAccountModelFallback(
+		context.Background(),
+		&gin.Context{},
+		&Account{ID: 42, Platform: PlatformOpenAI},
+		[]byte(`{"model":"model-a"}`),
+		func(attemptBody []byte) (*OpenAIForwardResult, error) {
+			model := gjson.GetBytes(attemptBody, "model").String()
+			attempts = append(attempts, model)
+			switch model {
+			case "model-a":
+				return nil, newModelUnavailableFailoverError(
+					http.StatusNotFound,
+					nil,
+					[]byte(`{"error":{"message":"model not found"}}`),
+				)
+			case "model-b":
+				return nil, &UpstreamFailoverError{
+					StatusCode: http.StatusGatewayTimeout,
+					Reason:     GatewayFailureReasonFirstOutputTimeout,
+				}
+			default:
+				return &OpenAIForwardResult{Model: model, UpstreamModel: model}, nil
+			}
+		},
+	)
+
+	if err != nil {
+		t.Fatalf("forwardWithSameAccountModelFallback() error = %v", err)
+	}
+	if want := []string{"model-a", "model-b", "model-c"}; !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	if result == nil || result.Model != "model-a" || result.UpstreamModel != "model-c" {
+		t.Fatalf("result = %#v, want requested model-a and upstream model-c", result)
+	}
+}
+
+func TestOpenAISameAccountModelFallbackDoesNotRetryRateLimit(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+	wantErr := &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
+	attempts := 0
+
+	_, err := service.forwardWithSameAccountModelFallback(
+		context.Background(),
+		&gin.Context{},
+		&Account{ID: 42, Platform: PlatformOpenAI},
+		[]byte(`{"model":"model-a"}`),
+		func([]byte) (*OpenAIForwardResult, error) {
+			attempts++
+			return nil, wantErr
+		},
+	)
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestOpenAISameAccountModelFallbackHonorsExplicitStop(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	wantErr := &UpstreamFailoverError{
+		StatusCode:        http.StatusServiceUnavailable,
+		NextAccountAction: NextAccountStop,
+	}
+	if shouldRetryOpenAISameAccountModelFallback(context.Background(), settings, wantErr) {
+		t.Fatal("explicitly terminal failover must not retry a fallback model")
+	}
+}
+
 func TestShouldTriggerOpenAISameAccountModelFallback(t *testing.T) {
 	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
 		SettingKeyEnableModelFallback: "true",
