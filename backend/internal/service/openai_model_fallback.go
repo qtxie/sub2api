@@ -41,6 +41,10 @@ func shouldRetryOpenAISameAccountModelFallback(ctx context.Context, settings *Se
 	if !failoverErr.ShouldRetryNextAccount() {
 		return false
 	}
+	if failoverErr.Reason == GatewayFailureReasonPersistentTransport {
+		// A durable proxy, DNS, or routing failure can only recover on another account.
+		return false
+	}
 	if IsModelUnavailableFailover(err) {
 		return true
 	}
@@ -113,6 +117,47 @@ func mappedModelHintForFallbackAttempt(originalBody, attemptBody []byte, default
 	return defaultMappedModel
 }
 
+// openAIModelFallbackWriteSafety preserves the handler's failover contract when
+// a retryable attempt emitted only bytes explicitly marked safe for replay.
+type openAIModelFallbackWriteSafety struct {
+	lastWrittenSize int
+	sawSafeWrite    bool
+	sawUnsafeWrite  bool
+}
+
+func newOpenAIModelFallbackWriteSafety(c *gin.Context) openAIModelFallbackWriteSafety {
+	return openAIModelFallbackWriteSafety{lastWrittenSize: OpenAICompactKeepaliveAdjustedWrittenSize(c)}
+}
+
+func (s *openAIModelFallbackWriteSafety) observe(c *gin.Context, err error) {
+	if s == nil || err == nil {
+		return
+	}
+	writtenSize := OpenAICompactKeepaliveAdjustedWrittenSize(c)
+	if writtenSize == s.lastWrittenSize {
+		return
+	}
+	s.lastWrittenSize = writtenSize
+
+	var failoverErr *UpstreamFailoverError
+	if errors.As(err, &failoverErr) && failoverErr != nil && failoverErr.SafeToFailoverAfterWrite {
+		s.sawSafeWrite = true
+		return
+	}
+	s.sawUnsafeWrite = true
+}
+
+func (s *openAIModelFallbackWriteSafety) preserve(err error) error {
+	if s == nil || !s.sawSafeWrite || s.sawUnsafeWrite {
+		return err
+	}
+	var failoverErr *UpstreamFailoverError
+	if errors.As(err, &failoverErr) && failoverErr != nil {
+		failoverErr.SafeToFailoverAfterWrite = true
+	}
+	return err
+}
+
 func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 	ctx context.Context,
 	c *gin.Context,
@@ -125,10 +170,12 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 	if s != nil {
 		settings = s.settingService
 	}
+	writeSafety := newOpenAIModelFallbackWriteSafety(c)
 	result, err := forward(body)
+	writeSafety.observe(c, err)
 	if err == nil || requestedModel == "" || account == nil ||
 		!shouldRetryOpenAISameAccountModelFallback(ctx, settings, err) {
-		return result, err
+		return result, writeSafety.preserve(err)
 	}
 
 	chain := []string{requestedModel}
@@ -138,6 +185,7 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 	lastErr := err
 	for _, candidate := range chain[1:] {
 		result, err = forward(ReplaceModelInBody(body, candidate))
+		writeSafety.observe(c, err)
 		if err == nil {
 			if result != nil {
 				actualModel := strings.TrimSpace(result.UpstreamModel)
@@ -154,11 +202,12 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 		}
 		lastErr = err
 		if !shouldRetryOpenAISameAccountModelFallback(ctx, settings, err) {
-			return nil, err
+			return nil, writeSafety.preserve(err)
 		}
 	}
 	// Gateway 502/503/504 deferred rate-limit handling: only penalize after the
 	// same-account chain cannot recover (successful fallback must not unsched the account).
+	lastErr = writeSafety.preserve(lastErr)
 	recordOpenAISameAccountFallbackUpstreamErrorFromFailover(ctx, s, account, lastErr, requestedModel)
 	return nil, lastErr
 }

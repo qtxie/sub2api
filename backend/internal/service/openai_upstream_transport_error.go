@@ -18,6 +18,8 @@ import (
 // unscheduled after a durable transport failure (matches tokenRefreshTempUnschedDuration).
 const openAITransportErrorTempUnschedDuration = 10 * time.Minute
 
+const GatewayFailureReasonPersistentTransport GatewayFailureReason = "persistent_transport_error"
+
 // openAITransportFailoverBody is the OpenAI-format error body attached to the
 // failover error for a transport-level failure. Kept identical to the legacy
 // inline 502 body so the client-visible payload is unchanged if failover is
@@ -139,7 +141,8 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		)
 	}
 
-	if classifyOpenAITransportError(err).Persistent {
+	persistentTransportFailure := classifyOpenAITransportError(err).Persistent
+	if persistentTransportFailure {
 		s.tempUnscheduleOpenAITransportError(ctx, account, safeErr)
 	}
 
@@ -147,9 +150,12 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		StatusCode:   http.StatusBadGateway,
 		ResponseBody: openAITransportFailoverBody,
 	}
+	if persistentTransportFailure {
+		failoverErr.Reason = GatewayFailureReasonPersistentTransport
+	}
 	// Response-header waits (gateway.openai_response_header_timeout / net/http)
 	// are pre-output timeouts: failover must avoid peers on the same base URL.
-	if isOpenAIResponseHeaderTimeoutError(err) {
+	if !persistentTransportFailure && isOpenAIResponseHeaderTimeoutError(err) {
 		failoverErr.StatusCode = http.StatusGatewayTimeout
 		failoverErr.Reason = GatewayFailureReasonResponseHeaderTimeout
 		failoverErr.ResponseBody = []byte(`{"error":{"type":"response_header_timeout","message":"Upstream produced no response headers before the deadline"}}`)

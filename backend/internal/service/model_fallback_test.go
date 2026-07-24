@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -281,6 +282,108 @@ func TestOpenAISameAccountModelFallbackHonorsExplicitStop(t *testing.T) {
 	}
 	if shouldRetryOpenAISameAccountModelFallback(context.Background(), settings, wantErr) {
 		t.Fatal("explicitly terminal failover must not retry a fallback model")
+	}
+}
+
+func TestOpenAISameAccountModelFallbackSkipsPersistentTransportFailure(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	account := &Account{ID: 42, Platform: PlatformOpenAI}
+	attempts := 0
+
+	_, err := service.forwardWithSameAccountModelFallback(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"model-a"}`),
+		func([]byte) (*OpenAIForwardResult, error) {
+			attempts++
+			return nil, service.handleOpenAIUpstreamTransportError(
+				context.Background(),
+				c,
+				account,
+				errors.New("proxyconnect tcp: dial tcp 1.2.3.4:1080: connect: connection refused"),
+				false,
+			)
+		},
+	)
+
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatalf("error = %v, want UpstreamFailoverError", err)
+	}
+	if failoverErr.Reason != GatewayFailureReasonPersistentTransport {
+		t.Fatalf("reason = %q, want %q", failoverErr.Reason, GatewayFailureReasonPersistentTransport)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestOpenAISameAccountModelFallbackPreservesSafeWrites(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		fallbackWrite string
+		wantSafe      bool
+	}{
+		{name: "later failure writes nothing", wantSafe: true},
+		{name: "later failure writes semantic output", fallbackWrite: "data: semantic\n\n", wantSafe: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+				SettingKeyEnableModelFallback:  "true",
+				SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+			}}, nil)
+			service := &OpenAIGatewayService{settingService: settings}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			var attempts []string
+
+			_, err := service.forwardWithSameAccountModelFallback(
+				context.Background(),
+				c,
+				&Account{ID: 42, Platform: PlatformOpenAI},
+				[]byte(`{"model":"model-a"}`),
+				func(attemptBody []byte) (*OpenAIForwardResult, error) {
+					model := gjson.GetBytes(attemptBody, "model").String()
+					attempts = append(attempts, model)
+					if model == "model-a" {
+						if _, writeErr := c.Writer.Write([]byte(":\n\n")); writeErr != nil {
+							t.Fatalf("write safe keepalive: %v", writeErr)
+						}
+						c.Writer.Flush()
+						return nil, &UpstreamFailoverError{
+							StatusCode:               http.StatusGatewayTimeout,
+							Reason:                   GatewayFailureReasonFirstOutputTimeout,
+							SafeToFailoverAfterWrite: true,
+						}
+					}
+					if test.fallbackWrite != "" {
+						if _, writeErr := c.Writer.Write([]byte(test.fallbackWrite)); writeErr != nil {
+							t.Fatalf("write fallback output: %v", writeErr)
+						}
+						c.Writer.Flush()
+					}
+					return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway}
+				},
+			)
+
+			var failoverErr *UpstreamFailoverError
+			if !errors.As(err, &failoverErr) {
+				t.Fatalf("error = %v, want UpstreamFailoverError", err)
+			}
+			if failoverErr.SafeToFailoverAfterWrite != test.wantSafe {
+				t.Fatalf("SafeToFailoverAfterWrite = %t, want %t", failoverErr.SafeToFailoverAfterWrite, test.wantSafe)
+			}
+			if want := []string{"model-a", "model-b"}; !reflect.DeepEqual(attempts, want) {
+				t.Fatalf("attempts = %v, want %v", attempts, want)
+			}
+		})
 	}
 }
 
