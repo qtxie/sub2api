@@ -4,7 +4,13 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { buildModelMappingObject, getModelsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import {
+  buildModelMappingObject,
+  buildSoftModelMappingObject,
+  getModelsByPlatform,
+  splitModelMappingObject,
+  splitSoftModelMappingObject
+} from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
@@ -151,5 +157,30 @@ describe('useModelWhitelist', () => {
       allowedModels: ['gpt-5.4'],
       modelMappings: [{ from: 'gpt-latest', to: 'gpt-5.4' }]
     })
+  })
+
+  it('buildSoftModelMappingObject keeps ordered multi-target soft maps', () => {
+    const mapping = buildSoftModelMappingObject([
+      { from: 'gpt-5.5', to: 'gpt-5.4' },
+      { from: 'gpt-5.5', to: 'gpt-4o' },
+      { from: 'gpt-5.5', to: 'gpt-5.5' },
+      { from: '', to: 'x' }
+    ])
+    expect(mapping).toEqual({
+      'gpt-5.5': ['gpt-5.4', 'gpt-4o']
+    })
+  })
+
+  it('splitSoftModelMappingObject expands string and list values', () => {
+    expect(
+      splitSoftModelMappingObject({
+        'gpt-5.5': 'gpt-5.4',
+        opus: ['sonnet', 'haiku']
+      })
+    ).toEqual([
+      { from: 'gpt-5.5', to: 'gpt-5.4' },
+      { from: 'opus', to: 'sonnet' },
+      { from: 'opus', to: 'haiku' }
+    ])
   })
 })

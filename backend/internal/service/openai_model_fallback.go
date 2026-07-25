@@ -14,9 +14,21 @@ type openAIModelForward func(body []byte) (*OpenAIForwardResult, error)
 
 // shouldTriggerOpenAISameAccountModelFallback decides whether the selected
 // OpenAI account should try its configured fallback models before the handler
-// moves on to another account.
-func shouldTriggerOpenAISameAccountModelFallback(ctx context.Context, settings *SettingService, statusCode int, body []byte) bool {
-	if settings == nil || !settings.IsModelFallbackEnabled(ctx) {
+// moves on to another account. Soft mapping candidates enable this path even
+// when global enable_model_fallback is off.
+func shouldTriggerOpenAISameAccountModelFallback(
+	ctx context.Context,
+	settings *SettingService,
+	account *Account,
+	requestedModel string,
+	statusCode int,
+	body []byte,
+) bool {
+	platform := ""
+	if account != nil {
+		platform = account.Platform
+	}
+	if !hasSameAccountModelFallbackCandidates(ctx, settings, account, platform, requestedModel) {
 		return false
 	}
 	if IsUpstreamModelUnavailableError(statusCode, body) {
@@ -33,7 +45,13 @@ func shouldTriggerOpenAISameAccountModelFallback(ctx context.Context, settings *
 // shouldRetryOpenAISameAccountModelFallback recognizes both upstream responses
 // classified as model-unavailable and synthetic gateway failures produced before
 // any semantic output (for example first-output and response-header timeouts).
-func shouldRetryOpenAISameAccountModelFallback(ctx context.Context, settings *SettingService, err error) bool {
+func shouldRetryOpenAISameAccountModelFallback(
+	ctx context.Context,
+	settings *SettingService,
+	account *Account,
+	requestedModel string,
+	err error,
+) bool {
 	var failoverErr *UpstreamFailoverError
 	if !errors.As(err, &failoverErr) || failoverErr == nil {
 		return false
@@ -46,14 +64,23 @@ func shouldRetryOpenAISameAccountModelFallback(ctx context.Context, settings *Se
 		return false
 	}
 	if IsModelUnavailableFailover(err) {
-		return true
+		return hasSameAccountModelFallbackCandidates(ctx, settings, account, accountPlatformOrEmpty(account), requestedModel)
 	}
 	return shouldTriggerOpenAISameAccountModelFallback(
 		ctx,
 		settings,
+		account,
+		requestedModel,
 		failoverErr.StatusCode,
 		failoverErr.ResponseBody,
 	)
+}
+
+func accountPlatformOrEmpty(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	return account.Platform
 }
 
 // shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry reports whether
@@ -182,14 +209,11 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 	writeSafety.observe(c, err)
 	if err == nil || requestedModel == "" || account == nil ||
 		!writeSafety.allowsModelRetry() ||
-		!shouldRetryOpenAISameAccountModelFallback(ctx, settings, err) {
+		!shouldRetryOpenAISameAccountModelFallback(ctx, settings, account, requestedModel, err) {
 		return result, writeSafety.preserve(err)
 	}
 
-	chain := []string{requestedModel}
-	if settings != nil {
-		chain = settings.BuildModelFallbackChain(ctx, account.Platform, requestedModel)
-	}
+	chain := BuildSameAccountModelFallbackChain(ctx, settings, account, account.Platform, requestedModel)
 	lastErr := err
 	for _, candidate := range chain[1:] {
 		result, err = forward(ReplaceModelInBody(body, candidate))
@@ -210,7 +234,7 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 		}
 		lastErr = err
 		if !writeSafety.allowsModelRetry() ||
-			!shouldRetryOpenAISameAccountModelFallback(ctx, settings, err) {
+			!shouldRetryOpenAISameAccountModelFallback(ctx, settings, account, requestedModel, err) {
 			return nil, writeSafety.preserve(err)
 		}
 	}

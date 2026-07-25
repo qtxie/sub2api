@@ -35,6 +35,7 @@ func persistAccountCredentials(ctx context.Context, repo AccountRepository, acco
 var sparkShadowAllowedCredentialKeys = map[string]struct{}{
 	"model_mapping":         {},
 	"compact_model_mapping": {},
+	"soft_model_mapping":    {},
 }
 
 func isAllowedSparkShadowCredentialsUpdate(credentials map[string]any) bool {

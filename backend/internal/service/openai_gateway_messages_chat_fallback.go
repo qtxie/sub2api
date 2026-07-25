@@ -103,7 +103,7 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 	// 4. Handle error responses
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
-		if shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+		if shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, account, originalModel, resp.StatusCode, respBody) {
 			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(resp.StatusCode, respBody) {
 				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 			}

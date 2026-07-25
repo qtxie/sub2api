@@ -463,6 +463,63 @@ export interface ModelMappingEntry {
   to: string
 }
 
+export interface SoftModelMappingEntry {
+  from: string
+  to: string
+}
+
+export function splitSoftModelMappingObject(
+  softMapping?: Record<string, unknown> | null
+): SoftModelMappingEntry[] {
+  if (!softMapping || typeof softMapping !== 'object') {
+    return []
+  }
+  const entries: SoftModelMappingEntry[] = []
+  for (const [rawFrom, rawTo] of Object.entries(softMapping)) {
+    const from = String(rawFrom ?? '').trim()
+    if (!from) continue
+    if (typeof rawTo === 'string') {
+      const to = rawTo.trim()
+      if (to) entries.push({ from, to })
+      continue
+    }
+    if (Array.isArray(rawTo)) {
+      for (const item of rawTo) {
+        if (typeof item !== 'string') continue
+        const to = item.trim()
+        if (to) entries.push({ from, to })
+      }
+    }
+  }
+  return entries
+}
+
+export function buildSoftModelMappingObject(
+  softMappings: SoftModelMappingEntry[]
+): Record<string, string | string[]> | null {
+  const result: Record<string, string | string[]> = {}
+  for (const mapping of softMappings) {
+    const from = String(mapping?.from ?? '').trim()
+    const to = String(mapping?.to ?? '').trim()
+    if (!from || !to || from === to) continue
+    const existing = result[from]
+    if (existing == null) {
+      result[from] = to
+      continue
+    }
+    if (typeof existing === 'string') {
+      if (existing !== to) {
+        result[from] = [existing, to]
+      }
+      continue
+    }
+    if (!existing.includes(to)) {
+      existing.push(to)
+    }
+  }
+  return Object.keys(result).length > 0 ? result : null
+}
+
 export function splitModelMappingObject(
   modelMapping?: Record<string, unknown> | null
 ): { allowedModels: string[]; modelMappings: ModelMappingEntry[] } {

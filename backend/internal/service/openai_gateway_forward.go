@@ -835,7 +835,7 @@ func (s *OpenAIGatewayService) forwardOnce(ctx context.Context, c *gin.Context, 
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
-			if shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+			if shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, account, originalModel, resp.StatusCode, respBody) {
 				if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(resp.StatusCode, respBody) {
 					s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 				}

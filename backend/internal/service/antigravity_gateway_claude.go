@@ -348,7 +348,7 @@ func (s *AntigravityGatewayService) forwardOnce(ctx context.Context, c *gin.Cont
 
 		// 处理错误响应（重试后仍失败或不触发重试）
 		if resp.StatusCode >= 400 {
-			if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+			if shouldTriggerModelFallback(ctx, s.settingService, account, originalModel, resp.StatusCode, respBody) {
 				s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", isStickySession)
 				return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
 			}

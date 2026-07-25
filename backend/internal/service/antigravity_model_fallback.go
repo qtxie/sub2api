@@ -19,7 +19,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 
 	chain := []string{requestedModel}
 	if s != nil && s.settingService != nil {
-		chain = s.settingService.BuildModelFallbackChain(ctx, PlatformAntigravity, requestedModel)
+		chain = BuildSameAccountModelFallbackChain(ctx, s.settingService, account, PlatformAntigravity, requestedModel)
 	}
 	lastErr := err
 	for _, candidate := range chain[1:] {

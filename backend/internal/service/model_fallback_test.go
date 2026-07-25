@@ -280,7 +280,7 @@ func TestOpenAISameAccountModelFallbackHonorsExplicitStop(t *testing.T) {
 		StatusCode:        http.StatusServiceUnavailable,
 		NextAccountAction: NextAccountStop,
 	}
-	if shouldRetryOpenAISameAccountModelFallback(context.Background(), settings, wantErr) {
+	if shouldRetryOpenAISameAccountModelFallback(context.Background(), settings, &Account{Platform: PlatformOpenAI}, "model-a", wantErr) {
 		t.Fatal("explicitly terminal failover must not retry a fallback model")
 	}
 }
@@ -429,23 +429,112 @@ func TestOpenAISameAccountModelFallbackDoesNotRetryAfterSemanticWrite(t *testing
 
 func TestShouldTriggerOpenAISameAccountModelFallback(t *testing.T) {
 	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
-		SettingKeyEnableModelFallback: "true",
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
 	}}, nil)
+	account := &Account{Platform: PlatformOpenAI}
 
 	for _, statusCode := range []int{
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
 		http.StatusGatewayTimeout,
 	} {
-		if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, statusCode, nil) {
+		if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, account, "model-a", statusCode, nil) {
 			t.Errorf("status %d should trigger OpenAI same-account model fallback", statusCode)
 		}
 	}
-	if shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, http.StatusInternalServerError, nil) {
+	if shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, account, "model-a", http.StatusInternalServerError, nil) {
 		t.Error("status 500 should not trigger OpenAI same-account model fallback")
 	}
-	if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
+	if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, account, "model-a", http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
 		t.Error("deterministic model-unavailable response should trigger OpenAI same-account model fallback")
+	}
+}
+
+func TestSoftModelMappingFallbackWorksWithoutGlobalEnable(t *testing.T) {
+	ctx := context.Background()
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback: "false",
+	}}, nil)
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"soft_model_mapping": map[string]any{
+				"gpt-5.5": "gpt-5.4",
+			},
+		},
+	}
+	if got, want := BuildSameAccountModelFallbackChain(ctx, settings, account, PlatformOpenAI, "gpt-5.5"), []string{"gpt-5.5", "gpt-5.4"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("soft chain = %v, want %v", got, want)
+	}
+	if !shouldTriggerOpenAISameAccountModelFallback(ctx, settings, account, "gpt-5.5", http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
+		t.Fatal("soft mapping must trigger fallback even when global enable_model_fallback is off")
+	}
+	if shouldTriggerOpenAISameAccountModelFallback(ctx, settings, account, "gpt-4o", http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
+		t.Fatal("models without soft mapping and with global fallback disabled must not trigger fallback")
+	}
+
+	var attempts []string
+	service := &OpenAIGatewayService{settingService: settings}
+	result, err := service.forwardWithSameAccountModelFallback(ctx, &gin.Context{}, account, []byte(`{"model":"gpt-5.5"}`), func(attemptBody []byte) (*OpenAIForwardResult, error) {
+		model := gjson.GetBytes(attemptBody, "model").String()
+		attempts = append(attempts, model)
+		if model == "gpt-5.5" {
+			return nil, newModelUnavailableFailoverError(http.StatusNotFound, nil, []byte(`{"error":{"message":"model not found"}}`))
+		}
+		return &OpenAIForwardResult{Model: model, UpstreamModel: model}, nil
+	})
+	if err != nil {
+		t.Fatalf("forwardWithSameAccountModelFallback() error = %v", err)
+	}
+	if want := []string{"gpt-5.5", "gpt-5.4"}; !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	if result == nil || result.Model != "gpt-5.5" || result.UpstreamModel != "gpt-5.4" {
+		t.Fatalf("result = %#v, want requested gpt-5.5 / upstream gpt-5.4", result)
+	}
+}
+
+func TestSoftModelMappingDoesNotHardRewriteFirstAttempt(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.5": "gpt-5.5-mapped",
+			},
+			"soft_model_mapping": map[string]any{
+				"gpt-5.5": "gpt-5.4",
+			},
+		},
+	}
+	if got := account.GetMappedModel("gpt-5.5"); got != "gpt-5.5-mapped" {
+		t.Fatalf("hard mapping GetMappedModel = %q, want gpt-5.5-mapped", got)
+	}
+	if got, want := account.GetSoftModelFallbacks("gpt-5.5"), []string{"gpt-5.4"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("soft fallbacks = %v, want %v", got, want)
+	}
+}
+
+func TestSoftModelMappingAdmitsWhitelistAccount(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.4": "gpt-5.4",
+			},
+			"soft_model_mapping": map[string]any{
+				"gpt-5.5": "gpt-5.4",
+			},
+		},
+	}
+	if !account.IsModelSupported("gpt-5.5") {
+		t.Fatal("soft-mapped request model must be schedulable even when hard whitelist omits it")
+	}
+	if !account.IsModelSupported("gpt-5.4") {
+		t.Fatal("hard-mapped model should remain supported")
+	}
+	if account.IsModelSupported("gpt-unknown") {
+		t.Fatal("unrelated model must stay unsupported under hard whitelist")
 	}
 }
 

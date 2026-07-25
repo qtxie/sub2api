@@ -192,10 +192,9 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		// Try the ordered fallback chain on this account before allowing the
 		// handler to switch accounts. Each next model is attempted only after a
 		// deterministic model-unavailable response.
-		if s.settingService != nil && s.settingService.IsModelFallbackEnabled(ctx) &&
-			IsUpstreamModelUnavailableError(resp.StatusCode, respBody) {
+		if shouldTriggerModelFallback(ctx, s.settingService, account, originalModel, resp.StatusCode, respBody) {
 			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, forwardOpts.groupID, forwardOpts.sessionHash, isStickySession)
-			chain := s.settingService.BuildModelFallbackChain(ctx, PlatformAntigravity, originalModel)
+			chain := BuildSameAccountModelFallbackChain(ctx, s.settingService, account, PlatformAntigravity, originalModel)
 			attemptedMappedModels := map[string]struct{}{mappedModel: struct{}{}}
 			for _, fallbackModel := range chain[1:] {
 				fallbackMappedModel := s.getMappedModel(account, fallbackModel)

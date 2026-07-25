@@ -36,7 +36,7 @@ func (s *GeminiMessagesCompatService) forwardBodyWithSameAccountModelFallback(
 
 	chain := []string{requestedModel}
 	if s != nil && s.settingService != nil {
-		chain = s.settingService.BuildModelFallbackChain(ctx, PlatformGemini, requestedModel)
+		chain = BuildSameAccountModelFallbackChain(ctx, s.settingService, account, PlatformGemini, requestedModel)
 	}
 	lastErr := err
 	for _, candidate := range chain[1:] {
@@ -72,7 +72,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(
 
 	chain := []string{requestedModel}
 	if s != nil && s.settingService != nil {
-		chain = s.settingService.BuildModelFallbackChain(ctx, PlatformGemini, requestedModel)
+		chain = BuildSameAccountModelFallbackChain(ctx, s.settingService, account, PlatformGemini, requestedModel)
 	}
 	lastErr := err
 	for _, candidate := range chain[1:] {

@@ -124,7 +124,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			return nil, err
 		}
 		if len(chain) == 1 && s.settingService != nil {
-			chain = s.settingService.BuildModelFallbackChain(ctx, account.Platform, originalModel)
+			chain = BuildSameAccountModelFallbackChain(ctx, s.settingService, account, account.Platform, originalModel)
 		}
 	}
 	return nil, lastErr
@@ -636,7 +636,7 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 			respBody, _ := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
-			if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+			if shouldTriggerModelFallback(ctx, s.settingService, account, originalModel, resp.StatusCode, respBody) {
 				if s.rateLimitService != nil {
 					s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, reqModel)
 				}

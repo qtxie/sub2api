@@ -781,6 +781,11 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
 		if a.IsOpenAIOAuth() && !a.IsOpenAIPassthroughEnabled() {
+			// Soft-mapped request models remain schedulable even when the OAuth
+			// empty-mapping foreign-family denylist would otherwise reject them.
+			if a.HasSoftModelMappingKey(requestedModel) {
+				return true
+			}
 			return isOpenAIOAuthServableModel(requestedModel)
 		}
 		return true // 无映射 = 允许所有
@@ -789,7 +794,11 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		return true
 	}
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
-	return normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized)
+	if normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized) {
+		return true
+	}
+	// Soft mapping sources are admitted even when hard whitelist/mapping omits them.
+	return a.HasSoftModelMappingKey(requestedModel)
 }
 
 // GetMappedModel 获取映射后的模型名（支持通配符，最长优先匹配）

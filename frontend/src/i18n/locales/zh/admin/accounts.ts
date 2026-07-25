@@ -663,6 +663,11 @@ export default {
       modelRestriction: '模型限制（可选）',
       modelWhitelist: '模型白名单',
       modelMapping: '模型映射',
+      softModelMapping: '软映射（失败后降级）',
+      softModelMappingDesc:
+        '仅当左侧模型在本账号失败后，才尝试右侧模型。与硬映射不同：第一次仍用原始请求模型（若配置了硬映射再改写）。即使全局同账号模型降级关闭也生效。',
+      softFallbackModel: '失败后降级模型',
+      addSoftMapping: '添加软映射',
       selectAllowedModels: '选择允许的模型。留空则支持所有模型。',
       mapRequestModels: '将请求模型映射到实际模型。左边是请求的模型，右边是发送到 API 的实际模型。',
       selectedModels: '已选择 {count} 个模型',

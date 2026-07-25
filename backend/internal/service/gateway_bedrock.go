@@ -284,7 +284,7 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 	respBody, _ := s.readUpstreamErrorBody(resp)
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
-	if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+	if shouldTriggerModelFallback(ctx, s.settingService, account, requestedModel, resp.StatusCode, respBody) {
 		if s.rateLimitService != nil {
 			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, requestedModel)
 		}

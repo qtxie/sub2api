@@ -104,23 +104,68 @@ func (s *SettingService) GetFallbackModels(ctx context.Context, platform string)
 }
 
 // BuildModelFallbackChain prepends the requested model and removes duplicate
-// fallback entries. The returned chain always contains requestedModel when it
-// is non-empty, even when fallback is disabled or settings cannot be loaded.
+// global fallback entries. Prefer BuildSameAccountModelFallbackChain when an
+// account is available so soft mappings are included.
 func (s *SettingService) BuildModelFallbackChain(ctx context.Context, platform, requestedModel string) []string {
+	return BuildSameAccountModelFallbackChain(ctx, s, nil, platform, requestedModel)
+}
+
+// BuildSameAccountModelFallbackChain builds the ordered same-account model
+// retry chain:
+//  1. requested model
+//  2. account soft_model_mapping targets (always, when configured)
+//  3. global platform fallback list (only when enable_model_fallback is on)
+//
+// Soft mapping never rewrites the first attempt; it only appends later candidates.
+func BuildSameAccountModelFallbackChain(
+	ctx context.Context,
+	settings *SettingService,
+	account *Account,
+	platform, requestedModel string,
+) []string {
 	requestedModel = strings.TrimSpace(requestedModel)
 	if requestedModel == "" {
 		return nil
 	}
-	chain := []string{requestedModel}
-	if s == nil || !s.IsModelFallbackEnabled(ctx) {
-		return chain
+	if platform == "" && account != nil {
+		platform = account.Platform
 	}
-	for _, model := range s.GetFallbackModels(ctx, platform) {
-		if model != requestedModel {
+	chain := []string{requestedModel}
+	seen := map[string]struct{}{requestedModel: {}}
+	if account != nil {
+		for _, model := range account.GetSoftModelFallbacks(requestedModel) {
+			if _, ok := seen[model]; ok {
+				continue
+			}
+			seen[model] = struct{}{}
+			chain = append(chain, model)
+		}
+	}
+	if settings != nil && settings.IsModelFallbackEnabled(ctx) {
+		for _, model := range settings.GetFallbackModels(ctx, platform) {
+			model = strings.TrimSpace(model)
+			if model == "" {
+				continue
+			}
+			if _, ok := seen[model]; ok {
+				continue
+			}
+			seen[model] = struct{}{}
 			chain = append(chain, model)
 		}
 	}
 	return chain
+}
+
+// hasSameAccountModelFallbackCandidates reports whether retrying another model
+// on the selected account can actually change the upstream model.
+func hasSameAccountModelFallbackCandidates(
+	ctx context.Context,
+	settings *SettingService,
+	account *Account,
+	platform, requestedModel string,
+) bool {
+	return len(BuildSameAccountModelFallbackChain(ctx, settings, account, platform, requestedModel)) > 1
 }
 
 // IsUpstreamModelUnavailableError only matches deterministic model capability
@@ -160,8 +205,22 @@ func IsUpstreamModelUnavailableError(statusCode int, body []byte) bool {
 	return false
 }
 
-func shouldTriggerModelFallback(ctx context.Context, settings *SettingService, statusCode int, body []byte) bool {
-	return settings != nil && settings.IsModelFallbackEnabled(ctx) && IsUpstreamModelUnavailableError(statusCode, body)
+func shouldTriggerModelFallback(
+	ctx context.Context,
+	settings *SettingService,
+	account *Account,
+	requestedModel string,
+	statusCode int,
+	body []byte,
+) bool {
+	platform := ""
+	if account != nil {
+		platform = account.Platform
+	}
+	if !hasSameAccountModelFallbackCandidates(ctx, settings, account, platform, requestedModel) {
+		return false
+	}
+	return IsUpstreamModelUnavailableError(statusCode, body)
 }
 
 func newModelUnavailableFailoverError(statusCode int, headers http.Header, body []byte) *UpstreamFailoverError {

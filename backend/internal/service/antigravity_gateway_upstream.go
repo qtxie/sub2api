@@ -88,7 +88,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	// 处理错误响应
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
-		if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+		if shouldTriggerModelFallback(ctx, s.settingService, account, originalModel, resp.StatusCode, respBody) {
 			s.handleUpstreamError(ctx, prefix, account, resp.StatusCode, resp.Header, respBody, originalModel, 0, "", false)
 			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
 		}

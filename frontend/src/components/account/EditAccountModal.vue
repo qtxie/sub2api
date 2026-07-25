@@ -26,6 +26,10 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <SoftModelMappingEditor v-model="softModelMappings" />
+      </div>
+
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
         <div>
@@ -2616,6 +2620,7 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
+import SoftModelMappingEditor from '@/components/account/SoftModelMappingEditor.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
@@ -2652,7 +2657,9 @@ import {
   getPresetMappingsByPlatform,
   commonErrorCodes,
   buildModelMappingObject,
+  buildSoftModelMappingObject,
   splitModelMappingObject,
+  splitSoftModelMappingObject,
   isValidWildcardPattern
 } from '@/composables/useModelWhitelist'
 
@@ -2725,6 +2732,7 @@ const isBedrockAPIKeyMode = computed(() =>
   (props.account?.credentials as Record<string, unknown>)?.auth_mode === 'apikey'
 )
 const modelMappings = ref<ModelMapping[]>([])
+const softModelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
@@ -3201,6 +3209,19 @@ const loadModelRestrictionFromMapping = (rawMapping?: Record<string, unknown>) =
       : 'whitelist'
 }
 
+const loadSoftModelMapping = (rawMapping?: Record<string, unknown>) => {
+  softModelMappings.value = splitSoftModelMappingObject(rawMapping)
+}
+
+const applySoftModelMappingCredentials = (credentials: Record<string, unknown>) => {
+  const softMapping = buildSoftModelMappingObject(softModelMappings.value)
+  if (softMapping) {
+    credentials.soft_model_mapping = softMapping
+  } else {
+    delete credentials.soft_model_mapping
+  }
+}
+
 const buildModelRestrictionMapping = () =>
   buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
 
@@ -3250,6 +3271,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
+  loadSoftModelMapping(credentials?.soft_model_mapping as Record<string, unknown> | undefined)
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
@@ -4141,6 +4163,7 @@ const handleSubmit = async () => {
         return
       }
 
+      applySoftModelMappingCredentials(newCredentials)
       updatePayload.credentials = newCredentials
     } else if (props.account.type === 'upstream') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
@@ -4159,6 +4182,7 @@ const handleSubmit = async () => {
         return
       }
 
+      applySoftModelMappingCredentials(newCredentials)
       updatePayload.credentials = newCredentials
     } else if ((props.account.platform === 'gemini' || props.account.platform === 'anthropic') && props.account.type === 'service_account') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
@@ -4207,6 +4231,7 @@ const handleSubmit = async () => {
         return
       }
 
+      applySoftModelMappingCredentials(newCredentials)
       updatePayload.credentials = newCredentials
     } else if (props.account.type === 'bedrock') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
@@ -4264,6 +4289,7 @@ const handleSubmit = async () => {
         return
       }
 
+      applySoftModelMappingCredentials(newCredentials)
       updatePayload.credentials = newCredentials
     } else {
       // For oauth/setup-token types, only update intercept_warmup_requests if changed
@@ -4275,6 +4301,7 @@ const handleSubmit = async () => {
         return
       }
 
+      applySoftModelMappingCredentials(newCredentials)
       updatePayload.credentials = newCredentials
     }
 
@@ -4296,6 +4323,7 @@ const handleSubmit = async () => {
         }
       }
 
+      applySoftModelMappingCredentials(newCredentials)
       updatePayload.credentials = newCredentials
     }
 
@@ -4331,6 +4359,7 @@ const handleSubmit = async () => {
       }
       applyHeaderOverride(newCredentials, headerOverrideEnabled.value, headerOverrideRows.value, 'edit')
 
+      applySoftModelMappingCredentials(newCredentials)
       updatePayload.credentials = newCredentials
 
       const newExtra: Record<string, unknown> = {
@@ -4374,6 +4403,7 @@ const handleSubmit = async () => {
         newCredentials.model_mapping = antigravityModelMapping
       }
 
+      applySoftModelMappingCredentials(newCredentials)
       updatePayload.credentials = newCredentials
     }
 

@@ -938,7 +938,7 @@ func (s *GeminiMessagesCompatService) forwardOnce(ctx context.Context, c *gin.Co
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
-		if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+		if shouldTriggerModelFallback(ctx, s.settingService, account, originalModel, resp.StatusCode, respBody) {
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 			}
@@ -1438,7 +1438,7 @@ func (s *GeminiMessagesCompatService) forwardNativeOnce(ctx context.Context, c *
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
-		if shouldTriggerModelFallback(ctx, s.settingService, resp.StatusCode, respBody) {
+		if shouldTriggerModelFallback(ctx, s.settingService, account, originalModel, resp.StatusCode, respBody) {
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 			}

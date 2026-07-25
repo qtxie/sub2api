@@ -202,7 +202,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		var modelDialErr *openAIWSDialError
 		if errors.As(err, &modelDialErr) && modelDialErr != nil &&
-			shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, modelDialErr.StatusCode, modelDialErr.ResponseBody) {
+			shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, account, originalModel, modelDialErr.StatusCode, modelDialErr.ResponseBody) {
 			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(modelDialErr.StatusCode, modelDialErr.ResponseBody) {
 				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody, originalModel)
 			}
@@ -572,7 +572,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		imageCounter.AddSSEData(message)
 
 		if eventType == "response.failed" {
-			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, http.StatusBadRequest, message) {
+			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, account, originalModel, http.StatusBadRequest, message) {
 				if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(http.StatusBadRequest, message) {
 					s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, http.StatusBadRequest, lease.HandshakeHeaders(), message, originalModel)
 				}
@@ -594,7 +594,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		if eventType == "error" {
 			errCodeRaw, errTypeRaw, errMsgRaw := parseOpenAIWSErrorEventFields(message)
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
-			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, statusCode, message) {
+			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, account, originalModel, statusCode, message) {
 				if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(statusCode, message) {
 					s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, statusCode, lease.HandshakeHeaders(), message, originalModel)
 				}
