@@ -34,10 +34,12 @@ func (s *GeminiMessagesCompatService) forwardBodyWithSameAccountModelFallback(
 		return result, err
 	}
 
-	chain := []string{requestedModel}
-	if s != nil && s.settingService != nil {
-		chain = BuildSameAccountModelFallbackChain(ctx, s.settingService, account, PlatformGemini, requestedModel)
+	var settings *SettingService
+	if s != nil {
+		settings = s.settingService
 	}
+	// Soft mapping is account-scoped and must work even when SettingService is nil.
+	chain := BuildSameAccountModelFallbackChain(ctx, settings, account, PlatformGemini, requestedModel)
 	lastErr := err
 	for _, candidate := range chain[1:] {
 		result, err = forward(ReplaceModelInBody(body, candidate))
@@ -70,10 +72,12 @@ func (s *GeminiMessagesCompatService) ForwardNative(
 		return result, err
 	}
 
-	chain := []string{requestedModel}
-	if s != nil && s.settingService != nil {
-		chain = BuildSameAccountModelFallbackChain(ctx, s.settingService, account, PlatformGemini, requestedModel)
+	var settings *SettingService
+	if s != nil {
+		settings = s.settingService
 	}
+	// Soft mapping is account-scoped and must work even when SettingService is nil.
+	chain := BuildSameAccountModelFallbackChain(ctx, settings, account, PlatformGemini, requestedModel)
 	lastErr := err
 	for _, candidate := range chain[1:] {
 		result, err = s.forwardNativeOnce(ctx, c, account, candidate, action, stream, body)

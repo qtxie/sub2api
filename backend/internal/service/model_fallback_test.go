@@ -467,6 +467,13 @@ func TestSoftModelMappingFallbackWorksWithoutGlobalEnable(t *testing.T) {
 	if got, want := BuildSameAccountModelFallbackChain(ctx, settings, account, PlatformOpenAI, "gpt-5.5"), []string{"gpt-5.5", "gpt-5.4"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("soft chain = %v, want %v", got, want)
 	}
+	// Soft mapping must not depend on SettingService being present.
+	if got, want := BuildSameAccountModelFallbackChain(ctx, nil, account, PlatformOpenAI, "gpt-5.5"), []string{"gpt-5.5", "gpt-5.4"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("nil settings soft chain = %v, want %v", got, want)
+	}
+	if !shouldTriggerModelFallback(ctx, nil, account, "gpt-5.5", http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
+		t.Fatal("soft mapping must trigger generic model fallback with nil settings")
+	}
 	if !shouldTriggerOpenAISameAccountModelFallback(ctx, settings, account, "gpt-5.5", http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
 		t.Fatal("soft mapping must trigger fallback even when global enable_model_fallback is off")
 	}

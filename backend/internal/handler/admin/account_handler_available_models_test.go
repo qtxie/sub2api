@@ -176,6 +176,46 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthUsesExplicitModelMapping(t 
 	require.Equal(t, "gpt-5", resp.Data[0].ID)
 }
 
+func TestAccountHandlerGetAvailableModels_OpenAIIncludesSoftMappingSources(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       45,
+			Name:     "openai-soft-map",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"gpt-5.4": "gpt-5.4",
+				},
+				"soft_model_mapping": map[string]any{
+					"gpt-5.5": "gpt-5.4",
+				},
+			},
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/45/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	ids := make([]string, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		ids = append(ids, item.ID)
+	}
+	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, ids)
+}
+
 func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefaults(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),

@@ -463,6 +463,37 @@ func TestWithWindowCostPrefetch_BatchErrorFallbackSingleQuery(t *testing.T) {
 	require.Equal(t, int64(1), errCount)
 }
 
+func TestGetAvailableModels_IncludesSoftModelMappingSources(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	groupID := int64(42)
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {
+				{
+					ID:       1,
+					Platform: PlatformOpenAI,
+					Credentials: map[string]any{
+						"model_mapping": map[string]any{
+							"gpt-5.4": "gpt-5.4",
+						},
+						"soft_model_mapping": map[string]any{
+							"gpt-5.5": "gpt-5.4",
+						},
+					},
+				},
+			},
+		},
+	}
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI)
+	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, models)
+}
+
 func TestGetAvailableModels_UsesShortCacheAndSupportsInvalidation(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 

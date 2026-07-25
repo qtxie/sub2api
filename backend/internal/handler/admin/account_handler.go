@@ -2358,6 +2358,31 @@ func (h *AccountHandler) SetSchedulable(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
+// accountAvailableRequestModels returns hard model_mapping keys plus soft-mapping
+// sources so admin model pickers match scheduling admission.
+func accountAvailableRequestModels(account *service.Account) []string {
+	if account == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	for model := range account.GetModelMapping() {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		seen[model] = struct{}{}
+	}
+	for _, model := range account.SoftModelMappingSources() {
+		seen[model] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for model := range seen {
+		out = append(out, model)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // GetAvailableModels handles getting available models for an account
 // GET /api/v1/admin/accounts/:id/models
 func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
@@ -2387,9 +2412,9 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			return
 		}
 
-		// Return mapped models
+		// Return mapped models + soft-mapping request sources.
 		var models []openai.Model
-		for requestedModel := range mapping {
+		for _, requestedModel := range accountAvailableRequestModels(account) {
 			var found bool
 			for _, dm := range openai.DefaultModels {
 				if dm.ID == requestedModel {
@@ -2427,7 +2452,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		}
 
 		var models []geminicli.Model
-		for requestedModel := range mapping {
+		for _, requestedModel := range accountAvailableRequestModels(account) {
 			var found bool
 			for _, dm := range geminicli.DefaultModels {
 				if dm.ID == requestedModel {
@@ -2483,14 +2508,8 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			defaultByID[model.ID] = model
 		}
 
-		requestedModels := make([]string, 0, len(mapping))
-		for requestedModel := range mapping {
-			requestedModels = append(requestedModels, requestedModel)
-		}
-		sort.Strings(requestedModels)
-
 		var models []xai.Model
-		for _, requestedModel := range requestedModels {
+		for _, requestedModel := range accountAvailableRequestModels(account) {
 			if defaultModel, found := defaultByID[requestedModel]; found {
 				models = append(models, defaultModel)
 				continue
@@ -2521,9 +2540,9 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
-	// Return mapped models (keys of the mapping are the available model IDs)
+	// Return mapped models + soft-mapping request sources.
 	var models []claude.Model
-	for requestedModel := range mapping {
+	for _, requestedModel := range accountAvailableRequestModels(account) {
 		// Try to find display info from default models
 		var found bool
 		for _, dm := range claude.DefaultModels {

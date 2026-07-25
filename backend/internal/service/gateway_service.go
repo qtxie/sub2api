@@ -1207,11 +1207,14 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		accounts = filtered
 	}
 
-	// Collect unique models from all accounts
+	// Collect unique models from all accounts.
+	// Hard model_mapping keys define the whitelist surface; soft_model_mapping
+	// sources are also requestable (same-account fallback) and must be listed.
 	modelSet := make(map[string]struct{})
 	hasAnyMapping := false
 
-	for _, acc := range accounts {
+	for i := range accounts {
+		acc := &accounts[i]
 		mapping := acc.GetModelMapping()
 		if len(mapping) > 0 {
 			hasAnyMapping = true
@@ -1219,9 +1222,12 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 				modelSet[model] = struct{}{}
 			}
 		}
+		appendSoftModelMappingSources(modelSet, acc)
 	}
 
-	// If no account has model_mapping, return nil (use default)
+	// If no account has model_mapping, return nil (use default).
+	// Soft-only aliases without any hard whitelist stay on the platform default
+	// list path; custom soft sources in that mode are uncommon.
 	if !hasAnyMapping {
 		if s.modelsListCache != nil {
 			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)

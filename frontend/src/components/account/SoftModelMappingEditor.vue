@@ -8,15 +8,14 @@
     <div v-if="modelValue.length > 0" class="space-y-2">
       <div
         v-for="(mapping, index) in modelValue"
-        :key="rowKey(mapping, index)"
+        :key="getSoftModelMappingKey(mapping)"
         class="flex items-center gap-2"
       >
         <input
-          :value="mapping.from"
+          v-model="mapping.from"
           type="text"
           class="input flex-1"
           :placeholder="t('admin.accounts.requestModel')"
-          @input="updateRow(index, 'from', ($event.target as HTMLInputElement).value)"
         />
         <svg
           class="h-4 w-4 flex-shrink-0 text-gray-400"
@@ -32,11 +31,10 @@
           />
         </svg>
         <input
-          :value="mapping.to"
+          v-model="mapping.to"
           type="text"
           class="input flex-1"
           :placeholder="t('admin.accounts.softFallbackModel')"
-          @input="updateRow(index, 'to', ($event.target as HTMLInputElement).value)"
         />
         <button
           type="button"
@@ -67,6 +65,7 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 
 export interface SoftModelMappingEntry {
   from: string
@@ -83,15 +82,10 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const rowKey = (mapping: SoftModelMappingEntry, index: number) =>
-  `${index}:${mapping.from}:${mapping.to}`
-
-const updateRow = (index: number, field: 'from' | 'to', value: string) => {
-  const next = props.modelValue.map((row, i) =>
-    i === index ? { ...row, [field]: value } : row
-  )
-  emit('update:modelValue', next)
-}
+// Stable per-row identity so typing does not remount inputs and steal focus.
+const getSoftModelMappingKey = createStableObjectKeyResolver<SoftModelMappingEntry>(
+  'soft-model-mapping'
+)
 
 const addRow = () => {
   emit('update:modelValue', [...props.modelValue, { from: '', to: '' }])

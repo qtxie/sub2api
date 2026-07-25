@@ -17,10 +17,12 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		return result, err
 	}
 
-	chain := []string{requestedModel}
-	if s != nil && s.settingService != nil {
-		chain = BuildSameAccountModelFallbackChain(ctx, s.settingService, account, PlatformAntigravity, requestedModel)
+	var settings *SettingService
+	if s != nil {
+		settings = s.settingService
 	}
+	// Soft mapping is account-scoped and must work even when SettingService is nil.
+	chain := BuildSameAccountModelFallbackChain(ctx, settings, account, PlatformAntigravity, requestedModel)
 	lastErr := err
 	for _, candidate := range chain[1:] {
 		result, err = s.forwardOnce(ctx, c, account, ReplaceModelInBody(body, candidate), isStickySession)

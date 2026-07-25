@@ -123,8 +123,13 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		if !IsModelUnavailableFailover(err) {
 			return nil, err
 		}
-		if len(chain) == 1 && s.settingService != nil {
-			chain = BuildSameAccountModelFallbackChain(ctx, s.settingService, account, account.Platform, originalModel)
+		if len(chain) == 1 {
+			var settings *SettingService
+			if s != nil {
+				settings = s.settingService
+			}
+			// Soft mapping is account-scoped and must work even when SettingService is nil.
+			chain = BuildSameAccountModelFallbackChain(ctx, settings, account, account.Platform, originalModel)
 		}
 	}
 	return nil, lastErr

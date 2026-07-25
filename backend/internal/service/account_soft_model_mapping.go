@@ -73,6 +73,38 @@ func (a *Account) HasSoftModelMappingKey(requestedModel string) bool {
 	return false
 }
 
+// SoftModelMappingSources returns the configured soft-mapping request models
+// (map keys). These are schedulable request models and should appear in model
+// discovery alongside hard model_mapping keys.
+func (a *Account) SoftModelMappingSources() []string {
+	mapping := a.GetSoftModelMapping()
+	if len(mapping) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(mapping))
+	for from := range mapping {
+		from = strings.TrimSpace(from)
+		if from == "" {
+			continue
+		}
+		out = append(out, from)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// appendSoftModelMappingSources unions soft-mapping request models into modelSet.
+func appendSoftModelMappingSources(modelSet map[string]struct{}, account *Account) {
+	if modelSet == nil || account == nil {
+		return
+	}
+	for _, model := range account.SoftModelMappingSources() {
+		modelSet[model] = struct{}{}
+	}
+}
+
 func parseSoftModelMapping(raw any) map[string][]string {
 	switch mapping := raw.(type) {
 	case map[string]any:
