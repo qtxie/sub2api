@@ -181,12 +181,13 @@ func (h *SettingHandler) GetQCProbeRoutingSettings(c *gin.Context) {
 
 // UpdateQCProbeRoutingSettingsRequest 更新 QC 质检流量账号路由配置
 type UpdateQCProbeRoutingSettingsRequest struct {
-	Enabled             bool                                      `json:"enabled"`
-	Fallback            string                                    `json:"fallback"`
-	AccountIDs          []int64                                   `json:"account_ids"`
-	Sources             map[string]dto.QCProbeSourceConfig        `json:"sources"`
-	UserAgentSubstrings []string                                  `json:"user_agent_substrings"`
-	ApplyPlatforms      []string                                  `json:"apply_platforms"`
+	Enabled             bool                               `json:"enabled"`
+	Fallback            string                             `json:"fallback"`
+	PoolScope           string                             `json:"pool_scope"`
+	AccountIDs          []int64                            `json:"account_ids"`
+	Sources             map[string]dto.QCProbeSourceConfig `json:"sources"`
+	UserAgentSubstrings []string                           `json:"user_agent_substrings"`
+	ApplyPlatforms      []string                           `json:"apply_platforms"`
 }
 
 // UpdateQCProbeRoutingSettings 更新 QC 质检流量账号路由配置
@@ -214,6 +215,7 @@ func (h *SettingHandler) UpdateQCProbeRoutingSettings(c *gin.Context) {
 	settings := &service.QCProbeRoutingSettings{
 		Enabled:             req.Enabled,
 		Fallback:            req.Fallback,
+		PoolScope:           req.PoolScope,
 		AccountIDs:          req.AccountIDs,
 		Sources:             sources,
 		UserAgentSubstrings: req.UserAgentSubstrings,
@@ -263,6 +265,7 @@ func toQCProbeRoutingDTO(settings *service.QCProbeRoutingSettings) dto.QCProbeRo
 	return dto.QCProbeRoutingSettings{
 		Enabled:             settings.Enabled,
 		Fallback:            settings.Fallback,
+		PoolScope:           settings.PoolScope,
 		AccountIDs:          accountIDs,
 		Sources:             sources,
 		UserAgentSubstrings: uaSubs,

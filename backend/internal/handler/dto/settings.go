@@ -425,12 +425,13 @@ type QCProbeSourceConfig struct {
 
 // QCProbeRoutingSettings QC 质检流量账号路由配置 DTO
 type QCProbeRoutingSettings struct {
-	Enabled             bool                            `json:"enabled"`
-	Fallback            string                          `json:"fallback"`
-	AccountIDs          []int64                         `json:"account_ids"`
-	Sources             map[string]QCProbeSourceConfig  `json:"sources"`
-	UserAgentSubstrings []string                        `json:"user_agent_substrings"`
-	ApplyPlatforms      []string                        `json:"apply_platforms"`
+	Enabled             bool                           `json:"enabled"`
+	Fallback            string                         `json:"fallback"`
+	PoolScope           string                         `json:"pool_scope"`
+	AccountIDs          []int64                        `json:"account_ids"`
+	Sources             map[string]QCProbeSourceConfig `json:"sources"`
+	UserAgentSubstrings []string                       `json:"user_agent_substrings"`
+	ApplyPlatforms      []string                       `json:"apply_platforms"`
 }
 
 // BetaPolicyRule Beta 策略规则 DTO

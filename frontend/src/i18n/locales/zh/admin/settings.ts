@@ -1024,6 +1024,11 @@ export default {
         fallbackNormal: '回退到正常调度',
         fallbackReject: '直接拒绝（无可用账号）',
         fallbackHint: '质检账号池为空，或池内账号均不可调度时的处理策略',
+        poolScope: '账号池范围',
+        poolScopeGroup: '仅当前分组（与请求分组求交）',
+        poolScopeGlobal: '全局燃烧池（忽略分组与手动不可调度）',
+        poolScopeHint:
+          '全局范围按配置的账号 ID 直接加载，可用于任意 API Key 分组。请只放入牺牲账号。',
         accountIds: '质检账号 ID 列表',
         accountIdsHint: '用逗号分隔的账号 ID，仅用于被识别为质检探测的请求',
         accountIdsPlaceholder: '例如 12, 34, 56',

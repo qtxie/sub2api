@@ -430,14 +430,25 @@ func (s *GeminiMessagesCompatService) GetAntigravityGatewayService() *Antigravit
 }
 
 func (s *GeminiMessagesCompatService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
+	var (
+		account *Account
+		err     error
+	)
 	if s.schedulerSnapshot != nil {
-		return s.schedulerSnapshot.GetAccount(ctx, accountID)
+		account, err = s.schedulerSnapshot.GetAccount(ctx, accountID)
+	} else {
+		account, err = s.accountRepo.GetByID(ctx, accountID)
 	}
-	return s.accountRepo.GetByID(ctx, accountID)
+	if err != nil || account == nil {
+		return account, err
+	}
+	applyQCProbeGlobalPoolAccountOverrides(ctx, account)
+	return account, nil
 }
 
 func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context, account *Account) (*Account, error) {
 	if account == nil || s.schedulerSnapshot == nil {
+		applyQCProbeGlobalPoolAccountOverrides(ctx, account)
 		return account, nil
 	}
 	hydrated, err := s.schedulerSnapshot.GetAccount(ctx, account.ID)
@@ -447,6 +458,7 @@ func (s *GeminiMessagesCompatService) hydrateSelectedAccount(ctx context.Context
 	if hydrated == nil {
 		return nil, fmt.Errorf("selected gemini account %d not found during hydration", account.ID)
 	}
+	applyQCProbeGlobalPoolAccountOverrides(ctx, hydrated)
 	return hydrated, nil
 }
 
@@ -473,7 +485,7 @@ func (s *GeminiMessagesCompatService) listSchedulableAccountsOnce(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
-	filtered, reject := FilterAccountsForQCProbe(ctx, platform, accounts)
+	filtered, reject := ResolveAccountsForQCProbe(ctx, platform, accounts, LoadQCProbeAccountsByIDs(s.accountRepo))
 	if reject {
 		return nil, ErrNoAvailableAccounts
 	}

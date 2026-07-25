@@ -1303,6 +1303,7 @@ export interface QCProbeSourceConfig {
 export interface QCProbeRoutingSettings {
   enabled: boolean;
   fallback: "normal" | "reject";
+  pool_scope: "group" | "global";
   account_ids: number[];
   sources: Record<string, QCProbeSourceConfig>;
   user_agent_substrings: string[];

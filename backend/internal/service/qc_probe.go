@@ -15,6 +15,12 @@ const (
 	// QCProbeFallbackReject returns no-available-accounts when the QC pool cannot serve the request.
 	QCProbeFallbackReject = "reject"
 
+	// QCProbePoolScopeGroup intersects the QC pool with the request group's schedulable accounts.
+	QCProbePoolScopeGroup = "group"
+	// QCProbePoolScopeGlobal loads the QC pool by account ID, ignoring group membership and the
+	// manual schedulable flag (still requires active accounts).
+	QCProbePoolScopeGlobal = "global"
+
 	QCProbeSourceZtest      = "ztest"
 	QCProbeSourceTokensQC   = "tokensqc"
 	QCProbeSourceHvoy       = "hvoy"
@@ -32,12 +38,13 @@ type QCProbeSourceConfig struct {
 
 // QCProbeRoutingSettings is the admin-configurable QC probe routing policy.
 type QCProbeRoutingSettings struct {
-	Enabled             bool                            `json:"enabled"`
-	Fallback            string                          `json:"fallback"` // normal | reject
-	AccountIDs          []int64                         `json:"account_ids"`
-	Sources             map[string]QCProbeSourceConfig  `json:"sources"`
-	UserAgentSubstrings []string                        `json:"user_agent_substrings"`
-	ApplyPlatforms      []string                        `json:"apply_platforms"`
+	Enabled             bool                           `json:"enabled"`
+	Fallback            string                         `json:"fallback"` // normal | reject
+	PoolScope           string                         `json:"pool_scope"` // group | global
+	AccountIDs          []int64                        `json:"account_ids"`
+	Sources             map[string]QCProbeSourceConfig `json:"sources"`
+	UserAgentSubstrings []string                       `json:"user_agent_substrings"`
+	ApplyPlatforms      []string                       `json:"apply_platforms"`
 }
 
 // QCProbeSelection is the per-request decision snapshot stored in context.
@@ -45,6 +52,7 @@ type QCProbeSelection struct {
 	Active         bool
 	Source         string
 	Fallback       string
+	PoolScope      string
 	AccountIDs     []int64
 	AccountIDSet   map[int64]struct{}
 	ApplyPlatforms map[string]struct{}
@@ -55,6 +63,7 @@ func DefaultQCProbeRoutingSettings() *QCProbeRoutingSettings {
 	return &QCProbeRoutingSettings{
 		Enabled:    false,
 		Fallback:   QCProbeFallbackNormal,
+		PoolScope:  QCProbePoolScopeGroup,
 		AccountIDs: nil,
 		Sources: map[string]QCProbeSourceConfig{
 			QCProbeSourceZtest: {
@@ -97,6 +106,7 @@ func NormalizeQCProbeRoutingSettings(settings *QCProbeRoutingSettings) *QCProbeR
 	}
 	out.Enabled = settings.Enabled
 	out.Fallback = normalizeQCProbeFallback(settings.Fallback)
+	out.PoolScope = normalizeQCProbePoolScope(settings.PoolScope)
 
 	seenIDs := make(map[int64]struct{}, len(settings.AccountIDs))
 	out.AccountIDs = make([]int64, 0, len(settings.AccountIDs))
@@ -143,6 +153,15 @@ func normalizeQCProbeFallback(v string) string {
 		return QCProbeFallbackReject
 	default:
 		return QCProbeFallbackNormal
+	}
+}
+
+func normalizeQCProbePoolScope(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case QCProbePoolScopeGlobal:
+		return QCProbePoolScopeGlobal
+	default:
+		return QCProbePoolScopeGroup
 	}
 }
 
@@ -199,6 +218,7 @@ func DetectQCProbeRequest(origin, referer, userAgent string, settings *QCProbeRo
 	selection := QCProbeSelection{
 		Active:         false,
 		Fallback:       settings.Fallback,
+		PoolScope:      settings.PoolScope,
 		AccountIDs:     append([]int64(nil), settings.AccountIDs...),
 		AccountIDSet:   make(map[int64]struct{}, len(settings.AccountIDs)),
 		ApplyPlatforms: make(map[string]struct{}, len(settings.ApplyPlatforms)),
@@ -387,6 +407,10 @@ func (s QCProbeSelection) hasAccountPool() bool {
 	return len(s.AccountIDSet) > 0
 }
 
+func (s QCProbeSelection) isGlobalScope() bool {
+	return normalizeQCProbePoolScope(s.PoolScope) == QCProbePoolScopeGlobal
+}
+
 func (s QCProbeSelection) allowsAccountID(id int64) bool {
 	if !s.Active || !s.hasAccountPool() {
 		return true
@@ -395,18 +419,37 @@ func (s QCProbeSelection) allowsAccountID(id int64) bool {
 	return ok
 }
 
-// FilterAccountsForQCProbe restricts candidates to the QC account pool when active.
-// Returns (filtered, reject) where reject=true means the caller should surface no-available-accounts.
-func FilterAccountsForQCProbe(ctx context.Context, platform string, accounts []Account) ([]Account, bool) {
+// QCProbeAccountLoader loads accounts by ID for global QC pool scope.
+type QCProbeAccountLoader func(ctx context.Context, ids []int64) ([]Account, error)
+
+// ResolveAccountsForQCProbe applies QC pool policy to a candidate list.
+//   - group scope: intersect with the provided group-schedulable candidates
+//   - global scope: load pool accounts by ID (ignore group + manual unschedulable)
+// Returns (accounts, reject).
+func ResolveAccountsForQCProbe(ctx context.Context, platform string, accounts []Account, loadPool QCProbeAccountLoader) ([]Account, bool) {
 	selection, ok := QCProbeSelectionFromContext(ctx)
 	if !ok || !selection.Active || !selection.appliesToPlatform(platform) {
 		return accounts, false
 	}
+	if selection.isGlobalScope() {
+		return resolveGlobalQCProbeAccounts(ctx, platform, accounts, selection, loadPool)
+	}
+	return filterGroupQCProbeAccounts(platform, accounts, selection)
+}
+
+// FilterAccountsForQCProbe is the group-scope filter used by tests and callers that already
+// hold the candidate list. Prefer ResolveAccountsForQCProbe when global scope is supported.
+func FilterAccountsForQCProbe(ctx context.Context, platform string, accounts []Account) ([]Account, bool) {
+	return ResolveAccountsForQCProbe(ctx, platform, accounts, nil)
+}
+
+func filterGroupQCProbeAccounts(platform string, accounts []Account, selection QCProbeSelection) ([]Account, bool) {
 	if !selection.hasAccountPool() {
 		if selection.Fallback == QCProbeFallbackReject {
 			slog.Info("qc_probe.routing_reject_empty_pool",
 				"source", selection.Source,
 				"platform", platform,
+				"pool_scope", selection.PoolScope,
 				"fallback", selection.Fallback)
 			return nil, true
 		}
@@ -423,6 +466,7 @@ func FilterAccountsForQCProbe(ctx context.Context, platform string, accounts []A
 		slog.Info("qc_probe.routing_applied",
 			"source", selection.Source,
 			"platform", platform,
+			"pool_scope", selection.PoolScope,
 			"pool_size", len(selection.AccountIDSet),
 			"matched", len(filtered),
 			"total", len(accounts))
@@ -432,6 +476,7 @@ func FilterAccountsForQCProbe(ctx context.Context, platform string, accounts []A
 		slog.Info("qc_probe.routing_reject_no_eligible",
 			"source", selection.Source,
 			"platform", platform,
+			"pool_scope", selection.PoolScope,
 			"pool_size", len(selection.AccountIDSet),
 			"total", len(accounts))
 		return nil, true
@@ -439,26 +484,138 @@ func FilterAccountsForQCProbe(ctx context.Context, platform string, accounts []A
 	slog.Info("qc_probe.routing_fallback_normal",
 		"source", selection.Source,
 		"platform", platform,
+		"pool_scope", selection.PoolScope,
 		"pool_size", len(selection.AccountIDSet),
 		"total", len(accounts))
 	return accounts, false
 }
 
+func resolveGlobalQCProbeAccounts(
+	ctx context.Context,
+	platform string,
+	accounts []Account,
+	selection QCProbeSelection,
+	loadPool QCProbeAccountLoader,
+) ([]Account, bool) {
+	if !selection.hasAccountPool() {
+		if selection.Fallback == QCProbeFallbackReject {
+			slog.Info("qc_probe.routing_reject_empty_pool",
+				"source", selection.Source,
+				"platform", platform,
+				"pool_scope", selection.PoolScope,
+				"fallback", selection.Fallback)
+			return nil, true
+		}
+		return accounts, false
+	}
+	if loadPool == nil {
+		// No loader: fall back to group-scope intersection so callers without repo access
+		// still behave safely instead of inventing accounts.
+		slog.Warn("qc_probe.global_scope_missing_loader",
+			"source", selection.Source,
+			"platform", platform)
+		return filterGroupQCProbeAccounts(platform, accounts, selection)
+	}
+
+	loaded, err := loadPool(ctx, append([]int64(nil), selection.AccountIDs...))
+	if err != nil {
+		slog.Warn("qc_probe.global_pool_load_failed",
+			"source", selection.Source,
+			"platform", platform,
+			"error", err)
+		if selection.Fallback == QCProbeFallbackReject {
+			return nil, true
+		}
+		return accounts, false
+	}
+
+	filtered := make([]Account, 0, len(loaded))
+	for i := range loaded {
+		acc := prepareGlobalQCProbeAccount(loaded[i], platform)
+		if acc == nil {
+			continue
+		}
+		filtered = append(filtered, *acc)
+	}
+	if len(filtered) > 0 {
+		slog.Info("qc_probe.routing_applied",
+			"source", selection.Source,
+			"platform", platform,
+			"pool_scope", selection.PoolScope,
+			"pool_size", len(selection.AccountIDSet),
+			"matched", len(filtered),
+			"total", len(accounts))
+		return filtered, false
+	}
+	if selection.Fallback == QCProbeFallbackReject {
+		slog.Info("qc_probe.routing_reject_no_eligible",
+			"source", selection.Source,
+			"platform", platform,
+			"pool_scope", selection.PoolScope,
+			"pool_size", len(selection.AccountIDSet),
+			"total", len(accounts))
+		return nil, true
+	}
+	slog.Info("qc_probe.routing_fallback_normal",
+		"source", selection.Source,
+		"platform", platform,
+		"pool_scope", selection.PoolScope,
+		"pool_size", len(selection.AccountIDSet),
+		"total", len(accounts))
+	return accounts, false
+}
+
+// prepareGlobalQCProbeAccount returns a usable pool account for QC global scope.
+// Ignores manual Schedulable=false and group membership; still requires active status
+// and platform compatibility. Clears only the manual schedulable gate so temporary
+// rate-limit / overload cooldowns remain effective via IsSchedulable().
+func prepareGlobalQCProbeAccount(acc Account, platform string) *Account {
+	if !acc.IsActive() {
+		return nil
+	}
+	if !qcProbeAccountMatchesPlatform(acc, platform) {
+		return nil
+	}
+	acc.Schedulable = true
+	return &acc
+}
+
+func qcProbeAccountMatchesPlatform(acc Account, platform string) bool {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if platform == "" {
+		return true
+	}
+	ap := strings.ToLower(strings.TrimSpace(acc.Platform))
+	if ap == platform {
+		return true
+	}
+	// Mixed Anthropic/Gemini scheduling may include antigravity accounts.
+	if (platform == PlatformAnthropic || platform == PlatformGemini) && ap == PlatformAntigravity {
+		return true
+	}
+	// OpenAI-compatible scheduling treats openai platform accounts only here;
+	// grok stays on its own platform string.
+	return false
+}
+
 // RestrictAccountIDsForQCProbe intersects routing/sticky candidate IDs with the QC pool.
-// Fallback semantics match FilterAccountsForQCProbe:
+// Fallback semantics:
 //   - no shortlist: force QC pool
-//   - empty intersection + normal: keep original ids
+//   - empty intersection + group/normal: keep original ids
+//   - empty intersection + global: force QC pool (pin burn list)
 //   - empty intersection + reject: return empty shortlist
 func RestrictAccountIDsForQCProbe(ctx context.Context, platform string, ids []int64) []int64 {
 	selection, ok := QCProbeSelectionFromContext(ctx)
 	if !ok || !selection.Active || !selection.appliesToPlatform(platform) || !selection.hasAccountPool() {
 		return ids
 	}
-	if len(ids) == 0 {
-		// No existing shortlist: force QC pool as the shortlist.
+	forcePool := func() []int64 {
 		out := make([]int64, 0, len(selection.AccountIDs))
 		out = append(out, selection.AccountIDs...)
 		return out
+	}
+	if len(ids) == 0 {
+		return forcePool()
 	}
 	out := make([]int64, 0, len(ids))
 	for _, id := range ids {
@@ -472,7 +629,11 @@ func RestrictAccountIDsForQCProbe(ctx context.Context, platform string, ids []in
 	if selection.Fallback == QCProbeFallbackReject {
 		return out
 	}
-	// fallback normal: preserve original shortlist (caller may still filter accounts)
+	if selection.isGlobalScope() {
+		// Global scope always pins to the burn pool rather than unrestricted routing.
+		return forcePool()
+	}
+	// group + fallback normal: preserve original shortlist
 	return ids
 }
 
@@ -483,4 +644,57 @@ func IsAccountAllowedByQCProbe(ctx context.Context, platform string, accountID i
 		return true
 	}
 	return selection.allowsAccountID(accountID)
+}
+
+// IsQCProbeGlobalPoolAccount reports whether this account is a configured global-scope
+// QC pool member for the request platform (used to bypass group membership checks).
+func IsQCProbeGlobalPoolAccount(ctx context.Context, platform string, accountID int64) bool {
+	selection, ok := QCProbeSelectionFromContext(ctx)
+	if !ok || !selection.Active || !selection.isGlobalScope() || !selection.appliesToPlatform(platform) || !selection.hasAccountPool() {
+		return false
+	}
+	return selection.allowsAccountID(accountID)
+}
+
+// applyQCProbeGlobalPoolAccountOverrides relaxes manual unschedulable for global QC pool
+// accounts so sticky/direct loads match ResolveAccountsForQCProbe behavior.
+func applyQCProbeGlobalPoolAccountOverrides(ctx context.Context, account *Account) {
+	if account == nil {
+		return
+	}
+	if IsQCProbeGlobalPoolAccount(ctx, account.Platform, account.ID) {
+		account.Schedulable = true
+	}
+}
+
+// LoadQCProbeAccountsByIDs adapts AccountRepository.GetByIDs for ResolveAccountsForQCProbe.
+func LoadQCProbeAccountsByIDs(repo interface {
+	GetByIDs(ctx context.Context, ids []int64) ([]*Account, error)
+}) QCProbeAccountLoader {
+	if repo == nil {
+		return nil
+	}
+	return func(ctx context.Context, ids []int64) ([]Account, error) {
+		if len(ids) == 0 {
+			return nil, nil
+		}
+		rows, err := repo.GetByIDs(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]Account, 0, len(rows))
+		// Preserve configured pool order.
+		byID := make(map[int64]*Account, len(rows))
+		for _, row := range rows {
+			if row != nil {
+				byID[row.ID] = row
+			}
+		}
+		for _, id := range ids {
+			if acc, ok := byID[id]; ok && acc != nil {
+				out = append(out, *acc)
+			}
+		}
+		return out, nil
+	}
 }

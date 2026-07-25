@@ -87,7 +87,7 @@ func TestIsAccountInGroup(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := svc.isAccountInGroup(tt.account, tt.groupID)
+			got := svc.isAccountInGroup(context.Background(), tt.account, tt.groupID)
 			require.Equal(t, tt.expected, got, "isAccountInGroup 结果不符预期")
 		})
 	}

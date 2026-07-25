@@ -129,6 +129,7 @@ func TestNormalizeQCProbeRoutingSettings(t *testing.T) {
 	in := &QCProbeRoutingSettings{
 		Enabled:    true,
 		Fallback:   "REJECT",
+		PoolScope:  "GLOBAL",
 		AccountIDs: []int64{0, 3, 3, -1, 4},
 		Sources: map[string]QCProbeSourceConfig{
 			" TokensQC ": {Enabled: true, Origins: []string{" https://tokensqc.com ", "", "https://tokensqc.com"}},
@@ -139,6 +140,7 @@ func TestNormalizeQCProbeRoutingSettings(t *testing.T) {
 	out := NormalizeQCProbeRoutingSettings(in)
 	require.True(t, out.Enabled)
 	require.Equal(t, QCProbeFallbackReject, out.Fallback)
+	require.Equal(t, QCProbePoolScopeGlobal, out.PoolScope)
 	require.Equal(t, []int64{3, 4}, out.AccountIDs)
 	require.Equal(t, []string{"https://tokensqc.com"}, out.Sources["tokensqc"].Origins)
 	// Partial sources merge must keep default QC sites.
@@ -146,6 +148,73 @@ func TestNormalizeQCProbeRoutingSettings(t *testing.T) {
 	require.Equal(t, []string{"https://ztest.ai", "https://www.ztest.ai"}, out.Sources[QCProbeSourceZtest].Origins)
 	require.Equal(t, []string{"a"}, out.UserAgentSubstrings)
 	require.Equal(t, []string{"openai"}, out.ApplyPlatforms)
+}
+
+func TestResolveAccountsForQCProbe_GlobalScopeIgnoresGroupAndSchedulable(t *testing.T) {
+	// Group-schedulable candidates do not include the burn pool.
+	groupAccounts := []Account{
+		{ID: 1, Name: "prod", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true},
+		{ID: 2, Name: "prod2", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true},
+	}
+	// Pool: outside group + manually unschedulable, but active openai.
+	poolOutside := Account{
+		ID: 16, Name: "burn-out-group", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true,
+	}
+	poolUnsched := Account{
+		ID: 34, Name: "burn-unsched", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: false,
+	}
+	loader := func(_ context.Context, ids []int64) ([]Account, error) {
+		byID := map[int64]Account{16: poolOutside, 34: poolUnsched}
+		out := make([]Account, 0, len(ids))
+		for _, id := range ids {
+			if acc, ok := byID[id]; ok {
+				out = append(out, acc)
+			}
+		}
+		return out, nil
+	}
+
+	settings := DefaultQCProbeRoutingSettings()
+	settings.Enabled = true
+	settings.PoolScope = QCProbePoolScopeGlobal
+	settings.AccountIDs = []int64{16, 34}
+	settings.Fallback = QCProbeFallbackReject
+	sel := DetectQCProbeRequest("https://ztest.ai", "", "", settings)
+	require.True(t, sel.Active)
+	require.Equal(t, QCProbePoolScopeGlobal, sel.PoolScope)
+	ctx := WithQCProbeSelection(context.Background(), sel)
+
+	// Group scope would fall through / reject; global must load pool directly.
+	filtered, reject := ResolveAccountsForQCProbe(ctx, PlatformOpenAI, groupAccounts, loader)
+	require.False(t, reject)
+	require.Len(t, filtered, 2)
+	require.Equal(t, int64(16), filtered[0].ID)
+	require.Equal(t, int64(34), filtered[1].ID)
+	// Manual unschedulable is forced true for scheduling gates.
+	require.True(t, filtered[1].Schedulable)
+	require.True(t, IsQCProbeGlobalPoolAccount(ctx, PlatformOpenAI, 16))
+	require.False(t, IsQCProbeGlobalPoolAccount(ctx, PlatformOpenAI, 1))
+
+	// Empty intersection under group scope still falls back/rejects without inventing accounts.
+	settings.PoolScope = QCProbePoolScopeGroup
+	sel = DetectQCProbeRequest("https://ztest.ai", "", "", settings)
+	ctx = WithQCProbeSelection(context.Background(), sel)
+	filtered, reject = ResolveAccountsForQCProbe(ctx, PlatformOpenAI, groupAccounts, loader)
+	require.True(t, reject)
+	require.Nil(t, filtered)
+}
+
+func TestRestrictAccountIDsForQCProbe_GlobalEmptyIntersectionForcesPool(t *testing.T) {
+	settings := DefaultQCProbeRoutingSettings()
+	settings.Enabled = true
+	settings.PoolScope = QCProbePoolScopeGlobal
+	settings.AccountIDs = []int64{16, 34}
+	settings.Fallback = QCProbeFallbackNormal
+	sel := DetectQCProbeRequest("https://ztest.ai", "", "", settings)
+	ctx := WithQCProbeSelection(context.Background(), sel)
+
+	ids := RestrictAccountIDsForQCProbe(ctx, PlatformOpenAI, []int64{1, 2, 3})
+	require.Equal(t, []int64{16, 34}, ids)
 }
 
 func TestIsAccountAllowedByQCProbe_StickyGate(t *testing.T) {

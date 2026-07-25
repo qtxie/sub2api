@@ -1030,6 +1030,11 @@ export default {
         fallbackNormal: 'Fall back to normal scheduling',
         fallbackReject: 'Reject request (no available accounts)',
         fallbackHint: 'Behavior when the QC account pool is empty or no eligible account remains',
+        poolScope: 'Pool Scope',
+        poolScopeGroup: 'Group only (intersect with request group)',
+        poolScopeGlobal: 'Global burn pool (ignore group + manual unschedulable)',
+        poolScopeHint:
+          'Global scope loads configured account IDs directly and can serve any API key group. Use sacrificial accounts only.',
         accountIds: 'QC Account IDs',
         accountIdsHint: 'Comma-separated account IDs used only for detected QC probe traffic',
         accountIdsPlaceholder: 'e.g. 12, 34, 56',

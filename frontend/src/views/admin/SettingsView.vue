@@ -856,6 +856,31 @@
                   <div>
                     <label
                       class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                      >{{ t("admin.settings.qcProbeRouting.poolScope") }}</label
+                    >
+                    <select
+                      v-model="qcProbeForm.pool_scope"
+                      class="input w-full max-w-md"
+                    >
+                      <option value="group">
+                        {{
+                          t("admin.settings.qcProbeRouting.poolScopeGroup")
+                        }}
+                      </option>
+                      <option value="global">
+                        {{
+                          t("admin.settings.qcProbeRouting.poolScopeGlobal")
+                        }}
+                      </option>
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.qcProbeRouting.poolScopeHint") }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300"
                       >{{
                         t("admin.settings.qcProbeRouting.accountIds")
                       }}</label
@@ -8289,6 +8314,7 @@ const qcProbeSourceKeys = [
 const qcProbeForm = reactive({
   enabled: false,
   fallback: "normal" as "normal" | "reject",
+  pool_scope: "group" as "group" | "global",
   account_ids: [] as number[],
   sources: {} as Record<
     string,
@@ -11209,6 +11235,8 @@ async function loadQCProbeSettings() {
     qcProbeForm.enabled = !!settings.enabled;
     qcProbeForm.fallback =
       settings.fallback === "reject" ? "reject" : "normal";
+    qcProbeForm.pool_scope =
+      settings.pool_scope === "global" ? "global" : "group";
     qcProbeForm.account_ids = Array.isArray(settings.account_ids)
       ? settings.account_ids
       : [];
@@ -11254,6 +11282,7 @@ async function saveQCProbeSettings() {
     const updated = await adminAPI.settings.updateQCProbeRoutingSettings({
       enabled: qcProbeForm.enabled,
       fallback: qcProbeForm.fallback,
+      pool_scope: qcProbeForm.pool_scope,
       account_ids: parseAccountIDsText(qcProbeAccountIdsText.value),
       sources: qcProbeForm.sources,
       user_agent_substrings: splitLines(qcProbeUserAgentsText.value),
@@ -11262,6 +11291,8 @@ async function saveQCProbeSettings() {
     qcProbeForm.enabled = !!updated.enabled;
     qcProbeForm.fallback =
       updated.fallback === "reject" ? "reject" : "normal";
+    qcProbeForm.pool_scope =
+      updated.pool_scope === "global" ? "global" : "group";
     qcProbeForm.account_ids = Array.isArray(updated.account_ids)
       ? updated.account_ids
       : [];
