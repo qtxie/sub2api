@@ -1299,6 +1299,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	if err != nil || latest == nil {
 		return nil
 	}
+	// Re-apply global QC burn-pool overrides after DB reload so manual Schedulable=false
+	// matches ResolveAccountsForQCProbe / getSchedulableAccount behavior.
+	applyQCProbeGlobalPoolAccountOverrides(ctx, latest)
 	if !s.openAIAccountMatchesSchedulingGroup(ctx, latest, groupID) {
 		return nil
 	}

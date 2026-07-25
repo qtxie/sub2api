@@ -569,14 +569,16 @@ func resolveGlobalQCProbeAccounts(
 // Ignores manual Schedulable=false and group membership; still requires active status
 // and platform compatibility. Clears only the manual schedulable gate so temporary
 // rate-limit / overload cooldowns remain effective via IsSchedulable().
+// Accounts that remain unschedulable after the manual-gate override are excluded so
+// fallback=normal can still fall through when the burn pool cannot actually serve.
 func prepareGlobalQCProbeAccount(acc Account, platform string) *Account {
-	if !acc.IsActive() {
-		return nil
-	}
 	if !qcProbeAccountMatchesPlatform(acc, platform) {
 		return nil
 	}
 	acc.Schedulable = true
+	if !acc.IsSchedulable() {
+		return nil
+	}
 	return &acc
 }
 

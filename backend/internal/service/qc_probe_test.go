@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -217,6 +219,33 @@ func TestRestrictAccountIDsForQCProbe_GlobalEmptyIntersectionForcesPool(t *testi
 	require.Equal(t, []int64{16, 34}, ids)
 }
 
+func TestResolveAccountsForQCProbe_GlobalScopeRateLimitedFallsBackNormal(t *testing.T) {
+	until := time.Now().Add(time.Hour)
+	groupAccounts := []Account{
+		{ID: 1, Name: "prod", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: true},
+	}
+	poolRateLimited := Account{
+		ID: 16, Name: "burn-rl", Platform: PlatformOpenAI, Status: StatusActive, Schedulable: false,
+		RateLimitResetAt: &until,
+	}
+	loader := func(_ context.Context, ids []int64) ([]Account, error) {
+		return []Account{poolRateLimited}, nil
+	}
+
+	settings := DefaultQCProbeRoutingSettings()
+	settings.Enabled = true
+	settings.PoolScope = QCProbePoolScopeGlobal
+	settings.AccountIDs = []int64{16}
+	settings.Fallback = QCProbeFallbackNormal
+	sel := DetectQCProbeRequest("https://ztest.ai", "", "", settings)
+	ctx := WithQCProbeSelection(context.Background(), sel)
+
+	filtered, reject := ResolveAccountsForQCProbe(ctx, PlatformOpenAI, groupAccounts, loader)
+	require.False(t, reject)
+	// Rate-limited burn accounts must not count as a successful pool hit under fallback=normal.
+	require.Equal(t, groupAccounts, filtered)
+}
+
 func TestIsAccountAllowedByQCProbe_StickyGate(t *testing.T) {
 	settings := DefaultQCProbeRoutingSettings()
 	settings.Enabled = true
@@ -228,6 +257,85 @@ func TestIsAccountAllowedByQCProbe_StickyGate(t *testing.T) {
 	require.False(t, IsAccountAllowedByQCProbe(ctx, PlatformOpenAI, 99))
 	// Non-QC request context allows any account.
 	require.True(t, IsAccountAllowedByQCProbe(context.Background(), PlatformOpenAI, 99))
+}
+
+func TestRecheckSelectedOpenAIAccountFromDB_GlobalQCProbeAllowsManualUnschedulable(t *testing.T) {
+	// Outside request group + manually unschedulable burn account.
+	burn := Account{
+		ID:          34,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: false,
+		Concurrency: 1,
+		GroupIDs:    []int64{999},
+	}
+	repo := schedulerTestOpenAIAccountRepo{accounts: []Account{burn}}
+	svc := &OpenAIGatewayService{
+		accountRepo:       repo,
+		cfg:               &config.Config{RunMode: config.RunModeStandard},
+		schedulerSnapshot: &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{}},
+	}
+
+	settings := DefaultQCProbeRoutingSettings()
+	settings.Enabled = true
+	settings.PoolScope = QCProbePoolScopeGlobal
+	settings.AccountIDs = []int64{34}
+	settings.Fallback = QCProbeFallbackReject
+	sel := DetectQCProbeRequest("https://ztest.ai", "", "", settings)
+	ctx := WithQCProbeSelection(context.Background(), sel)
+
+	groupID := int64(1)
+	// Without QC context the outside-group unschedulable account must be rejected.
+	require.Nil(t, svc.recheckSelectedOpenAIAccountFromDB(context.Background(), &burn, &groupID, PlatformOpenAI, "gpt-5.1", false, ""))
+
+	// With global QC context, DB recheck must keep the account and force Schedulable.
+	fresh := svc.recheckSelectedOpenAIAccountFromDB(ctx, &burn, &groupID, PlatformOpenAI, "gpt-5.1", false, "")
+	require.NotNil(t, fresh)
+	require.Equal(t, int64(34), fresh.ID)
+	require.True(t, fresh.Schedulable)
+	require.True(t, fresh.IsSchedulable())
+}
+
+func TestOpenAITryStickySessionHit_GlobalQCProbeAllowsOutsideGroupUnschedulable(t *testing.T) {
+	sessionHash := "sess-qc-global"
+	burn := Account{
+		ID:          34,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: false,
+		Concurrency: 1,
+		GroupIDs:    []int64{999},
+	}
+	repo := stubOpenAIAccountRepo{accounts: []Account{burn}}
+	cache := &stubGatewayCache{
+		sessionBindings: map[string]int64{
+			"openai:" + sessionHash: 34,
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:       repo,
+		cache:             cache,
+		cfg:               &config.Config{RunMode: config.RunModeStandard},
+		schedulerSnapshot: &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{
+			accountsByID: map[int64]*Account{34: &burn},
+		}},
+	}
+
+	settings := DefaultQCProbeRoutingSettings()
+	settings.Enabled = true
+	settings.PoolScope = QCProbePoolScopeGlobal
+	settings.AccountIDs = []int64{34}
+	settings.Fallback = QCProbeFallbackReject
+	sel := DetectQCProbeRequest("https://ztest.ai", "", "", settings)
+	ctx := WithQCProbeSelection(context.Background(), sel)
+
+	groupID := int64(1)
+	hit := svc.tryStickySessionHit(ctx, &groupID, PlatformOpenAI, sessionHash, "gpt-5.1", nil, false, 0, "")
+	require.NotNil(t, hit, "global QC burn account must survive sticky recheck")
+	require.Equal(t, int64(34), hit.ID)
+	require.True(t, hit.Schedulable)
 }
 
 func TestOpenAITryStickySessionHit_RejectsOutsideQCPool(t *testing.T) {
