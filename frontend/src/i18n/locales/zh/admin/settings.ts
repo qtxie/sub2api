@@ -1014,6 +1014,29 @@ export default {
         saved: '整流器设置保存成功',
         saveFailed: '保存整流器设置失败'
       },
+      qcProbeRouting: {
+        title: '质检流量账号路由',
+        description:
+          '当请求来自 AI 中转站质检/验真站点（Ztest、TokensQC、禾维AI、API Ranking 等）时，强制使用预定义账号池。',
+        enabled: '启用质检流量路由',
+        enabledHint: '根据 Origin/Referer/User-Agent 识别质检站点，并限制账号选择范围',
+        fallback: '账号池不可用时',
+        fallbackNormal: '回退到正常调度',
+        fallbackReject: '直接拒绝（无可用账号）',
+        fallbackHint: '质检账号池为空，或池内账号均不可调度时的处理策略',
+        accountIds: '质检账号 ID 列表',
+        accountIdsHint: '用逗号分隔的账号 ID，仅用于被识别为质检探测的请求',
+        accountIdsPlaceholder: '例如 12, 34, 56',
+        userAgentSubstrings: '全局 User-Agent 关键词',
+        userAgentSubstringsHint: '可选，每行一个 UA 片段，命中即视为质检流量',
+        userAgentPlaceholder: '例如 GreenLight-QC',
+        sources: '质检来源',
+        sourceEnabled: '启用',
+        origins: 'Origin 列表',
+        originsHint: '每行一个 Origin/域名，按精确 host 匹配',
+        saved: '质检流量路由设置保存成功',
+        saveFailed: '保存质检流量路由设置失败'
+      },
       betaPolicy: {
         title: 'Beta 策略',
         description: '配置转发 Anthropic API 请求时如何处理 Beta 特性。仅适用于 /v1/messages 接口。',

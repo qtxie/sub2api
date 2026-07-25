@@ -416,6 +416,9 @@ const (
 	// SettingKeyRectifierSettings stores JSON config for rectifier settings (thinking signature + budget).
 	SettingKeyRectifierSettings = "rectifier_settings"
 
+	// SettingKeyQCProbeRouting stores JSON config for QC-site probe account routing.
+	SettingKeyQCProbeRouting = "qc_probe_routing"
+
 	// =========================
 	// Beta Policy Settings
 	// =========================

@@ -263,6 +263,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			}
 		}
 	}
+	// QC 质检流量：强制/收紧账号短名单（可与 model routing 求交）
+	routingAccountIDs = RestrictAccountIDsForQCProbe(ctx, platform, routingAccountIDs)
 
 	// ============ Layer 1: 模型路由优先选择（优先级高于粘性会话） ============
 	if len(routingAccountIDs) > 0 && s.concurrencyService != nil {
@@ -828,30 +830,29 @@ func (s *GatewayService) ResolveGroupByID(ctx context.Context, groupID int64) (*
 }
 
 func (s *GatewayService) routingAccountIDsForRequest(ctx context.Context, groupID *int64, requestedModel string, platform string) []int64 {
-	if groupID == nil || requestedModel == "" || platform != PlatformAnthropic {
-		return nil
-	}
-	group, err := s.resolveGroupByID(ctx, *groupID)
-	if err != nil || group == nil {
-		if s.debugModelRoutingEnabled() {
-			logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] resolve group failed: group_id=%v model=%s platform=%s err=%v", derefGroupID(groupID), requestedModel, platform, err)
+	var ids []int64
+	if groupID != nil && requestedModel != "" && platform == PlatformAnthropic {
+		group, err := s.resolveGroupByID(ctx, *groupID)
+		if err != nil || group == nil {
+			if s.debugModelRoutingEnabled() {
+				logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] resolve group failed: group_id=%v model=%s platform=%s err=%v", derefGroupID(groupID), requestedModel, platform, err)
+			}
+		} else if group.Platform != PlatformAnthropic && group.Platform != PlatformComposite {
+			// Model routing applies only to requests resolved to Anthropic. Composite
+			// groups may still use those rules once their model resolved to Anthropic.
+			if s.debugModelRoutingEnabled() {
+				logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] skip: non-anthropic group platform: group_id=%d group_platform=%s model=%s", group.ID, group.Platform, requestedModel)
+			}
+		} else {
+			ids = group.GetRoutingAccountIDs(requestedModel)
+			if s.debugModelRoutingEnabled() {
+				logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routing lookup: group_id=%d model=%s enabled=%v rules=%d matched_ids=%v",
+					group.ID, requestedModel, group.ModelRoutingEnabled, len(group.ModelRouting), ids)
+			}
 		}
-		return nil
 	}
-	// Model routing applies only to requests resolved to Anthropic. Composite
-	// groups may still use those rules once their model resolved to Anthropic.
-	if group.Platform != PlatformAnthropic && group.Platform != PlatformComposite {
-		if s.debugModelRoutingEnabled() {
-			logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] skip: non-anthropic group platform: group_id=%d group_platform=%s model=%s", group.ID, group.Platform, requestedModel)
-		}
-		return nil
-	}
-	ids := group.GetRoutingAccountIDs(requestedModel)
-	if s.debugModelRoutingEnabled() {
-		logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] routing lookup: group_id=%d model=%s enabled=%v rules=%d matched_ids=%v",
-			group.ID, requestedModel, group.ModelRoutingEnabled, len(group.ModelRouting), ids)
-	}
-	return ids
+	// QC 质检流量可在无 model-routing 时强制短名单，或与既有路由求交。
+	return RestrictAccountIDsForQCProbe(ctx, platform, ids)
 }
 
 func (s *GatewayService) resolveGatewayGroup(ctx context.Context, groupID *int64) (*Group, *int64, error) {
@@ -947,6 +948,17 @@ func (s *GatewayService) resolvePlatform(ctx context.Context, groupID *int64, gr
 }
 
 func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+	applyQC := func(accounts []Account, useMixed bool, err error) ([]Account, bool, error) {
+		if err != nil {
+			return nil, useMixed, err
+		}
+		filtered, reject := FilterAccountsForQCProbe(ctx, platform, accounts)
+		if reject {
+			return nil, useMixed, ErrNoAvailableAccounts
+		}
+		return filtered, useMixed, nil
+	}
+
 	if s.schedulerSnapshot != nil {
 		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {
@@ -967,7 +979,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				}
 			}
 		}
-		return accounts, useMixed, err
+		return applyQC(accounts, useMixed, err)
 	}
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	if useMixed {
@@ -1011,7 +1023,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 					"tls_fingerprint", acc.IsTLSFingerprintEnabled())
 			}
 		}
-		return filtered, useMixed, nil
+		return applyQC(filtered, useMixed, nil)
 	}
 
 	var accounts []Account
@@ -1046,7 +1058,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 				"tls_fingerprint", acc.IsTLSFingerprintEnabled())
 		}
 	}
-	return accounts, useMixed, nil
+	return applyQC(accounts, useMixed, nil)
 }
 
 // IsSingleAntigravityAccountGroup 检查指定分组是否只有一个 antigravity 平台的可调度账号。

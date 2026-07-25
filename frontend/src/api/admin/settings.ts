@@ -1292,6 +1292,40 @@ export async function updateRectifierSettings(
   return data;
 }
 
+// ==================== QC Probe Routing Settings ====================
+
+export interface QCProbeSourceConfig {
+  enabled: boolean;
+  origins: string[];
+  user_agents?: string[];
+}
+
+export interface QCProbeRoutingSettings {
+  enabled: boolean;
+  fallback: "normal" | "reject";
+  account_ids: number[];
+  sources: Record<string, QCProbeSourceConfig>;
+  user_agent_substrings: string[];
+  apply_platforms: string[];
+}
+
+export async function getQCProbeRoutingSettings(): Promise<QCProbeRoutingSettings> {
+  const { data } = await apiClient.get<QCProbeRoutingSettings>(
+    "/admin/settings/qc-probe-routing",
+  );
+  return data;
+}
+
+export async function updateQCProbeRoutingSettings(
+  settings: QCProbeRoutingSettings,
+): Promise<QCProbeRoutingSettings> {
+  const { data } = await apiClient.put<QCProbeRoutingSettings>(
+    "/admin/settings/qc-probe-routing",
+    settings,
+  );
+  return data;
+}
+
 // ==================== OpenAI Fast Policy Settings ====================
 
 /**
@@ -1445,6 +1479,8 @@ export const settingsAPI = {
   updateStreamTimeoutSettings,
   getRectifierSettings,
   updateRectifierSettings,
+  getQCProbeRoutingSettings,
+  updateQCProbeRoutingSettings,
   getBetaPolicySettings,
   updateBetaPolicySettings,
   getWebSearchEmulationConfig,

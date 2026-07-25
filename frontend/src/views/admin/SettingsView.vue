@@ -790,6 +790,209 @@
               </template>
             </div>
           </div>
+
+          <!-- QC Probe Routing Settings -->
+          <div class="card">
+            <div
+              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
+            >
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.qcProbeRouting.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.qcProbeRouting.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div
+                v-if="qcProbeLoading"
+                class="flex items-center gap-2 text-gray-500"
+              >
+                <div
+                  class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"
+                ></div>
+                {{ t("common.loading") }}
+              </div>
+
+              <template v-else>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">{{
+                      t("admin.settings.qcProbeRouting.enabled")
+                    }}</label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.qcProbeRouting.enabledHint") }}
+                    </p>
+                  </div>
+                  <Toggle v-model="qcProbeForm.enabled" />
+                </div>
+
+                <template v-if="qcProbeForm.enabled">
+                  <div>
+                    <label
+                      class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                      >{{ t("admin.settings.qcProbeRouting.fallback") }}</label
+                    >
+                    <select
+                      v-model="qcProbeForm.fallback"
+                      class="input w-full max-w-md"
+                    >
+                      <option value="normal">
+                        {{
+                          t("admin.settings.qcProbeRouting.fallbackNormal")
+                        }}
+                      </option>
+                      <option value="reject">
+                        {{
+                          t("admin.settings.qcProbeRouting.fallbackReject")
+                        }}
+                      </option>
+                    </select>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.qcProbeRouting.fallbackHint") }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                      >{{
+                        t("admin.settings.qcProbeRouting.accountIds")
+                      }}</label
+                    >
+                    <input
+                      v-model="qcProbeAccountIdsText"
+                      type="text"
+                      class="input w-full"
+                      :placeholder="
+                        t(
+                          'admin.settings.qcProbeRouting.accountIdsPlaceholder',
+                        )
+                      "
+                    />
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.qcProbeRouting.accountIdsHint") }}
+                    </p>
+                  </div>
+
+                  <div>
+                    <label
+                      class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                      >{{
+                        t("admin.settings.qcProbeRouting.userAgentSubstrings")
+                      }}</label
+                    >
+                    <textarea
+                      v-model="qcProbeUserAgentsText"
+                      rows="3"
+                      class="input w-full font-mono text-sm"
+                      :placeholder="
+                        t('admin.settings.qcProbeRouting.userAgentPlaceholder')
+                      "
+                    ></textarea>
+                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        t(
+                          "admin.settings.qcProbeRouting.userAgentSubstringsHint",
+                        )
+                      }}
+                    </p>
+                  </div>
+
+                  <div class="space-y-3">
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      {{ t("admin.settings.qcProbeRouting.sources") }}
+                    </h3>
+                    <div
+                      v-for="sourceKey in qcProbeSourceKeys"
+                      :key="sourceKey"
+                      class="rounded-lg border border-gray-200 p-4 dark:border-dark-600"
+                    >
+                      <div class="mb-3 flex items-center justify-between">
+                        <div class="font-medium text-gray-900 dark:text-white">
+                          {{ sourceKey }}
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <span
+                            class="text-xs text-gray-500 dark:text-gray-400"
+                            >{{
+                              t("admin.settings.qcProbeRouting.sourceEnabled")
+                            }}</span
+                          >
+                          <Toggle
+                            :model-value="
+                              !!qcProbeForm.sources[sourceKey]?.enabled
+                            "
+                            @update:model-value="
+                              (v: boolean) =>
+                                setQCProbeSourceEnabled(sourceKey, v)
+                            "
+                          />
+                        </div>
+                      </div>
+                      <label
+                        class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
+                        >{{ t("admin.settings.qcProbeRouting.origins") }}</label
+                      >
+                      <textarea
+                        :value="
+                          (qcProbeForm.sources[sourceKey]?.origins || []).join(
+                            '\n',
+                          )
+                        "
+                        rows="2"
+                        class="input w-full font-mono text-sm"
+                        @input="
+                          setQCProbeSourceOrigins(
+                            sourceKey,
+                            ($event.target as HTMLTextAreaElement).value,
+                          )
+                        "
+                      ></textarea>
+                      <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {{ t("admin.settings.qcProbeRouting.originsHint") }}
+                      </p>
+                    </div>
+                  </div>
+                </template>
+
+                <div class="flex justify-end pt-2">
+                  <button
+                    class="btn btn-primary"
+                    :disabled="qcProbeSaving"
+                    @click="saveQCProbeSettings"
+                  >
+                    <svg
+                      v-if="qcProbeSaving"
+                      class="-ml-1 mr-2 h-4 w-4 animate-spin text-white"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        class="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        stroke-width="4"
+                      ></circle>
+                      <path
+                        class="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    {{
+                      qcProbeSaving ? t("common.saving") : t("common.save")
+                    }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
           <!-- Beta Policy Settings -->
           <div class="card">
             <div
@@ -8071,6 +8274,70 @@ const rectifierForm = reactive({
   apikey_signature_patterns: [] as string[],
 });
 
+// QC Probe Routing 状态
+const qcProbeLoading = ref(true);
+const qcProbeSaving = ref(false);
+const qcProbeAccountIdsText = ref("");
+const qcProbeUserAgentsText = ref("");
+const qcProbeSourceKeys = [
+  "ztest",
+  "tokensqc",
+  "hvoy",
+  "apiranking",
+  "luguang",
+] as const;
+const qcProbeForm = reactive({
+  enabled: false,
+  fallback: "normal" as "normal" | "reject",
+  account_ids: [] as number[],
+  sources: {} as Record<
+    string,
+    { enabled: boolean; origins: string[]; user_agents?: string[] }
+  >,
+  user_agent_substrings: [] as string[],
+  apply_platforms: [] as string[],
+});
+
+function splitLines(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function ensureQCProbeSource(sourceKey: string) {
+  if (!qcProbeForm.sources[sourceKey]) {
+    qcProbeForm.sources[sourceKey] = {
+      enabled: false,
+      origins: [],
+      user_agents: [],
+    };
+  }
+  return qcProbeForm.sources[sourceKey];
+}
+
+function setQCProbeSourceEnabled(sourceKey: string, enabled: boolean) {
+  ensureQCProbeSource(sourceKey).enabled = enabled;
+}
+
+function setQCProbeSourceOrigins(sourceKey: string, raw: string) {
+  ensureQCProbeSource(sourceKey).origins = splitLines(raw);
+}
+
+function parseAccountIDsText(text: string): number[] {
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  for (const part of text.split(/[,\s]+/)) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const id = Number(trimmed);
+    if (!Number.isInteger(id) || id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
 // Beta Policy 状态
 const betaPolicyLoading = ref(true);
 const betaPolicySaving = ref(false);
@@ -10935,6 +11202,93 @@ async function saveRectifierSettings() {
   }
 }
 
+async function loadQCProbeSettings() {
+  qcProbeLoading.value = true;
+  try {
+    const settings = await adminAPI.settings.getQCProbeRoutingSettings();
+    qcProbeForm.enabled = !!settings.enabled;
+    qcProbeForm.fallback =
+      settings.fallback === "reject" ? "reject" : "normal";
+    qcProbeForm.account_ids = Array.isArray(settings.account_ids)
+      ? settings.account_ids
+      : [];
+    qcProbeForm.user_agent_substrings = Array.isArray(
+      settings.user_agent_substrings,
+    )
+      ? settings.user_agent_substrings
+      : [];
+    qcProbeForm.apply_platforms = Array.isArray(settings.apply_platforms)
+      ? settings.apply_platforms
+      : [];
+    qcProbeForm.sources = {};
+    const incoming = settings.sources || {};
+    for (const key of qcProbeSourceKeys) {
+      const src = incoming[key] || { enabled: false, origins: [] };
+      qcProbeForm.sources[key] = {
+        enabled: !!src.enabled,
+        origins: Array.isArray(src.origins) ? src.origins : [],
+        user_agents: Array.isArray(src.user_agents) ? src.user_agents : [],
+      };
+    }
+    // Keep any extra custom sources returned by backend.
+    for (const [key, src] of Object.entries(incoming)) {
+      if (qcProbeForm.sources[key]) continue;
+      qcProbeForm.sources[key] = {
+        enabled: !!src.enabled,
+        origins: Array.isArray(src.origins) ? src.origins : [],
+        user_agents: Array.isArray(src.user_agents) ? src.user_agents : [],
+      };
+    }
+    qcProbeAccountIdsText.value = qcProbeForm.account_ids.join(", ");
+    qcProbeUserAgentsText.value = qcProbeForm.user_agent_substrings.join("\n");
+  } catch (_error: unknown) {
+    // Silent fail - settings will use defaults
+  } finally {
+    qcProbeLoading.value = false;
+  }
+}
+
+async function saveQCProbeSettings() {
+  qcProbeSaving.value = true;
+  try {
+    const updated = await adminAPI.settings.updateQCProbeRoutingSettings({
+      enabled: qcProbeForm.enabled,
+      fallback: qcProbeForm.fallback,
+      account_ids: parseAccountIDsText(qcProbeAccountIdsText.value),
+      sources: qcProbeForm.sources,
+      user_agent_substrings: splitLines(qcProbeUserAgentsText.value),
+      apply_platforms: qcProbeForm.apply_platforms,
+    });
+    qcProbeForm.enabled = !!updated.enabled;
+    qcProbeForm.fallback =
+      updated.fallback === "reject" ? "reject" : "normal";
+    qcProbeForm.account_ids = Array.isArray(updated.account_ids)
+      ? updated.account_ids
+      : [];
+    qcProbeForm.user_agent_substrings = Array.isArray(
+      updated.user_agent_substrings,
+    )
+      ? updated.user_agent_substrings
+      : [];
+    qcProbeForm.apply_platforms = Array.isArray(updated.apply_platforms)
+      ? updated.apply_platforms
+      : [];
+    qcProbeForm.sources = updated.sources || {};
+    qcProbeAccountIdsText.value = qcProbeForm.account_ids.join(", ");
+    qcProbeUserAgentsText.value = qcProbeForm.user_agent_substrings.join("\n");
+    appStore.showSuccess(t("admin.settings.qcProbeRouting.saved"));
+  } catch (error: unknown) {
+    appStore.showError(
+      extractApiErrorMessage(
+        error,
+        t("admin.settings.qcProbeRouting.saveFailed"),
+      ),
+    );
+  } finally {
+    qcProbeSaving.value = false;
+  }
+}
+
 const betaPolicyActionOptions = computed(() => [
   { value: "pass", label: t("admin.settings.betaPolicy.actionPass") },
   { value: "filter", label: t("admin.settings.betaPolicy.actionFilter") },
@@ -11489,6 +11843,7 @@ onMounted(() => {
   loadRateLimit429CooldownSettings();
   loadStreamTimeoutSettings();
   loadRectifierSettings();
+  loadQCProbeSettings();
   loadBetaPolicySettings();
   loadProviders();
 });

@@ -548,6 +548,9 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		// 请求整流器配置
 		adminSettings.GET("/rectifier", h.Admin.Setting.GetRectifierSettings)
 		adminSettings.PUT("/rectifier", h.Admin.Setting.UpdateRectifierSettings)
+		// QC 质检流量账号路由
+		adminSettings.GET("/qc-probe-routing", h.Admin.Setting.GetQCProbeRoutingSettings)
+		adminSettings.PUT("/qc-probe-routing", h.Admin.Setting.UpdateQCProbeRoutingSettings)
 		// Beta 策略配置
 		adminSettings.GET("/beta-policy", h.Admin.Setting.GetBetaPolicySettings)
 		adminSettings.PUT("/beta-policy", h.Admin.Setting.UpdateBetaPolicySettings)

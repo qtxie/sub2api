@@ -1020,6 +1020,29 @@ export default {
         saved: 'Rectifier settings saved',
         saveFailed: 'Failed to save rectifier settings'
       },
+      qcProbeRouting: {
+        title: 'QC Probe Account Routing',
+        description:
+          'When traffic comes from AI relay QC sites (Ztest, TokensQC, Hvoy, API Ranking, etc.), route it to a predefined account pool.',
+        enabled: 'Enable QC Probe Routing',
+        enabledHint: 'Detect Origin/Referer/User-Agent from known QC sites and restrict account selection',
+        fallback: 'Empty Pool Fallback',
+        fallbackNormal: 'Fall back to normal scheduling',
+        fallbackReject: 'Reject request (no available accounts)',
+        fallbackHint: 'Behavior when the QC account pool is empty or no eligible account remains',
+        accountIds: 'QC Account IDs',
+        accountIdsHint: 'Comma-separated account IDs used only for detected QC probe traffic',
+        accountIdsPlaceholder: 'e.g. 12, 34, 56',
+        userAgentSubstrings: 'Global User-Agent Substrings',
+        userAgentSubstringsHint: 'Optional extra UA markers (one per line) treated as QC probes',
+        userAgentPlaceholder: 'e.g. GreenLight-QC',
+        sources: 'QC Sources',
+        sourceEnabled: 'Enabled',
+        origins: 'Origins',
+        originsHint: 'One origin/host per line (exact host match)',
+        saved: 'QC probe routing settings saved',
+        saveFailed: 'Failed to save QC probe routing settings'
+      },
       betaPolicy: {
         title: 'Beta Policy',
         description: 'How to handle Beta features when configuring the forwarding of Anthropic API requests. Applicable only to the /v1/messages endpoint.',

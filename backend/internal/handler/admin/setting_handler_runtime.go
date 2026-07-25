@@ -172,6 +172,104 @@ func (h *SettingHandler) GetStreamTimeoutSettings(c *gin.Context) {
 	})
 }
 
+// GetQCProbeRoutingSettings 获取 QC 质检流量账号路由配置
+// GET /api/v1/admin/settings/qc-probe-routing
+func (h *SettingHandler) GetQCProbeRoutingSettings(c *gin.Context) {
+	settings := h.settingService.GetQCProbeRoutingSettings(c.Request.Context())
+	response.Success(c, toQCProbeRoutingDTO(settings))
+}
+
+// UpdateQCProbeRoutingSettingsRequest 更新 QC 质检流量账号路由配置
+type UpdateQCProbeRoutingSettingsRequest struct {
+	Enabled             bool                                      `json:"enabled"`
+	Fallback            string                                    `json:"fallback"`
+	AccountIDs          []int64                                   `json:"account_ids"`
+	Sources             map[string]dto.QCProbeSourceConfig        `json:"sources"`
+	UserAgentSubstrings []string                                  `json:"user_agent_substrings"`
+	ApplyPlatforms      []string                                  `json:"apply_platforms"`
+}
+
+// UpdateQCProbeRoutingSettings 更新 QC 质检流量账号路由配置
+// PUT /api/v1/admin/settings/qc-probe-routing
+func (h *SettingHandler) UpdateQCProbeRoutingSettings(c *gin.Context) {
+	var req UpdateQCProbeRoutingSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if len(req.AccountIDs) > 500 {
+		response.BadRequest(c, "Too many account_ids (max 500)")
+		return
+	}
+
+	sources := make(map[string]service.QCProbeSourceConfig, len(req.Sources))
+	for key, src := range req.Sources {
+		sources[key] = service.QCProbeSourceConfig{
+			Enabled:    src.Enabled,
+			Origins:    src.Origins,
+			UserAgents: src.UserAgents,
+		}
+	}
+
+	settings := &service.QCProbeRoutingSettings{
+		Enabled:             req.Enabled,
+		Fallback:            req.Fallback,
+		AccountIDs:          req.AccountIDs,
+		Sources:             sources,
+		UserAgentSubstrings: req.UserAgentSubstrings,
+		ApplyPlatforms:      req.ApplyPlatforms,
+	}
+	if err := h.settingService.SetQCProbeRoutingSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	updated := h.settingService.GetQCProbeRoutingSettings(c.Request.Context())
+	response.Success(c, toQCProbeRoutingDTO(updated))
+}
+
+func toQCProbeRoutingDTO(settings *service.QCProbeRoutingSettings) dto.QCProbeRoutingSettings {
+	if settings == nil {
+		settings = service.DefaultQCProbeRoutingSettings()
+	}
+	sources := make(map[string]dto.QCProbeSourceConfig, len(settings.Sources))
+	for key, src := range settings.Sources {
+		origins := src.Origins
+		if origins == nil {
+			origins = []string{}
+		}
+		userAgents := src.UserAgents
+		if userAgents == nil {
+			userAgents = []string{}
+		}
+		sources[key] = dto.QCProbeSourceConfig{
+			Enabled:    src.Enabled,
+			Origins:    origins,
+			UserAgents: userAgents,
+		}
+	}
+	accountIDs := settings.AccountIDs
+	if accountIDs == nil {
+		accountIDs = []int64{}
+	}
+	uaSubs := settings.UserAgentSubstrings
+	if uaSubs == nil {
+		uaSubs = []string{}
+	}
+	platforms := settings.ApplyPlatforms
+	if platforms == nil {
+		platforms = []string{}
+	}
+	return dto.QCProbeRoutingSettings{
+		Enabled:             settings.Enabled,
+		Fallback:            settings.Fallback,
+		AccountIDs:          accountIDs,
+		Sources:             sources,
+		UserAgentSubstrings: uaSubs,
+		ApplyPlatforms:      platforms,
+	}
+}
+
 // GetRectifierSettings 获取请求整流器配置
 // GET /api/v1/admin/settings/rectifier
 func (h *SettingHandler) GetRectifierSettings(c *gin.Context) {

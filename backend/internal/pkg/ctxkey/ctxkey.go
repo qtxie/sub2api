@@ -44,6 +44,15 @@ const (
 	// IsClaudeCodeClient 标识当前请求是否来自 Claude Code 客户端
 	IsClaudeCodeClient Key = "ctx_is_claude_code_client"
 
+	// IsQCProbeClient 标识当前请求是否来自 AI 中转站质检/验真站点
+	IsQCProbeClient Key = "ctx_is_qc_probe_client"
+
+	// QCProbeSource 标识命中的质检站点来源（如 tokensqc、ztest）
+	QCProbeSource Key = "ctx_qc_probe_source"
+
+	// QCProbeSelection 存放质检流量账号池选择策略快照
+	QCProbeSelection Key = "ctx_qc_probe_selection"
+
 	// ThinkingEnabled 标识当前请求是否开启 thinking（用于 Antigravity 最终模型名推导与模型维度限流）
 	ThinkingEnabled Key = "ctx_thinking_enabled"
 
