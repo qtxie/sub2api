@@ -486,6 +486,14 @@ func (s *OpenAIGatewayService) resolveAccountByPreviousResponseIDForCapability(
 	if isAccountExcludedByUpstreamBaseURL(account, openAIExcludedUpstreamBaseURLsFromContext(ctx)) {
 		return 0, nil, "", nil
 	}
+	// QC probe traffic must not pin to accounts outside the configured pool.
+	qcPlatform := PlatformOpenAI
+	if account.Platform != "" {
+		qcPlatform = account.Platform
+	}
+	if !IsAccountAllowedByQCProbe(ctx, qcPlatform, accountID) {
+		return 0, nil, "", nil
+	}
 	// 非 WSv2 场景（如 force_http/全局关闭）不应使用 previous_response_id 粘连，
 	// 以保持“回滚到 HTTP”后的历史行为一致性。
 	if s.getOpenAIWSProtocolResolver().Resolve(account).Transport != OpenAIUpstreamTransportResponsesWebsocketV2 {

@@ -12,7 +12,6 @@ import (
 func QCProbeRouting(settingService *service.SettingService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c == nil || c.Request == nil {
-			c.Next()
 			return
 		}
 

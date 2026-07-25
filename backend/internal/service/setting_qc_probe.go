@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -59,7 +60,9 @@ func (s *SettingService) GetQCProbeRoutingSettings(ctx context.Context) *QCProbe
 		settings := DefaultQCProbeRoutingSettings()
 		if value != "" {
 			var parsed QCProbeRoutingSettings
-			if err := json.Unmarshal([]byte(value), &parsed); err == nil {
+			if err := json.Unmarshal([]byte(value), &parsed); err != nil {
+				slog.Warn("qc_probe.routing_settings_unmarshal_failed", "error", err)
+			} else {
 				settings = NormalizeQCProbeRoutingSettings(&parsed)
 			}
 		}

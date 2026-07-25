@@ -111,19 +111,25 @@ func NormalizeQCProbeRoutingSettings(settings *QCProbeRoutingSettings) *QCProbeR
 		out.AccountIDs = append(out.AccountIDs, id)
 	}
 
+	// Merge operator-provided sources onto defaults so partial updates cannot wipe
+	// built-in QC site definitions.
 	if settings.Sources != nil {
-		out.Sources = make(map[string]QCProbeSourceConfig, len(settings.Sources))
+		merged := make(map[string]QCProbeSourceConfig, len(out.Sources)+len(settings.Sources))
+		for key, src := range out.Sources {
+			merged[key] = src
+		}
 		for key, src := range settings.Sources {
 			name := strings.ToLower(strings.TrimSpace(key))
 			if name == "" {
 				continue
 			}
-			out.Sources[name] = QCProbeSourceConfig{
+			merged[name] = QCProbeSourceConfig{
 				Enabled:    src.Enabled,
 				Origins:    normalizeQCProbeStringList(src.Origins, 32),
 				UserAgents: normalizeQCProbeStringList(src.UserAgents, 32),
 			}
 		}
+		out.Sources = merged
 	}
 
 	out.UserAgentSubstrings = normalizeQCProbeStringList(settings.UserAgentSubstrings, 64)
@@ -439,6 +445,10 @@ func FilterAccountsForQCProbe(ctx context.Context, platform string, accounts []A
 }
 
 // RestrictAccountIDsForQCProbe intersects routing/sticky candidate IDs with the QC pool.
+// Fallback semantics match FilterAccountsForQCProbe:
+//   - no shortlist: force QC pool
+//   - empty intersection + normal: keep original ids
+//   - empty intersection + reject: return empty shortlist
 func RestrictAccountIDsForQCProbe(ctx context.Context, platform string, ids []int64) []int64 {
 	selection, ok := QCProbeSelectionFromContext(ctx)
 	if !ok || !selection.Active || !selection.appliesToPlatform(platform) || !selection.hasAccountPool() {
@@ -456,7 +466,14 @@ func RestrictAccountIDsForQCProbe(ctx context.Context, platform string, ids []in
 			out = append(out, id)
 		}
 	}
-	return out
+	if len(out) > 0 {
+		return out
+	}
+	if selection.Fallback == QCProbeFallbackReject {
+		return out
+	}
+	// fallback normal: preserve original shortlist (caller may still filter accounts)
+	return ids
 }
 
 // IsAccountAllowedByQCProbe reports whether sticky/direct account id may be used.

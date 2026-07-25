@@ -1792,9 +1792,10 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
-					account, err := s.getSchedulableAccount(ctx, accountID)
-					// 检查账号分组归属和平台匹配（确保粘性会话不会跨分组或跨平台）
-					if err == nil {
+					if !IsAccountAllowedByQCProbe(ctx, platform, accountID) {
+						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+					} else if account, err := s.getSchedulableAccount(ctx, accountID); err == nil {
+						// 检查账号分组归属和平台匹配（确保粘性会话不会跨分组或跨平台）
 						clearSticky := shouldClearStickySession(account, requestedModel)
 						if clearSticky {
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
@@ -1911,9 +1912,10 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
-				account, err := s.getSchedulableAccount(ctx, accountID)
-				// 检查账号分组归属和平台匹配（确保粘性会话不会跨分组或跨平台）
-				if err == nil {
+				if !IsAccountAllowedByQCProbe(ctx, platform, accountID) {
+					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+				} else if account, err := s.getSchedulableAccount(ctx, accountID); err == nil {
+					// 检查账号分组归属和平台匹配（确保粘性会话不会跨分组或跨平台）
 					clearSticky := shouldClearStickySession(account, requestedModel)
 					if clearSticky {
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
@@ -2050,9 +2052,10 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 			if err == nil && accountID > 0 && containsInt64(routingAccountIDs, accountID) {
 				if _, excluded := excludedIDs[accountID]; !excluded {
-					account, err := s.getSchedulableAccount(ctx, accountID)
-					// 检查账号分组归属和有效性：原生平台直接匹配，antigravity 需要启用混合调度
-					if err == nil {
+					if !IsAccountAllowedByQCProbe(ctx, nativePlatform, accountID) {
+						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+					} else if account, err := s.getSchedulableAccount(ctx, accountID); err == nil {
+						// 检查账号分组归属和有效性：原生平台直接匹配，antigravity 需要启用混合调度
 						clearSticky := shouldClearStickySession(account, requestedModel)
 						if clearSticky {
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
@@ -2171,9 +2174,10 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 		accountID, err := s.cache.GetSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 		if err == nil && accountID > 0 {
 			if _, excluded := excludedIDs[accountID]; !excluded {
-				account, err := s.getSchedulableAccount(ctx, accountID)
-				// 检查账号分组归属和有效性：原生平台直接匹配，antigravity 需要启用混合调度
-				if err == nil {
+				if !IsAccountAllowedByQCProbe(ctx, nativePlatform, accountID) {
+					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
+				} else if account, err := s.getSchedulableAccount(ctx, accountID); err == nil {
+					// 检查账号分组归属和有效性：原生平台直接匹配，antigravity 需要启用混合调度
 					clearSticky := shouldClearStickySession(account, requestedModel)
 					if clearSticky {
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)

@@ -705,6 +705,10 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 	if isAccountExcludedByUpstreamBaseURL(account, openAIExcludedUpstreamBaseURLsFromContext(ctx)) {
 		return nil
 	}
+	if !IsAccountAllowedByQCProbe(ctx, platform, accountID) {
+		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+		return nil
+	}
 
 	// 检查账号是否需要清理粘性会话
 	// Check if sticky session should be cleared
@@ -918,8 +922,9 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	if sessionHash != "" {
 		accountID := stickyAccountID
 		if accountID > 0 && !isExcluded(accountID) {
-			account, err := s.getSchedulableAccount(ctx, accountID)
-			if err == nil {
+			if !IsAccountAllowedByQCProbe(ctx, platform, accountID) {
+				_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
+			} else if account, err := s.getSchedulableAccount(ctx, accountID); err == nil {
 				clearSticky := shouldClearStickySession(account, requestedModel)
 				if clearSticky {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
