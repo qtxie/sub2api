@@ -19,8 +19,9 @@ func TestTelegramNotificationOutboxRepositoryEnqueueUsesAtomicDedupeUpsert(t *te
 	defer func() { _ = db.Close() }()
 
 	availableAt := time.Now().UTC().Add(5 * time.Second)
+	occurredAt := time.Date(2026, time.July, 25, 9, 42, 46, 0, time.UTC)
 	mock.ExpectExec("INSERT INTO telegram_notification_outbox").
-		WithArgs(strings.Repeat("a", 64), int64(42), "error", sqlmock.AnyArg(), availableAt).
+		WithArgs(strings.Repeat("a", 64), int64(42), "error", sqlmock.AnyArg(), availableAt, occurredAt).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	repo := NewTelegramNotificationOutboxRepository(db)
@@ -28,7 +29,7 @@ func TestTelegramNotificationOutboxRepositoryEnqueueUsesAtomicDedupeUpsert(t *te
 		Type:       service.GatewayNotificationEventError,
 		Platform:   "openai",
 		AccountID:  9,
-		OccurredAt: time.Now().UTC(),
+		OccurredAt: occurredAt,
 	}, strings.Repeat("a", 64), 42, availableAt)
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())

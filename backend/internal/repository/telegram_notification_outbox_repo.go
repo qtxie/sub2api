@@ -32,15 +32,20 @@ func (r *telegramNotificationOutboxRepository) Enqueue(ctx context.Context, even
 	if availableAt.IsZero() {
 		availableAt = time.Now().UTC()
 	}
+	// last_occurred_at must track the gateway error time, not DB insert/delivery time.
+	occurredAt := event.OccurredAt.UTC()
+	if occurredAt.IsZero() {
+		occurredAt = time.Now().UTC()
+	}
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO telegram_notification_outbox
-			(dedupe_key, dedupe_bucket, event_type, payload, available_at)
-		VALUES ($1, $2, $3, $4, $5)
+			(dedupe_key, dedupe_bucket, event_type, payload, available_at, last_occurred_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (dedupe_key, dedupe_bucket) DO UPDATE
 		SET occurrence_count = telegram_notification_outbox.occurrence_count + 1,
-			last_occurred_at = NOW(),
+			last_occurred_at = GREATEST(telegram_notification_outbox.last_occurred_at, EXCLUDED.last_occurred_at),
 			payload = EXCLUDED.payload
-	`, dedupeKey, dedupeBucket, string(event.Type), payload, availableAt.UTC())
+	`, dedupeKey, dedupeBucket, string(event.Type), payload, availableAt.UTC(), occurredAt)
 	if err != nil {
 		return fmt.Errorf("enqueue telegram notification: %w", err)
 	}

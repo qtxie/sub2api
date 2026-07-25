@@ -663,10 +663,13 @@ func telegramDetailedEntityLabel(name string, id int64) string {
 }
 
 func telegramNotificationOccurredAt(event TelegramNotificationOutboxEvent) time.Time {
-	if !event.LastOccurredAt.IsZero() {
-		return event.LastOccurredAt
+	// Prefer the gateway error timestamp from the event payload. The outbox
+	// last_occurred_at column is a fallback for older rows or incomplete payloads,
+	// and must not be confused with claim/delivery (message emit) time.
+	if !event.Event.OccurredAt.IsZero() {
+		return event.Event.OccurredAt
 	}
-	return event.Event.OccurredAt
+	return event.LastOccurredAt
 }
 
 func telegramAccountLabel(name string, id int64, fallbackName string, fallbackID int64) string {

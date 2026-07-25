@@ -365,3 +365,26 @@ func TestFormatTelegramGatewayNotificationUsesLocalTime(t *testing.T) {
 		t.Fatalf("message = %q, want Asia/Shanghai timestamp", message)
 	}
 }
+
+func TestFormatTelegramGatewayNotificationPrefersErrorOccurredAtOverOutboxEmitTime(t *testing.T) {
+	errorAt := time.Date(2026, time.July, 25, 9, 42, 46, 0, time.UTC)
+	emitAt := time.Date(2026, time.July, 25, 9, 42, 51, 0, time.UTC) // batching/delivery lag
+	message := formatTelegramGatewayNotificationInLocation(TelegramNotificationOutboxEvent{
+		Event: GatewayNotificationEvent{
+			Type:       GatewayNotificationEventError,
+			Platform:   "openai",
+			StatusCode: 502,
+			Reason:     "upstream connection reset",
+			OccurredAt: errorAt,
+		},
+		LastOccurredAt:  emitAt,
+		OccurrenceCount: 2,
+	}, time.UTC)
+
+	if !strings.Contains(message, "Last seen: 2026-07-25T09:42:46Z") {
+		t.Fatalf("message = %q, want error occurred_at, not outbox emit time", message)
+	}
+	if strings.Contains(message, "Last seen: 2026-07-25T09:42:51Z") {
+		t.Fatalf("message = %q, must not use outbox/message emit time", message)
+	}
+}
