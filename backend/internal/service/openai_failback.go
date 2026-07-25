@@ -23,6 +23,10 @@ const (
 	openAIFailbackStateTTL       = 7 * 24 * time.Hour
 	openAIFailbackStoreTimeout   = 2 * time.Second
 	openAIFailbackCASAttempts    = 5
+	// After cooldown ends, require a probe for this long. If no probe runs at all
+	// (success or failure), clear the failback state so the account is not stuck
+	// forever. A failed probe rewrites CooldownUntil and continues cooldown.
+	openAIFailbackProbePendingExpiry = 5 * time.Minute
 )
 
 type openAIFailbackAction int
@@ -369,9 +373,21 @@ func (c *openAIFailbackController) selectionActionWithRetryAt(ctx context.Contex
 	if !found {
 		return openAIFailbackAllow, time.Time{}
 	}
+	return c.selectionActionForState(ctx, key, accountID, model, state, true)
+}
+
+func (c *openAIFailbackController) selectionActionForState(
+	ctx context.Context,
+	key string,
+	accountID int64,
+	model string,
+	state openAIFailbackState,
+	allowProbePendingClear bool,
+) (openAIFailbackAction, time.Time) {
 	switch state.Phase {
 	case openAIFailbackPhaseCooldown:
-		if c.now().UnixMilli() < state.CooldownUntilUnixMilli {
+		nowMs := c.now().UnixMilli()
+		if nowMs < state.CooldownUntilUnixMilli {
 			c.metrics.blocked.Add(1)
 			return openAIFailbackBlock, time.UnixMilli(state.CooldownUntilUnixMilli)
 		}
@@ -379,12 +395,59 @@ func (c *openAIFailbackController) selectionActionWithRetryAt(ctx context.Contex
 		// be selected again (switch-back to higher priority). Failover to a lower-
 		// priority Allow account does not probe — the scheduler queues this probe
 		// in the background and continues.
+		//
+		// If no probe happens at all within the pending window, clear the state so
+		// the account is not blocked forever. A probe that runs and fails rewrites
+		// CooldownUntil into a new cooldown and is not cleared here.
+		if allowProbePendingClear &&
+			nowMs >= state.CooldownUntilUnixMilli+openAIFailbackProbePendingExpiry.Milliseconds() {
+			if c.clearExpiredProbePendingState(ctx, key, state.CooldownUntilUnixMilli) {
+				slog.Info("openai_failback_probe_pending_expired",
+					"account_id", accountID,
+					"model", model,
+					"cooldown_until_unix_ms", state.CooldownUntilUnixMilli,
+					"probe_pending_expiry_seconds", int64(openAIFailbackProbePendingExpiry/time.Second),
+				)
+				return openAIFailbackAllow, time.Time{}
+			}
+			// Concurrent probe/mutation won the CAS. Re-read once; do not clear again
+			// in this call to avoid loops if the same expired entry is still visible.
+			latest, found := c.readState(ctx, key)
+			if !found {
+				return openAIFailbackAllow, time.Time{}
+			}
+			return c.selectionActionForState(ctx, key, accountID, model, latest, false)
+		}
 		return openAIFailbackProbe, time.Time{}
 	case openAIFailbackPhaseProbation:
 		return openAIFailbackAllow, time.Time{}
 	default:
 		return openAIFailbackAllow, time.Time{}
 	}
+}
+
+// clearExpiredProbePendingState deletes a post-cooldown probe-pending entry only
+// when no probe has rewritten CooldownUntil and the pending window has elapsed.
+// Returns true when the state was cleared (or is already gone).
+func (c *openAIFailbackController) clearExpiredProbePendingState(ctx context.Context, key string, expectedCooldownUntil int64) bool {
+	if c == nil || key == "" {
+		return true
+	}
+	_, found := c.mutateState(ctx, key, func(current openAIFailbackState, exists bool) (openAIFailbackState, bool) {
+		if !exists {
+			return openAIFailbackState{}, false
+		}
+		if current.Phase != openAIFailbackPhaseCooldown || current.CooldownUntilUnixMilli != expectedCooldownUntil {
+			// A concurrent probe failure/success changed the state; leave it alone.
+			return current, true
+		}
+		nowMs := c.now().UnixMilli()
+		if nowMs < current.CooldownUntilUnixMilli+openAIFailbackProbePendingExpiry.Milliseconds() {
+			return current, true
+		}
+		return openAIFailbackState{}, false
+	})
+	return !found
 }
 
 func (c *openAIFailbackController) recordProductionResult(

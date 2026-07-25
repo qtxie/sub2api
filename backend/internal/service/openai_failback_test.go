@@ -431,6 +431,49 @@ func TestOpenAIFailbackSelectionFirstFailedProbeRepeatsCooldown(t *testing.T) {
 	require.Equal(t, openAIFailbackBlock, controller.selectionAction(context.Background(), 51, "gpt-5-mini"))
 }
 
+func TestOpenAIFailbackProbePendingExpiresOnlyWhenNoProbeHappens(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	controller.now = func() time.Time { return now }
+
+	controller.recordProductionResult(ctx, 61, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(ctx, 61, "gpt-5-mini"))
+
+	// Still inside the post-cooldown probe-pending window: keep requiring a probe.
+	now = now.Add(openAIFailbackProbePendingExpiry - time.Second)
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(ctx, 61, "gpt-5-mini"))
+	requireOpenAIFailbackState(t, controller, 61, "gpt-5-mini")
+
+	// No probe ran before the window elapsed: clear the stuck failback state.
+	now = now.Add(2 * time.Second)
+	require.Equal(t, openAIFailbackAllow, controller.selectionAction(ctx, 61, "gpt-5-mini"))
+	key, ok := openAIFailbackStateKey(61, "gpt-5-mini")
+	require.True(t, ok)
+	_, found := controller.readState(ctx, key)
+	require.False(t, found)
+
+	// A probe that actually fails must continue cooldown, not clear the state.
+	controller.recordProductionResult(ctx, 62, "gpt-5-mini", false, nil)
+	now = now.Add(2 * time.Minute)
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(ctx, 62, "gpt-5-mini"))
+	controller.recordProbeFailure(ctx, 62, "gpt-5-mini", "probe_error")
+	state := requireOpenAIFailbackState(t, controller, 62, "gpt-5-mini")
+	require.Equal(t, openAIFailbackPhaseCooldown, state.Phase)
+	require.Equal(t, openAIFailbackBlock, controller.selectionAction(ctx, 62, "gpt-5-mini"))
+
+	// Still inside the rewritten cooldown: remains blocked.
+	now = now.Add(time.Minute)
+	require.Equal(t, openAIFailbackBlock, controller.selectionAction(ctx, 62, "gpt-5-mini"))
+	requireOpenAIFailbackState(t, controller, 62, "gpt-5-mini")
+
+	// After the rewritten cooldown ends, keep requiring a probe (failed probe did not clear).
+	now = now.Add(2 * time.Minute)
+	require.Equal(t, openAIFailbackProbe, controller.selectionAction(ctx, 62, "gpt-5-mini"))
+	requireOpenAIFailbackState(t, controller, 62, "gpt-5-mini")
+}
+
 func TestDecodeOpenAIFailbackStateAcceptsLegacyStateWithoutProbeFailureCounter(t *testing.T) {
 	state, ok := decodeOpenAIFailbackState(`{
 		"phase":"cooldown",
