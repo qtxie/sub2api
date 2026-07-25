@@ -297,7 +297,7 @@ func (s *OpenAIGatewayService) forwardAsChatCompletionsOnce(
 			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(resp.StatusCode, respBody) {
 				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 			}
-			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
+			return nil, newOpenAISameAccountModelFallbackError(resp.StatusCode, resp.Header, respBody)
 		}
 		if !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 			expectedTaskID := account.GetCredential("task_id")

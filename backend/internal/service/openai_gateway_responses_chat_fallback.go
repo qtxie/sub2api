@@ -109,7 +109,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(resp.StatusCode, respBody) {
 				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 			}
-			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
+			return nil, newOpenAISameAccountModelFallbackError(resp.StatusCode, resp.Header, respBody)
 		}
 		if foErr := s.failoverOpenAIUpstreamHTTPError(ctx, c, account, resp, respBody, upstreamMsg, upstreamModel); foErr != nil {
 			return nil, foErr

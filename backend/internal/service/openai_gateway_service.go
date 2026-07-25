@@ -418,6 +418,7 @@ type OpenAIGatewayService struct {
 	openaiWSStateStoreOnce        sync.Once
 	openaiSchedulerOnce           sync.Once
 	openaiFailbackOnce            sync.Once
+	openaiSoftMapStickyOnce       sync.Once
 	openaiProxyStreamCircuitOnce  sync.Once
 	openaiWSPassthroughDialerOnce sync.Once
 	openaiModelTransientOnce      sync.Once
@@ -426,6 +427,7 @@ type OpenAIGatewayService struct {
 	openaiWSStateStore            OpenAIWSStateStore
 	openaiScheduler               OpenAIAccountScheduler
 	openaiFailback                *openAIFailbackController
+	openaiSoftMapSticky           *openAISoftMapStickyController
 	openaiWSPassthroughDialer     openAIWSClientDialer
 	openaiAccountStats            *openAIAccountRuntimeStats
 	openaiModelTransient          *openAIAccountModelTransientState
@@ -634,6 +636,9 @@ func (s *OpenAIGatewayService) CloseOpenAIWSPool() {
 	}
 	if controller := s.getOpenAIFailbackController(); controller != nil {
 		controller.stopBackgroundProbes()
+	}
+	if s.openaiSoftMapSticky != nil {
+		s.openaiSoftMapSticky.stopBackgroundProbes()
 	}
 }
 

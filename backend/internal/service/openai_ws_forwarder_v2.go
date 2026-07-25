@@ -206,7 +206,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(modelDialErr.StatusCode, modelDialErr.ResponseBody) {
 				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody, originalModel)
 			}
-			return nil, newModelUnavailableFailoverError(modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody)
+			return nil, newOpenAISameAccountModelFallbackError(modelDialErr.StatusCode, modelDialErr.ResponseHeaders, modelDialErr.ResponseBody)
 		}
 		s.handleOpenAIWSDialTransientFailure(ctx, account, mappedModel, err)
 		dialStatus, dialClass, dialCloseStatus, dialCloseReason, dialRespServer, dialRespVia, dialRespCFRay, dialRespReqID := summarizeOpenAIWSDialError(err)
@@ -577,7 +577,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 					s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, http.StatusBadRequest, lease.HandshakeHeaders(), message, originalModel)
 				}
 				lease.MarkBroken()
-				return nil, newModelUnavailableFailoverError(http.StatusBadRequest, lease.HandshakeHeaders(), message)
+				return nil, newOpenAISameAccountModelFallbackError(http.StatusBadRequest, lease.HandshakeHeaders(), message)
 			}
 			if hit, code, msg := detectOpenAICyberPolicy(message); hit {
 				MarkOpsCyberPolicy(c, CyberPolicyMark{
@@ -599,7 +599,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 					s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, statusCode, lease.HandshakeHeaders(), message, originalModel)
 				}
 				lease.MarkBroken()
-				return nil, newModelUnavailableFailoverError(statusCode, lease.HandshakeHeaders(), message)
+				return nil, newOpenAISameAccountModelFallbackError(statusCode, lease.HandshakeHeaders(), message)
 			}
 			s.handleOpenAIWSErrorEventTransientFailure(ctx, account, mappedModel, lease.HandshakeHeaders(), message)
 			s.persistOpenAIWSRateLimitSignal(ctx, account, lease.HandshakeHeaders(), message, errCodeRaw, errTypeRaw, errMsgRaw)

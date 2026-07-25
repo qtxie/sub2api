@@ -243,22 +243,22 @@ func TestOpenAISameAccountModelFallbackContinuesAfterSyntheticGatewayFailure(t *
 	}
 }
 
-func TestOpenAISameAccountModelFallbackDoesNotRetryRateLimit(t *testing.T) {
+func TestOpenAISameAccountModelFallbackDoesNotRetryRateLimitWithoutSoftMap(t *testing.T) {
 	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
 		SettingKeyEnableModelFallback:  "true",
 		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
 	}}, nil)
 	service := &OpenAIGatewayService{settingService: settings}
 	wantErr := &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
-	attempts := 0
+	var attempts []string
 
 	_, err := service.forwardWithSameAccountModelFallback(
 		context.Background(),
 		&gin.Context{},
 		&Account{ID: 42, Platform: PlatformOpenAI},
 		[]byte(`{"model":"model-a"}`),
-		func([]byte) (*OpenAIForwardResult, error) {
-			attempts++
+		func(attemptBody []byte) (*OpenAIForwardResult, error) {
+			attempts = append(attempts, gjson.GetBytes(attemptBody, "model").String())
 			return nil, wantErr
 		},
 	)
@@ -266,8 +266,44 @@ func TestOpenAISameAccountModelFallbackDoesNotRetryRateLimit(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want %v", err, wantErr)
 	}
-	if attempts != 1 {
-		t.Fatalf("attempts = %d, want 1", attempts)
+	if want := []string{"model-a"}; !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want single primary attempt %v", attempts, want)
+	}
+}
+
+func TestOpenAISameAccountModelFallbackRetriesRateLimitWithSoftMap(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback: "false",
+	}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"soft_model_mapping": map[string]any{
+				"model-a": "model-b",
+			},
+		},
+	}
+	wantErr := &UpstreamFailoverError{StatusCode: http.StatusTooManyRequests}
+	var attempts []string
+
+	_, err := service.forwardWithSameAccountModelFallback(
+		context.Background(),
+		&gin.Context{},
+		account,
+		[]byte(`{"model":"model-a"}`),
+		func(attemptBody []byte) (*OpenAIForwardResult, error) {
+			attempts = append(attempts, gjson.GetBytes(attemptBody, "model").String())
+			return nil, wantErr
+		},
+	)
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if want := []string{"model-a", "model-b"}; !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want soft-map retry %v", attempts, want)
 	}
 }
 
@@ -443,11 +479,24 @@ func TestShouldTriggerOpenAISameAccountModelFallback(t *testing.T) {
 			t.Errorf("status %d should trigger OpenAI same-account model fallback", statusCode)
 		}
 	}
+	if shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, account, "model-a", http.StatusTooManyRequests, nil) {
+		t.Error("429 without soft mapping must not trigger same-account model fallback")
+	}
 	if shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, account, "model-a", http.StatusInternalServerError, nil) {
 		t.Error("status 500 should not trigger OpenAI same-account model fallback")
 	}
 	if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, account, "model-a", http.StatusNotFound, []byte(`{"error":{"message":"model not found"}}`)) {
 		t.Error("deterministic model-unavailable response should trigger OpenAI same-account model fallback")
+	}
+
+	softAccount := &Account{
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"soft_model_mapping": map[string]any{"model-a": "model-b"},
+		},
+	}
+	if !shouldTriggerOpenAISameAccountModelFallback(context.Background(), settings, softAccount, "model-a", http.StatusTooManyRequests, nil) {
+		t.Error("429 with soft mapping should trigger same-account model fallback")
 	}
 }
 
@@ -618,6 +667,78 @@ func TestOpenAISameAccountGatewayFallbackSuccessDoesNotPenalizeAccount(t *testin
 	}
 	if repo.tempCalls != 0 || repo.modelLimitCalls != 0 {
 		t.Fatalf("successful same-account gateway fallback penalized account (temp=%d model=%d)", repo.tempCalls, repo.modelLimitCalls)
+	}
+}
+
+func TestOpenAISoftMapDeferredModelUnavailableFlushedWhenChainEndsOnGatewayError(t *testing.T) {
+	repo := &gatewayFallbackAccountRepoStub{}
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback: "false",
+	}}, nil)
+	service := &OpenAIGatewayService{
+		settingService:   settings,
+		rateLimitService: &RateLimitService{accountRepo: repo},
+	}
+	account := &Account{
+		ID:          88,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"soft_model_mapping": map[string]any{
+				"gpt-5.5": "gpt-5.4",
+			},
+		},
+	}
+	modelNotFound := []byte(`{"error":{"message":"model not found"}}`)
+
+	_, err := service.forwardWithSameAccountModelFallback(
+		context.Background(),
+		&gin.Context{},
+		account,
+		[]byte(`{"model":"gpt-5.5"}`),
+		func(attemptBody []byte) (*OpenAIForwardResult, error) {
+			model := gjson.GetBytes(attemptBody, "model").String()
+			if model == "gpt-5.5" {
+				statusCode := http.StatusNotFound
+				if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(statusCode, modelNotFound) {
+					service.recordOpenAISameAccountFallbackUpstreamError(
+						context.Background(), account, statusCode, nil, modelNotFound, "gpt-5.5",
+					)
+				}
+				return nil, newOpenAISameAccountModelFallbackError(statusCode, nil, modelNotFound)
+			}
+			return nil, newOpenAISameAccountModelFallbackError(
+				http.StatusServiceUnavailable,
+				nil,
+				[]byte(`{"error":{"message":"service unavailable"}}`),
+			)
+		},
+	)
+	if err == nil {
+		t.Fatal("expected exhausted soft-map chain error")
+	}
+	if repo.modelLimitCalls != 1 {
+		t.Fatalf("modelLimitCalls = %d, want 1 deferred primary model-unavailable flush", repo.modelLimitCalls)
+	}
+}
+
+func TestNewOpenAISameAccountModelFallbackErrorPreservesModelUnavailableReason(t *testing.T) {
+	modelErr := newOpenAISameAccountModelFallbackError(
+		http.StatusNotFound,
+		nil,
+		[]byte(`{"error":{"message":"model not found"}}`),
+	)
+	if modelErr.Reason != GatewayFailureReasonModelUnavailable {
+		t.Fatalf("model unavailable reason = %q", modelErr.Reason)
+	}
+	gatewayErr := newOpenAISameAccountModelFallbackError(http.StatusBadGateway, nil, []byte(`{"error":{"message":"bad gateway"}}`))
+	if gatewayErr.Reason != GatewayFailureReasonSameAccountModelRetry {
+		t.Fatalf("gateway retry reason = %q, want %q", gatewayErr.Reason, GatewayFailureReasonSameAccountModelRetry)
+	}
+	if IsModelUnavailableFailover(gatewayErr) {
+		t.Fatal("gateway same-account retry must not look like model unavailable")
 	}
 }
 

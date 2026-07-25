@@ -925,6 +925,8 @@ type GatewayConfig struct {
 	Live GatewayLiveConfig `mapstructure:"live"`
 	// OpenAIScheduler: OpenAI 高级调度器粘性逃逸配置
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
+	// SoftModelMapping: OpenAI soft-map sticky routing + primary health probes.
+	SoftModelMapping GatewaySoftModelMappingConfig `mapstructure:"soft_model_mapping"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
@@ -1273,6 +1275,32 @@ type GatewayOpenAISchedulerConfig struct {
 	// FailbackMinHealthyRequests is the number of successful production requests
 	// needed before the adaptive cooldown resets. Measured TTFT must remain healthy.
 	FailbackMinHealthyRequests int `mapstructure:"failback_min_healthy_requests"`
+}
+
+// GatewaySoftModelMappingConfig controls OpenAI sticky soft-model mapping.
+// After a soft-mapped fallback succeeds, later requests prefer the mapped model
+// while a background probe checks whether the primary is healthy and fast enough
+// to restore.
+type GatewaySoftModelMappingConfig struct {
+	// StickyEnabled turns on sticky soft-map routing for OpenAI accounts.
+	StickyEnabled bool `mapstructure:"sticky_enabled"`
+	// ProbeEnabled runs background primary probes while sticky.
+	ProbeEnabled bool `mapstructure:"probe_enabled"`
+	// DefaultProbeIntervalSeconds is the first wait between primary probes.
+	DefaultProbeIntervalSeconds int `mapstructure:"default_probe_interval_seconds"`
+	// ProbeIntervalIncrementSeconds is added after failed/slow probes.
+	ProbeIntervalIncrementSeconds int `mapstructure:"probe_interval_increment_seconds"`
+	// ProbeIntervalMaxSeconds caps probe backoff.
+	ProbeIntervalMaxSeconds int `mapstructure:"probe_interval_max_seconds"`
+	// ProbeTimeoutSeconds bounds each primary probe.
+	ProbeTimeoutSeconds int `mapstructure:"probe_timeout_seconds"`
+	// MaxTTFTMs is the maximum healthy probe/production TTFT for restore.
+	MaxTTFTMs int `mapstructure:"max_ttft_ms"`
+	// MinHealthyRequests is the number of healthy primary production successes
+	// required in probation before sticky fully clears.
+	MinHealthyRequests int `mapstructure:"min_healthy_requests"`
+	// ProbationSeconds is the observation window after a successful primary probe.
+	ProbationSeconds int `mapstructure:"probation_seconds"`
 }
 
 // GatewayUsageRecordConfig 使用量记录异步队列配置
@@ -2505,6 +2533,15 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.failback_probe_timeout_seconds", 20)
 	viper.SetDefault("gateway.openai_scheduler.failback_max_ttft_ms", 20000)
 	viper.SetDefault("gateway.openai_scheduler.failback_min_healthy_requests", 3)
+	viper.SetDefault("gateway.soft_model_mapping.sticky_enabled", true)
+	viper.SetDefault("gateway.soft_model_mapping.probe_enabled", true)
+	viper.SetDefault("gateway.soft_model_mapping.default_probe_interval_seconds", 120)
+	viper.SetDefault("gateway.soft_model_mapping.probe_interval_increment_seconds", 180)
+	viper.SetDefault("gateway.soft_model_mapping.probe_interval_max_seconds", 1560)
+	viper.SetDefault("gateway.soft_model_mapping.probe_timeout_seconds", 20)
+	viper.SetDefault("gateway.soft_model_mapping.max_ttft_ms", 20000)
+	viper.SetDefault("gateway.soft_model_mapping.min_healthy_requests", 3)
+	viper.SetDefault("gateway.soft_model_mapping.probation_seconds", 300)
 
 	// server.trusted_proxies and security.forwarded_client_ip_headers are the
 	// other exception: load() distinguishes explicit configuration from absence
@@ -3432,6 +3469,15 @@ func (c *Config) Validate() error {
 			failback.FailbackCooldownMaxSeconds < failback.FailbackDefaultCooldownSeconds || failback.FailbackProbationSeconds <= 0 ||
 			failback.FailbackProbeTimeoutSeconds <= 0 || failback.FailbackMaxTTFTMs <= 0 || failback.FailbackMinHealthyRequests <= 0 {
 			return fmt.Errorf("gateway.openai_scheduler failback durations, probe failure threshold, TTFT, and healthy request count must be positive; max cooldown must be at least the default")
+		}
+	}
+	softMap := c.Gateway.SoftModelMapping
+	if softMap.StickyEnabled {
+		if softMap.DefaultProbeIntervalSeconds <= 0 || softMap.ProbeIntervalIncrementSeconds < 0 ||
+			softMap.ProbeIntervalMaxSeconds < softMap.DefaultProbeIntervalSeconds ||
+			softMap.ProbeTimeoutSeconds <= 0 || softMap.MaxTTFTMs <= 0 ||
+			softMap.MinHealthyRequests <= 0 || softMap.ProbationSeconds <= 0 {
+			return fmt.Errorf("gateway.soft_model_mapping sticky probe intervals, timeout, TTFT, healthy request count, and probation must be positive; max probe interval must be at least the default")
 		}
 	}
 	if c.Gateway.MaxLineSize < 0 {

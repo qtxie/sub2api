@@ -177,7 +177,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(resp.StatusCode, respBody) {
 				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
 			}
-			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, respBody)
+			return nil, newOpenAISameAccountModelFallbackError(resp.StatusCode, resp.Header, respBody)
 		}
 		if account.Platform == PlatformGrok {
 			kind := "http_error"

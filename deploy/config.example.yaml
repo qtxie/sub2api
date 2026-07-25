@@ -426,6 +426,19 @@ gateway:
     failback_probe_timeout_seconds: 20
     failback_max_ttft_ms: 20000
     failback_min_healthy_requests: 3
+  # OpenAI soft model mapping sticky routing (account soft_model_mapping).
+  # After primary fails and a soft target succeeds, later requests prefer the
+  # mapped model while a background probe checks whether primary is healthy+fast.
+  soft_model_mapping:
+    sticky_enabled: true
+    probe_enabled: true
+    default_probe_interval_seconds: 120
+    probe_interval_increment_seconds: 180
+    probe_interval_max_seconds: 1560
+    probe_timeout_seconds: 20
+    max_ttft_ms: 20000
+    min_healthy_requests: 3
+    probation_seconds: 300
   # OpenAI HTTP upstream protocol strategy.
   # OpenAI HTTP 上游协议策略（默认 HTTP/2；代理明确不兼容时可临时回退 HTTP/1.1）。
   openai_http2:

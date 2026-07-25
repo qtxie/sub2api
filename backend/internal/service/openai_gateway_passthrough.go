@@ -252,7 +252,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(resp.StatusCode, probeBody) {
 				s.recordOpenAISameAccountFallbackUpstreamError(ctx, account, resp.StatusCode, resp.Header, probeBody, reqModel)
 			}
-			return nil, newModelUnavailableFailoverError(resp.StatusCode, resp.Header, probeBody)
+			return nil, newOpenAISameAccountModelFallbackError(resp.StatusCode, resp.Header, probeBody)
 		}
 		if !agentTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, probeBody) {
 			agentTaskRecoveryTried = true
