@@ -663,7 +663,13 @@ var grokResponsesSupportedToolTypes = map[string]struct{}{
 
 func sanitizeGrokResponsesTools(body []byte) ([]byte, error) {
 	tools := gjson.GetBytes(body, "tools")
-	if !tools.Exists() || !tools.IsArray() {
+	if !tools.Exists() {
+		if gjson.GetBytes(body, "tool_choice").Exists() {
+			return sjson.DeleteBytes(body, "tool_choice")
+		}
+		return body, nil
+	}
+	if !tools.IsArray() {
 		return body, nil
 	}
 
@@ -1401,9 +1407,11 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Contex
 	case http.StatusTooManyRequests:
 		// A 429 has already installed the fixed one-minute rate-limit window above.
 	case http.StatusBadGateway, http.StatusServiceUnavailable:
-		s.tempUnscheduleGrok(ctx, account, time.Minute, "grok upstream temporary error")
+		if !account.IsPoolMode() {
+			s.tempUnscheduleGrok(ctx, account, time.Minute, "grok upstream temporary error")
+		}
 	default:
-		if statusCode >= 500 {
+		if statusCode >= 500 && !account.IsPoolMode() {
 			s.tempUnscheduleGrok(ctx, account, 2*time.Minute, "grok upstream temporary error")
 		}
 	}

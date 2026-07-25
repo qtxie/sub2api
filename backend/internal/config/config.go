@@ -921,6 +921,8 @@ type GatewayConfig struct {
 	// OpenAIRequestRetry: HTTP Responses requests may remain open and retry transient
 	// upstream failures until a total request budget is exhausted.
 	OpenAIRequestRetry GatewayOpenAIRequestRetryConfig `mapstructure:"openai_request_retry"`
+	// Live: ChatGPT Frameless Live 会话配置。
+	Live GatewayLiveConfig `mapstructure:"live"`
 	// OpenAIScheduler: OpenAI 高级调度器粘性逃逸配置
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
@@ -1019,6 +1021,11 @@ type GatewayOpenAIRequestRetryConfig struct {
 	BackoffMaxSeconds        int     `mapstructure:"backoff_max_seconds"`
 	JitterRatio              float64 `mapstructure:"jitter_ratio"`
 	WaitForTemporaryCapacity bool    `mapstructure:"wait_for_temporary_capacity"`
+}
+
+type GatewayLiveConfig struct {
+	// MaxSessionDurationSeconds 是 Live 会话的硬上限。
+	MaxSessionDurationSeconds int `mapstructure:"max_session_duration_seconds"`
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -2285,6 +2292,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_request_retry.backoff_max_seconds", 30)
 	viper.SetDefault("gateway.openai_request_retry.jitter_ratio", 0.2)
 	viper.SetDefault("gateway.openai_request_retry.wait_for_temporary_capacity", true)
+	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
@@ -3149,6 +3157,9 @@ func (c *Config) Validate() error {
 		if userID <= 0 {
 			return fmt.Errorf("gateway.openai_first_output_timeout_excluded_user_ids must contain positive user IDs")
 		}
+	}
+	if c.Gateway.Live.MaxSessionDurationSeconds <= 0 {
+		c.Gateway.Live.MaxSessionDurationSeconds = 3600
 	}
 	if strings.TrimSpace(c.Gateway.ConnectionPoolIsolation) != "" {
 		switch c.Gateway.ConnectionPoolIsolation {
