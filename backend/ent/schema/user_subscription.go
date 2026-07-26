@@ -69,6 +69,22 @@ func (UserSubscription) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}).
 			Default(0),
 
+		field.Int("quota_boost_monthly_limit").
+			Default(0).
+			NonNegative().
+			Max(31),
+		field.Int("quota_boost_monthly_used").
+			Default(0).
+			NonNegative(),
+		field.Time("quota_boost_period_start").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
+		field.Time("quota_boost_activated_at").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
+
 		field.Int64("assigned_by").
 			Optional().
 			Nillable(),

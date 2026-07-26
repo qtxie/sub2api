@@ -5,12 +5,14 @@ package repository
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -127,6 +129,97 @@ func (s *UserSubscriptionRepoSuite) TestGetByID_WithPreloads() {
 func (s *UserSubscriptionRepoSuite) TestGetByID_NotFound() {
 	_, err := s.repo.GetByID(s.ctx, 999999)
 	s.Require().Error(err, "expected error for non-existent ID")
+}
+
+func (s *UserSubscriptionRepoSuite) TestUpdateQuotaBoostMonthlyLimit_DisablingClearsActivation() {
+	user := s.mustCreateUser("quota-boost-policy@test.com", service.RoleUser)
+	group := s.mustCreateGroup("quota-boost-policy")
+	now := time.Now()
+	periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	sub := s.mustCreateSubscription(user.ID, group.ID, func(c *dbent.UserSubscriptionCreate) {
+		c.SetQuotaBoostMonthlyLimit(3)
+		c.SetQuotaBoostMonthlyUsed(1)
+		c.SetQuotaBoostPeriodStart(periodStart)
+		c.SetQuotaBoostActivatedAt(now)
+	})
+
+	s.Require().NoError(s.repo.UpdateQuotaBoostMonthlyLimit(s.ctx, sub.ID, 0))
+
+	stored, err := s.repo.GetByID(s.ctx, sub.ID)
+	s.Require().NoError(err)
+	s.Require().Zero(stored.QuotaBoostMonthlyLimit)
+	s.Require().Equal(1, stored.QuotaBoostMonthlyUsed)
+	s.Require().Nil(stored.QuotaBoostActivatedAt)
+}
+
+func TestQuotaBoostConcurrentActivationConsumesOneAllowance(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	suffix := time.Now().UnixNano()
+
+	user, err := client.User.Create().
+		SetEmail(fmt.Sprintf("quota-boost-%d@test.com", suffix)).
+		SetPasswordHash("test-password-hash").
+		SetStatus(service.StatusActive).
+		SetRole(service.RoleUser).
+		Save(ctx)
+	require.NoError(t, err)
+
+	group, err := client.Group.Create().
+		SetName(fmt.Sprintf("quota-boost-%d", suffix)).
+		SetStatus(service.StatusActive).
+		SetSubscriptionType(service.SubscriptionTypeSubscription).
+		SetDailyLimitUsd(10).
+		Save(ctx)
+	require.NoError(t, err)
+
+	sub, err := client.UserSubscription.Create().
+		SetUserID(user.ID).
+		SetGroupID(group.ID).
+		SetStartsAt(time.Now().Add(-time.Hour)).
+		SetExpiresAt(time.Now().Add(24 * time.Hour)).
+		SetStatus(service.SubscriptionStatusActive).
+		SetQuotaBoostMonthlyLimit(3).
+		Save(ctx)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM user_subscriptions WHERE id = $1", sub.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM groups WHERE id = $1", group.ID)
+		_, _ = integrationDB.ExecContext(context.Background(), "DELETE FROM users WHERE id = $1", user.ID)
+	})
+
+	svc := service.NewSubscriptionService(nil, NewUserSubscriptionRepository(client), nil, client, nil)
+	var wg sync.WaitGroup
+	already := make(chan bool, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, wasActive, activateErr := svc.ActivateQuotaBoost(ctx, sub.ID, user.ID)
+			already <- wasActive
+			errs <- activateErr
+		}()
+	}
+	wg.Wait()
+	close(already)
+	close(errs)
+
+	for activateErr := range errs {
+		require.NoError(t, activateErr)
+	}
+	alreadyCount := 0
+	for wasActive := range already {
+		if wasActive {
+			alreadyCount++
+		}
+	}
+	require.Equal(t, 1, alreadyCount)
+
+	stored, err := NewUserSubscriptionRepository(client).GetByID(ctx, sub.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, stored.QuotaBoostMonthlyUsed)
 }
 
 func (s *UserSubscriptionRepoSuite) TestUpdate() {

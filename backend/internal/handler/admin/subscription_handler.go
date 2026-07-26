@@ -224,6 +224,32 @@ type ResetSubscriptionQuotaRequest struct {
 	Monthly bool `json:"monthly"`
 }
 
+type QuotaBoostPolicyRequest struct {
+	MonthlyLimit *int `json:"monthly_limit" binding:"required,min=0,max=31"`
+}
+
+// SetQuotaBoostPolicy configures how many daily quota boosts a subscription may use per month.
+// PUT /api/v1/admin/subscriptions/:id/quota-boost
+func (h *SubscriptionHandler) SetQuotaBoostPolicy(c *gin.Context) {
+	subscriptionID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid subscription ID")
+		return
+	}
+	var req QuotaBoostPolicyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	sub, err := h.subscriptionService.SetQuotaBoostMonthlyLimit(c.Request.Context(), subscriptionID, *req.MonthlyLimit)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.UserSubscriptionFromServiceAdmin(sub))
+}
+
 // ResetQuota resets daily, weekly, and/or monthly usage for a subscription.
 // POST /api/v1/admin/subscriptions/:id/reset-quota
 func (h *SubscriptionHandler) ResetQuota(c *gin.Context) {

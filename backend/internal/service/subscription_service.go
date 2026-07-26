@@ -13,6 +13,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/dgraph-io/ristretto"
 	"golang.org/x/sync/singleflight"
 )
@@ -37,8 +38,12 @@ var (
 	ErrDailyLimitExceeded          = infraerrors.TooManyRequests("DAILY_LIMIT_EXCEEDED", "daily usage limit exceeded")
 	ErrWeeklyLimitExceeded         = infraerrors.TooManyRequests("WEEKLY_LIMIT_EXCEEDED", "weekly usage limit exceeded")
 	ErrMonthlyLimitExceeded        = infraerrors.TooManyRequests("MONTHLY_LIMIT_EXCEEDED", "monthly usage limit exceeded")
-	ErrSubscriptionNilInput        = infraerrors.BadRequest("SUBSCRIPTION_NIL_INPUT", "subscription input cannot be nil")
-	ErrAdjustWouldExpire           = infraerrors.BadRequest("ADJUST_WOULD_EXPIRE", "adjustment would result in expired subscription (remaining days must be > 0)")
+	ErrSubscriptionNilInput         = infraerrors.BadRequest("SUBSCRIPTION_NIL_INPUT", "subscription input cannot be nil")
+	ErrAdjustWouldExpire            = infraerrors.BadRequest("ADJUST_WOULD_EXPIRE", "adjustment would result in expired subscription (remaining days must be > 0)")
+	ErrQuotaBoostDisabled           = infraerrors.Forbidden("QUOTA_BOOST_DISABLED", "daily quota boost is disabled for this subscription")
+	ErrQuotaBoostMonthlyExhausted   = infraerrors.TooManyRequests("QUOTA_BOOST_MONTHLY_EXHAUSTED", "monthly daily quota boost allowance has been exhausted")
+	ErrQuotaBoostRequiresDailyLimit = infraerrors.BadRequest("QUOTA_BOOST_REQUIRES_DAILY_LIMIT", "daily quota boost requires a subscription with a daily limit")
+	ErrInvalidQuotaBoostLimit       = infraerrors.BadRequest("INVALID_QUOTA_BOOST_LIMIT", "monthly daily quota boost limit must be between 0 and 31")
 )
 
 // SubscriptionService 订阅服务
@@ -876,6 +881,104 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
 	return s.userSubRepo.GetByID(ctx, subscriptionID)
 }
 
+func (s *SubscriptionService) SetQuotaBoostMonthlyLimit(ctx context.Context, subscriptionID int64, monthlyLimit int) (*UserSubscription, error) {
+	if monthlyLimit < 0 || monthlyLimit > 31 {
+		return nil, ErrInvalidQuotaBoostLimit
+	}
+
+	sub, err := s.userSubRepo.GetByID(ctx, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	now := timezone.Now()
+	if sub.Status == SubscriptionStatusSuspended {
+		return nil, ErrSubscriptionSuspended
+	}
+	if sub.Status != SubscriptionStatusActive || !sub.ExpiresAt.After(now) {
+		return nil, ErrSubscriptionExpired
+	}
+	if monthlyLimit > 0 && (sub.Group == nil || !sub.Group.HasDailyLimit()) {
+		return nil, ErrQuotaBoostRequiresDailyLimit
+	}
+
+	if err := s.userSubRepo.UpdateQuotaBoostMonthlyLimit(ctx, subscriptionID, monthlyLimit); err != nil {
+		return nil, err
+	}
+	if err := s.invalidateSubscriptionCaches(sub.UserID, sub.GroupID); err != nil {
+		return nil, err
+	}
+	return s.userSubRepo.GetByID(ctx, subscriptionID)
+}
+
+// ActivateQuotaBoost doubles the subscription's daily limit for the current
+// server-calendar day. Repeated calls during the same day are idempotent.
+func (s *SubscriptionService) ActivateQuotaBoost(ctx context.Context, subscriptionID, userID int64) (*UserSubscription, bool, error) {
+	var alreadyActive bool
+	var lockedSub *UserSubscription
+
+	err := s.withSubscriptionUpdateTx(ctx, func(txCtx context.Context) error {
+		sub, err := s.userSubRepo.GetByIDForUpdate(txCtx, subscriptionID)
+		if err != nil {
+			return err
+		}
+		if sub.UserID != userID {
+			return ErrSubscriptionNotFound
+		}
+
+		now := timezone.Now()
+		if sub.Status == SubscriptionStatusSuspended {
+			return ErrSubscriptionSuspended
+		}
+		if sub.Status != SubscriptionStatusActive || !sub.ExpiresAt.After(now) {
+			return ErrSubscriptionExpired
+		}
+		if sub.Group == nil || !sub.Group.HasDailyLimit() {
+			return ErrQuotaBoostRequiresDailyLimit
+		}
+
+		if sub.IsQuotaBoostActiveAt(now) {
+			alreadyActive = true
+			lockedSub = sub
+			return nil
+		}
+		if sub.QuotaBoostMonthlyLimit <= 0 {
+			return ErrQuotaBoostDisabled
+		}
+
+		used := sub.QuotaBoostMonthlyUsedAt(now)
+		if used >= sub.QuotaBoostMonthlyLimit {
+			return ErrQuotaBoostMonthlyExhausted.WithMetadata(map[string]string{
+				"resets_at": timezone.StartOfMonth(now).AddDate(0, 1, 0).Format(time.RFC3339),
+			})
+		}
+
+		periodStart := timezone.StartOfMonth(now)
+		if err := s.userSubRepo.UpdateQuotaBoostActivation(txCtx, sub.ID, used+1, periodStart, now); err != nil {
+			return err
+		}
+		sub.QuotaBoostMonthlyUsed = used + 1
+		sub.QuotaBoostPeriodStart = &periodStart
+		sub.QuotaBoostActivatedAt = &now
+		lockedSub = sub
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if lockedSub == nil {
+		return nil, false, ErrSubscriptionNotFound
+	}
+	if err := s.invalidateSubscriptionCaches(lockedSub.UserID, lockedSub.GroupID); err != nil {
+		return nil, alreadyActive, err
+	}
+
+	refreshed, err := s.userSubRepo.GetByID(ctx, subscriptionID)
+	if err != nil {
+		return nil, alreadyActive, err
+	}
+	return refreshed, alreadyActive, nil
+}
+
 // CheckAndResetWindows 检查并重置过期的窗口
 func (s *SubscriptionService) CheckAndResetWindows(ctx context.Context, sub *UserSubscription) error {
 	// 使用当天零点作为新窗口起始时间
@@ -1112,7 +1215,7 @@ func (s *SubscriptionService) calculateProgress(sub *UserSubscription, group *Gr
 
 	// 日进度
 	if group.HasDailyLimit() && sub.DailyWindowStart != nil {
-		limit := *group.DailyLimitUSD
+		limit := *sub.EffectiveDailyLimitUSDAt(group, timezone.Now())
 		resetsAt := sub.DailyWindowStart.Add(24 * time.Hour)
 		if dailyResetTime := sub.DailyResetTime(); dailyResetTime != nil {
 			resetsAt = *dailyResetTime

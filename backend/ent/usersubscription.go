@@ -47,6 +47,14 @@ type UserSubscription struct {
 	WeeklyUsageUsd float64 `json:"weekly_usage_usd,omitempty"`
 	// MonthlyUsageUsd holds the value of the "monthly_usage_usd" field.
 	MonthlyUsageUsd float64 `json:"monthly_usage_usd,omitempty"`
+	// QuotaBoostMonthlyLimit holds the value of the "quota_boost_monthly_limit" field.
+	QuotaBoostMonthlyLimit int `json:"quota_boost_monthly_limit,omitempty"`
+	// QuotaBoostMonthlyUsed holds the value of the "quota_boost_monthly_used" field.
+	QuotaBoostMonthlyUsed int `json:"quota_boost_monthly_used,omitempty"`
+	// QuotaBoostPeriodStart holds the value of the "quota_boost_period_start" field.
+	QuotaBoostPeriodStart *time.Time `json:"quota_boost_period_start,omitempty"`
+	// QuotaBoostActivatedAt holds the value of the "quota_boost_activated_at" field.
+	QuotaBoostActivatedAt *time.Time `json:"quota_boost_activated_at,omitempty"`
 	// AssignedBy holds the value of the "assigned_by" field.
 	AssignedBy *int64 `json:"assigned_by,omitempty"`
 	// AssignedAt holds the value of the "assigned_at" field.
@@ -123,11 +131,11 @@ func (*UserSubscription) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case usersubscription.FieldDailyUsageUsd, usersubscription.FieldWeeklyUsageUsd, usersubscription.FieldMonthlyUsageUsd:
 			values[i] = new(sql.NullFloat64)
-		case usersubscription.FieldID, usersubscription.FieldUserID, usersubscription.FieldGroupID, usersubscription.FieldAssignedBy:
+		case usersubscription.FieldID, usersubscription.FieldUserID, usersubscription.FieldGroupID, usersubscription.FieldQuotaBoostMonthlyLimit, usersubscription.FieldQuotaBoostMonthlyUsed, usersubscription.FieldAssignedBy:
 			values[i] = new(sql.NullInt64)
 		case usersubscription.FieldStatus, usersubscription.FieldNotes:
 			values[i] = new(sql.NullString)
-		case usersubscription.FieldCreatedAt, usersubscription.FieldUpdatedAt, usersubscription.FieldDeletedAt, usersubscription.FieldStartsAt, usersubscription.FieldExpiresAt, usersubscription.FieldDailyWindowStart, usersubscription.FieldWeeklyWindowStart, usersubscription.FieldMonthlyWindowStart, usersubscription.FieldAssignedAt:
+		case usersubscription.FieldCreatedAt, usersubscription.FieldUpdatedAt, usersubscription.FieldDeletedAt, usersubscription.FieldStartsAt, usersubscription.FieldExpiresAt, usersubscription.FieldDailyWindowStart, usersubscription.FieldWeeklyWindowStart, usersubscription.FieldMonthlyWindowStart, usersubscription.FieldQuotaBoostPeriodStart, usersubscription.FieldQuotaBoostActivatedAt, usersubscription.FieldAssignedAt:
 			values[i] = new(sql.NullTime)
 		default:
 			values[i] = new(sql.UnknownType)
@@ -237,6 +245,32 @@ func (_m *UserSubscription) assignValues(columns []string, values []any) error {
 				return fmt.Errorf("unexpected type %T for field monthly_usage_usd", values[i])
 			} else if value.Valid {
 				_m.MonthlyUsageUsd = value.Float64
+			}
+		case usersubscription.FieldQuotaBoostMonthlyLimit:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field quota_boost_monthly_limit", values[i])
+			} else if value.Valid {
+				_m.QuotaBoostMonthlyLimit = int(value.Int64)
+			}
+		case usersubscription.FieldQuotaBoostMonthlyUsed:
+			if value, ok := values[i].(*sql.NullInt64); !ok {
+				return fmt.Errorf("unexpected type %T for field quota_boost_monthly_used", values[i])
+			} else if value.Valid {
+				_m.QuotaBoostMonthlyUsed = int(value.Int64)
+			}
+		case usersubscription.FieldQuotaBoostPeriodStart:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field quota_boost_period_start", values[i])
+			} else if value.Valid {
+				_m.QuotaBoostPeriodStart = new(time.Time)
+				*_m.QuotaBoostPeriodStart = value.Time
+			}
+		case usersubscription.FieldQuotaBoostActivatedAt:
+			if value, ok := values[i].(*sql.NullTime); !ok {
+				return fmt.Errorf("unexpected type %T for field quota_boost_activated_at", values[i])
+			} else if value.Valid {
+				_m.QuotaBoostActivatedAt = new(time.Time)
+				*_m.QuotaBoostActivatedAt = value.Time
 			}
 		case usersubscription.FieldAssignedBy:
 			if value, ok := values[i].(*sql.NullInt64); !ok {
@@ -363,6 +397,22 @@ func (_m *UserSubscription) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("monthly_usage_usd=")
 	builder.WriteString(fmt.Sprintf("%v", _m.MonthlyUsageUsd))
+	builder.WriteString(", ")
+	builder.WriteString("quota_boost_monthly_limit=")
+	builder.WriteString(fmt.Sprintf("%v", _m.QuotaBoostMonthlyLimit))
+	builder.WriteString(", ")
+	builder.WriteString("quota_boost_monthly_used=")
+	builder.WriteString(fmt.Sprintf("%v", _m.QuotaBoostMonthlyUsed))
+	builder.WriteString(", ")
+	if v := _m.QuotaBoostPeriodStart; v != nil {
+		builder.WriteString("quota_boost_period_start=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
+	builder.WriteString(", ")
+	if v := _m.QuotaBoostActivatedAt; v != nil {
+		builder.WriteString("quota_boost_activated_at=")
+		builder.WriteString(v.Format(time.ANSIC))
+	}
 	builder.WriteString(", ")
 	if v := _m.AssignedBy; v != nil {
 		builder.WriteString("assigned_by=")

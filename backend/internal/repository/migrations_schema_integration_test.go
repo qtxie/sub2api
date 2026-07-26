@@ -149,6 +149,11 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 
 	// user_subscriptions: deleted_at for soft delete support (migration 012)
 	requireColumn(t, tx, "user_subscriptions", "deleted_at", "timestamp with time zone", 0, true)
+	// user_subscriptions: user-activated daily quota boost policy and state
+	requireColumn(t, tx, "user_subscriptions", "quota_boost_monthly_limit", "integer", 0, false)
+	requireColumn(t, tx, "user_subscriptions", "quota_boost_monthly_used", "integer", 0, false)
+	requireColumn(t, tx, "user_subscriptions", "quota_boost_period_start", "timestamp with time zone", 0, true)
+	requireColumn(t, tx, "user_subscriptions", "quota_boost_activated_at", "timestamp with time zone", 0, true)
 
 	// orphan_allowed_groups_audit table should exist (migration 013)
 	var orphanAuditRegclass sql.NullString

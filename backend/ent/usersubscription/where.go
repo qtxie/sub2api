@@ -125,6 +125,26 @@ func MonthlyUsageUsd(v float64) predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldEQ(FieldMonthlyUsageUsd, v))
 }
 
+// QuotaBoostMonthlyLimit applies equality check predicate on the "quota_boost_monthly_limit" field. It's identical to QuotaBoostMonthlyLimitEQ.
+func QuotaBoostMonthlyLimit(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldQuotaBoostMonthlyLimit, v))
+}
+
+// QuotaBoostMonthlyUsed applies equality check predicate on the "quota_boost_monthly_used" field. It's identical to QuotaBoostMonthlyUsedEQ.
+func QuotaBoostMonthlyUsed(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldQuotaBoostMonthlyUsed, v))
+}
+
+// QuotaBoostPeriodStart applies equality check predicate on the "quota_boost_period_start" field. It's identical to QuotaBoostPeriodStartEQ.
+func QuotaBoostPeriodStart(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldQuotaBoostPeriodStart, v))
+}
+
+// QuotaBoostActivatedAt applies equality check predicate on the "quota_boost_activated_at" field. It's identical to QuotaBoostActivatedAtEQ.
+func QuotaBoostActivatedAt(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldQuotaBoostActivatedAt, v))
+}
+
 // AssignedBy applies equality check predicate on the "assigned_by" field. It's identical to AssignedByEQ.
 func AssignedBy(v int64) predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldEQ(FieldAssignedBy, v))
@@ -723,6 +743,186 @@ func MonthlyUsageUsdLT(v float64) predicate.UserSubscription {
 // MonthlyUsageUsdLTE applies the LTE predicate on the "monthly_usage_usd" field.
 func MonthlyUsageUsdLTE(v float64) predicate.UserSubscription {
 	return predicate.UserSubscription(sql.FieldLTE(FieldMonthlyUsageUsd, v))
+}
+
+// QuotaBoostMonthlyLimitEQ applies the EQ predicate on the "quota_boost_monthly_limit" field.
+func QuotaBoostMonthlyLimitEQ(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldQuotaBoostMonthlyLimit, v))
+}
+
+// QuotaBoostMonthlyLimitNEQ applies the NEQ predicate on the "quota_boost_monthly_limit" field.
+func QuotaBoostMonthlyLimitNEQ(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNEQ(FieldQuotaBoostMonthlyLimit, v))
+}
+
+// QuotaBoostMonthlyLimitIn applies the In predicate on the "quota_boost_monthly_limit" field.
+func QuotaBoostMonthlyLimitIn(vs ...int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIn(FieldQuotaBoostMonthlyLimit, vs...))
+}
+
+// QuotaBoostMonthlyLimitNotIn applies the NotIn predicate on the "quota_boost_monthly_limit" field.
+func QuotaBoostMonthlyLimitNotIn(vs ...int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotIn(FieldQuotaBoostMonthlyLimit, vs...))
+}
+
+// QuotaBoostMonthlyLimitGT applies the GT predicate on the "quota_boost_monthly_limit" field.
+func QuotaBoostMonthlyLimitGT(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGT(FieldQuotaBoostMonthlyLimit, v))
+}
+
+// QuotaBoostMonthlyLimitGTE applies the GTE predicate on the "quota_boost_monthly_limit" field.
+func QuotaBoostMonthlyLimitGTE(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGTE(FieldQuotaBoostMonthlyLimit, v))
+}
+
+// QuotaBoostMonthlyLimitLT applies the LT predicate on the "quota_boost_monthly_limit" field.
+func QuotaBoostMonthlyLimitLT(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLT(FieldQuotaBoostMonthlyLimit, v))
+}
+
+// QuotaBoostMonthlyLimitLTE applies the LTE predicate on the "quota_boost_monthly_limit" field.
+func QuotaBoostMonthlyLimitLTE(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLTE(FieldQuotaBoostMonthlyLimit, v))
+}
+
+// QuotaBoostMonthlyUsedEQ applies the EQ predicate on the "quota_boost_monthly_used" field.
+func QuotaBoostMonthlyUsedEQ(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldQuotaBoostMonthlyUsed, v))
+}
+
+// QuotaBoostMonthlyUsedNEQ applies the NEQ predicate on the "quota_boost_monthly_used" field.
+func QuotaBoostMonthlyUsedNEQ(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNEQ(FieldQuotaBoostMonthlyUsed, v))
+}
+
+// QuotaBoostMonthlyUsedIn applies the In predicate on the "quota_boost_monthly_used" field.
+func QuotaBoostMonthlyUsedIn(vs ...int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIn(FieldQuotaBoostMonthlyUsed, vs...))
+}
+
+// QuotaBoostMonthlyUsedNotIn applies the NotIn predicate on the "quota_boost_monthly_used" field.
+func QuotaBoostMonthlyUsedNotIn(vs ...int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotIn(FieldQuotaBoostMonthlyUsed, vs...))
+}
+
+// QuotaBoostMonthlyUsedGT applies the GT predicate on the "quota_boost_monthly_used" field.
+func QuotaBoostMonthlyUsedGT(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGT(FieldQuotaBoostMonthlyUsed, v))
+}
+
+// QuotaBoostMonthlyUsedGTE applies the GTE predicate on the "quota_boost_monthly_used" field.
+func QuotaBoostMonthlyUsedGTE(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGTE(FieldQuotaBoostMonthlyUsed, v))
+}
+
+// QuotaBoostMonthlyUsedLT applies the LT predicate on the "quota_boost_monthly_used" field.
+func QuotaBoostMonthlyUsedLT(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLT(FieldQuotaBoostMonthlyUsed, v))
+}
+
+// QuotaBoostMonthlyUsedLTE applies the LTE predicate on the "quota_boost_monthly_used" field.
+func QuotaBoostMonthlyUsedLTE(v int) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLTE(FieldQuotaBoostMonthlyUsed, v))
+}
+
+// QuotaBoostPeriodStartEQ applies the EQ predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartEQ(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldQuotaBoostPeriodStart, v))
+}
+
+// QuotaBoostPeriodStartNEQ applies the NEQ predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartNEQ(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNEQ(FieldQuotaBoostPeriodStart, v))
+}
+
+// QuotaBoostPeriodStartIn applies the In predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartIn(vs ...time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIn(FieldQuotaBoostPeriodStart, vs...))
+}
+
+// QuotaBoostPeriodStartNotIn applies the NotIn predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartNotIn(vs ...time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotIn(FieldQuotaBoostPeriodStart, vs...))
+}
+
+// QuotaBoostPeriodStartGT applies the GT predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartGT(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGT(FieldQuotaBoostPeriodStart, v))
+}
+
+// QuotaBoostPeriodStartGTE applies the GTE predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartGTE(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGTE(FieldQuotaBoostPeriodStart, v))
+}
+
+// QuotaBoostPeriodStartLT applies the LT predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartLT(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLT(FieldQuotaBoostPeriodStart, v))
+}
+
+// QuotaBoostPeriodStartLTE applies the LTE predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartLTE(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLTE(FieldQuotaBoostPeriodStart, v))
+}
+
+// QuotaBoostPeriodStartIsNil applies the IsNil predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartIsNil() predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIsNull(FieldQuotaBoostPeriodStart))
+}
+
+// QuotaBoostPeriodStartNotNil applies the NotNil predicate on the "quota_boost_period_start" field.
+func QuotaBoostPeriodStartNotNil() predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotNull(FieldQuotaBoostPeriodStart))
+}
+
+// QuotaBoostActivatedAtEQ applies the EQ predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtEQ(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldEQ(FieldQuotaBoostActivatedAt, v))
+}
+
+// QuotaBoostActivatedAtNEQ applies the NEQ predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtNEQ(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNEQ(FieldQuotaBoostActivatedAt, v))
+}
+
+// QuotaBoostActivatedAtIn applies the In predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtIn(vs ...time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIn(FieldQuotaBoostActivatedAt, vs...))
+}
+
+// QuotaBoostActivatedAtNotIn applies the NotIn predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtNotIn(vs ...time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotIn(FieldQuotaBoostActivatedAt, vs...))
+}
+
+// QuotaBoostActivatedAtGT applies the GT predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtGT(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGT(FieldQuotaBoostActivatedAt, v))
+}
+
+// QuotaBoostActivatedAtGTE applies the GTE predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtGTE(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldGTE(FieldQuotaBoostActivatedAt, v))
+}
+
+// QuotaBoostActivatedAtLT applies the LT predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtLT(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLT(FieldQuotaBoostActivatedAt, v))
+}
+
+// QuotaBoostActivatedAtLTE applies the LTE predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtLTE(v time.Time) predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldLTE(FieldQuotaBoostActivatedAt, v))
+}
+
+// QuotaBoostActivatedAtIsNil applies the IsNil predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtIsNil() predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldIsNull(FieldQuotaBoostActivatedAt))
+}
+
+// QuotaBoostActivatedAtNotNil applies the NotNil predicate on the "quota_boost_activated_at" field.
+func QuotaBoostActivatedAtNotNil() predicate.UserSubscription {
+	return predicate.UserSubscription(sql.FieldNotNull(FieldQuotaBoostActivatedAt))
 }
 
 // AssignedByEQ applies the EQ predicate on the "assigned_by" field.

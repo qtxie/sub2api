@@ -1599,13 +1599,14 @@ func (h *GatewayHandler) usageUnrestricted(c *gin.Context, ctx context.Context, 
 		// 订阅信息可能不在 context 中（/v1/usage 路径跳过了中间件的计费检查）
 		subscription, ok := middleware2.GetSubscriptionFromContext(c)
 		if ok {
+			effectiveDailyLimit := subscription.EffectiveDailyLimitUSDAt(apiKey.Group, timezone.Now())
 			remaining := h.calculateSubscriptionRemaining(apiKey.Group, subscription)
 			resp["remaining"] = remaining
 			resp["subscription"] = gin.H{
 				"daily_usage_usd":     subscription.DailyUsageUSD,
 				"weekly_usage_usd":    subscription.WeeklyUsageUSD,
 				"monthly_usage_usd":   subscription.MonthlyUsageUSD,
-				"daily_limit_usd":     apiKey.Group.DailyLimitUSD,
+				"daily_limit_usd":     effectiveDailyLimit,
 				"weekly_limit_usd":    apiKey.Group.WeeklyLimitUSD,
 				"monthly_limit_usd":   apiKey.Group.MonthlyLimitUSD,
 				"weekly_window_start": subscription.WeeklyWindowStart,
@@ -1660,9 +1661,9 @@ func (h *GatewayHandler) usageUnrestricted(c *gin.Context, ctx context.Context, 
 func (h *GatewayHandler) calculateSubscriptionRemaining(group *service.Group, sub *service.UserSubscription) float64 {
 	var remainingValues []float64
 
-	// 检查日限额
-	if group.HasDailyLimit() {
-		remaining := *group.DailyLimitUSD - sub.DailyUsageUSD
+	// 检查日限额（含当日 quota boost）
+	if effectiveDailyLimit := sub.EffectiveDailyLimitUSDAt(group, timezone.Now()); effectiveDailyLimit != nil {
+		remaining := *effectiveDailyLimit - sub.DailyUsageUSD
 		if remaining <= 0 {
 			return 0
 		}

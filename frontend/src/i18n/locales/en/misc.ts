@@ -135,7 +135,17 @@ export default {
     resetIn: 'Resets in {time}',
     quotaEndsIn: 'Quota ends in {time}',
     windowNotActive: 'Awaiting first use',
-    usageOf: '{used} of {limit}'
+    usageOf: '{used} of {limit}',
+    quotaBoost: 'Double today\'s daily quota',
+    quotaBoostAction: 'Double today',
+    quotaBoostActivating: 'Activating...',
+    quotaBoostActive: '2x daily quota is active today',
+    quotaBoostActiveShort: '2x active',
+    quotaBoostRemaining: '{count} boosts remaining this month',
+    quotaBoostMonthlyUsage: '{used} of {limit} used this month',
+    quotaBoostExhausted: 'Monthly limit reached',
+    quotaBoostSuccess: 'Daily quota doubled for today',
+    quotaBoostFailed: 'Failed to activate daily quota boost'
   },
 
   // Onboarding Tour

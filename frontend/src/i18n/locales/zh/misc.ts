@@ -132,7 +132,17 @@ export default {
     resetIn: '{time} 后重置',
     quotaEndsIn: '额度将在 {time} 后结束',
     windowNotActive: '等待首次使用',
-    usageOf: '已用 {used} / {limit}'
+    usageOf: '已用 {used} / {limit}',
+    quotaBoost: '今日订阅日额度翻倍',
+    quotaBoostAction: '今日翻倍',
+    quotaBoostActivating: '正在启用...',
+    quotaBoostActive: '今日 2 倍日额度已启用',
+    quotaBoostActiveShort: '2 倍已启用',
+    quotaBoostRemaining: '本月还可使用 {count} 次',
+    quotaBoostMonthlyUsage: '本月已使用 {used}/{limit} 次',
+    quotaBoostExhausted: '本月次数已用完',
+    quotaBoostSuccess: '今日订阅日额度已翻倍',
+    quotaBoostFailed: '启用日额度翻倍失败'
   },
 
   // Onboarding Tour

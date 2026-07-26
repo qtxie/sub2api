@@ -250,6 +250,88 @@ func (_u *UserSubscriptionUpdate) AddMonthlyUsageUsd(v float64) *UserSubscriptio
 	return _u
 }
 
+// SetQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field.
+func (_u *UserSubscriptionUpdate) SetQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpdate {
+	_u.mutation.ResetQuotaBoostMonthlyLimit()
+	_u.mutation.SetQuotaBoostMonthlyLimit(v)
+	return _u
+}
+
+// SetNillableQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableQuotaBoostMonthlyLimit(v *int) *UserSubscriptionUpdate {
+	if v != nil {
+		_u.SetQuotaBoostMonthlyLimit(*v)
+	}
+	return _u
+}
+
+// AddQuotaBoostMonthlyLimit adds value to the "quota_boost_monthly_limit" field.
+func (_u *UserSubscriptionUpdate) AddQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpdate {
+	_u.mutation.AddQuotaBoostMonthlyLimit(v)
+	return _u
+}
+
+// SetQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field.
+func (_u *UserSubscriptionUpdate) SetQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpdate {
+	_u.mutation.ResetQuotaBoostMonthlyUsed()
+	_u.mutation.SetQuotaBoostMonthlyUsed(v)
+	return _u
+}
+
+// SetNillableQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableQuotaBoostMonthlyUsed(v *int) *UserSubscriptionUpdate {
+	if v != nil {
+		_u.SetQuotaBoostMonthlyUsed(*v)
+	}
+	return _u
+}
+
+// AddQuotaBoostMonthlyUsed adds value to the "quota_boost_monthly_used" field.
+func (_u *UserSubscriptionUpdate) AddQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpdate {
+	_u.mutation.AddQuotaBoostMonthlyUsed(v)
+	return _u
+}
+
+// SetQuotaBoostPeriodStart sets the "quota_boost_period_start" field.
+func (_u *UserSubscriptionUpdate) SetQuotaBoostPeriodStart(v time.Time) *UserSubscriptionUpdate {
+	_u.mutation.SetQuotaBoostPeriodStart(v)
+	return _u
+}
+
+// SetNillableQuotaBoostPeriodStart sets the "quota_boost_period_start" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableQuotaBoostPeriodStart(v *time.Time) *UserSubscriptionUpdate {
+	if v != nil {
+		_u.SetQuotaBoostPeriodStart(*v)
+	}
+	return _u
+}
+
+// ClearQuotaBoostPeriodStart clears the value of the "quota_boost_period_start" field.
+func (_u *UserSubscriptionUpdate) ClearQuotaBoostPeriodStart() *UserSubscriptionUpdate {
+	_u.mutation.ClearQuotaBoostPeriodStart()
+	return _u
+}
+
+// SetQuotaBoostActivatedAt sets the "quota_boost_activated_at" field.
+func (_u *UserSubscriptionUpdate) SetQuotaBoostActivatedAt(v time.Time) *UserSubscriptionUpdate {
+	_u.mutation.SetQuotaBoostActivatedAt(v)
+	return _u
+}
+
+// SetNillableQuotaBoostActivatedAt sets the "quota_boost_activated_at" field if the given value is not nil.
+func (_u *UserSubscriptionUpdate) SetNillableQuotaBoostActivatedAt(v *time.Time) *UserSubscriptionUpdate {
+	if v != nil {
+		_u.SetQuotaBoostActivatedAt(*v)
+	}
+	return _u
+}
+
+// ClearQuotaBoostActivatedAt clears the value of the "quota_boost_activated_at" field.
+func (_u *UserSubscriptionUpdate) ClearQuotaBoostActivatedAt() *UserSubscriptionUpdate {
+	_u.mutation.ClearQuotaBoostActivatedAt()
+	return _u
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (_u *UserSubscriptionUpdate) SetAssignedBy(v int64) *UserSubscriptionUpdate {
 	_u.mutation.SetAssignedBy(v)
@@ -441,6 +523,16 @@ func (_u *UserSubscriptionUpdate) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.QuotaBoostMonthlyLimit(); ok {
+		if err := usersubscription.QuotaBoostMonthlyLimitValidator(v); err != nil {
+			return &ValidationError{Name: "quota_boost_monthly_limit", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.quota_boost_monthly_limit": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.QuotaBoostMonthlyUsed(); ok {
+		if err := usersubscription.QuotaBoostMonthlyUsedValidator(v); err != nil {
+			return &ValidationError{Name: "quota_boost_monthly_used", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.quota_boost_monthly_used": %w`, err)}
+		}
+	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UserSubscription.user"`)
 	}
@@ -515,6 +607,30 @@ func (_u *UserSubscriptionUpdate) sqlSave(ctx context.Context) (_node int, err e
 	}
 	if value, ok := _u.mutation.AddedMonthlyUsageUsd(); ok {
 		_spec.AddField(usersubscription.FieldMonthlyUsageUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.QuotaBoostMonthlyLimit(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostMonthlyLimit, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedQuotaBoostMonthlyLimit(); ok {
+		_spec.AddField(usersubscription.FieldQuotaBoostMonthlyLimit, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.QuotaBoostMonthlyUsed(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostMonthlyUsed, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedQuotaBoostMonthlyUsed(); ok {
+		_spec.AddField(usersubscription.FieldQuotaBoostMonthlyUsed, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.QuotaBoostPeriodStart(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostPeriodStart, field.TypeTime, value)
+	}
+	if _u.mutation.QuotaBoostPeriodStartCleared() {
+		_spec.ClearField(usersubscription.FieldQuotaBoostPeriodStart, field.TypeTime)
+	}
+	if value, ok := _u.mutation.QuotaBoostActivatedAt(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostActivatedAt, field.TypeTime, value)
+	}
+	if _u.mutation.QuotaBoostActivatedAtCleared() {
+		_spec.ClearField(usersubscription.FieldQuotaBoostActivatedAt, field.TypeTime)
 	}
 	if value, ok := _u.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)
@@ -896,6 +1012,88 @@ func (_u *UserSubscriptionUpdateOne) AddMonthlyUsageUsd(v float64) *UserSubscrip
 	return _u
 }
 
+// SetQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field.
+func (_u *UserSubscriptionUpdateOne) SetQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpdateOne {
+	_u.mutation.ResetQuotaBoostMonthlyLimit()
+	_u.mutation.SetQuotaBoostMonthlyLimit(v)
+	return _u
+}
+
+// SetNillableQuotaBoostMonthlyLimit sets the "quota_boost_monthly_limit" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableQuotaBoostMonthlyLimit(v *int) *UserSubscriptionUpdateOne {
+	if v != nil {
+		_u.SetQuotaBoostMonthlyLimit(*v)
+	}
+	return _u
+}
+
+// AddQuotaBoostMonthlyLimit adds value to the "quota_boost_monthly_limit" field.
+func (_u *UserSubscriptionUpdateOne) AddQuotaBoostMonthlyLimit(v int) *UserSubscriptionUpdateOne {
+	_u.mutation.AddQuotaBoostMonthlyLimit(v)
+	return _u
+}
+
+// SetQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field.
+func (_u *UserSubscriptionUpdateOne) SetQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpdateOne {
+	_u.mutation.ResetQuotaBoostMonthlyUsed()
+	_u.mutation.SetQuotaBoostMonthlyUsed(v)
+	return _u
+}
+
+// SetNillableQuotaBoostMonthlyUsed sets the "quota_boost_monthly_used" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableQuotaBoostMonthlyUsed(v *int) *UserSubscriptionUpdateOne {
+	if v != nil {
+		_u.SetQuotaBoostMonthlyUsed(*v)
+	}
+	return _u
+}
+
+// AddQuotaBoostMonthlyUsed adds value to the "quota_boost_monthly_used" field.
+func (_u *UserSubscriptionUpdateOne) AddQuotaBoostMonthlyUsed(v int) *UserSubscriptionUpdateOne {
+	_u.mutation.AddQuotaBoostMonthlyUsed(v)
+	return _u
+}
+
+// SetQuotaBoostPeriodStart sets the "quota_boost_period_start" field.
+func (_u *UserSubscriptionUpdateOne) SetQuotaBoostPeriodStart(v time.Time) *UserSubscriptionUpdateOne {
+	_u.mutation.SetQuotaBoostPeriodStart(v)
+	return _u
+}
+
+// SetNillableQuotaBoostPeriodStart sets the "quota_boost_period_start" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableQuotaBoostPeriodStart(v *time.Time) *UserSubscriptionUpdateOne {
+	if v != nil {
+		_u.SetQuotaBoostPeriodStart(*v)
+	}
+	return _u
+}
+
+// ClearQuotaBoostPeriodStart clears the value of the "quota_boost_period_start" field.
+func (_u *UserSubscriptionUpdateOne) ClearQuotaBoostPeriodStart() *UserSubscriptionUpdateOne {
+	_u.mutation.ClearQuotaBoostPeriodStart()
+	return _u
+}
+
+// SetQuotaBoostActivatedAt sets the "quota_boost_activated_at" field.
+func (_u *UserSubscriptionUpdateOne) SetQuotaBoostActivatedAt(v time.Time) *UserSubscriptionUpdateOne {
+	_u.mutation.SetQuotaBoostActivatedAt(v)
+	return _u
+}
+
+// SetNillableQuotaBoostActivatedAt sets the "quota_boost_activated_at" field if the given value is not nil.
+func (_u *UserSubscriptionUpdateOne) SetNillableQuotaBoostActivatedAt(v *time.Time) *UserSubscriptionUpdateOne {
+	if v != nil {
+		_u.SetQuotaBoostActivatedAt(*v)
+	}
+	return _u
+}
+
+// ClearQuotaBoostActivatedAt clears the value of the "quota_boost_activated_at" field.
+func (_u *UserSubscriptionUpdateOne) ClearQuotaBoostActivatedAt() *UserSubscriptionUpdateOne {
+	_u.mutation.ClearQuotaBoostActivatedAt()
+	return _u
+}
+
 // SetAssignedBy sets the "assigned_by" field.
 func (_u *UserSubscriptionUpdateOne) SetAssignedBy(v int64) *UserSubscriptionUpdateOne {
 	_u.mutation.SetAssignedBy(v)
@@ -1100,6 +1298,16 @@ func (_u *UserSubscriptionUpdateOne) check() error {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.status": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.QuotaBoostMonthlyLimit(); ok {
+		if err := usersubscription.QuotaBoostMonthlyLimitValidator(v); err != nil {
+			return &ValidationError{Name: "quota_boost_monthly_limit", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.quota_boost_monthly_limit": %w`, err)}
+		}
+	}
+	if v, ok := _u.mutation.QuotaBoostMonthlyUsed(); ok {
+		if err := usersubscription.QuotaBoostMonthlyUsedValidator(v); err != nil {
+			return &ValidationError{Name: "quota_boost_monthly_used", err: fmt.Errorf(`ent: validator failed for field "UserSubscription.quota_boost_monthly_used": %w`, err)}
+		}
+	}
 	if _u.mutation.UserCleared() && len(_u.mutation.UserIDs()) > 0 {
 		return errors.New(`ent: clearing a required unique edge "UserSubscription.user"`)
 	}
@@ -1191,6 +1399,30 @@ func (_u *UserSubscriptionUpdateOne) sqlSave(ctx context.Context) (_node *UserSu
 	}
 	if value, ok := _u.mutation.AddedMonthlyUsageUsd(); ok {
 		_spec.AddField(usersubscription.FieldMonthlyUsageUsd, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.QuotaBoostMonthlyLimit(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostMonthlyLimit, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedQuotaBoostMonthlyLimit(); ok {
+		_spec.AddField(usersubscription.FieldQuotaBoostMonthlyLimit, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.QuotaBoostMonthlyUsed(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostMonthlyUsed, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedQuotaBoostMonthlyUsed(); ok {
+		_spec.AddField(usersubscription.FieldQuotaBoostMonthlyUsed, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.QuotaBoostPeriodStart(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostPeriodStart, field.TypeTime, value)
+	}
+	if _u.mutation.QuotaBoostPeriodStartCleared() {
+		_spec.ClearField(usersubscription.FieldQuotaBoostPeriodStart, field.TypeTime)
+	}
+	if value, ok := _u.mutation.QuotaBoostActivatedAt(); ok {
+		_spec.SetField(usersubscription.FieldQuotaBoostActivatedAt, field.TypeTime, value)
+	}
+	if _u.mutation.QuotaBoostActivatedAtCleared() {
+		_spec.ClearField(usersubscription.FieldQuotaBoostActivatedAt, field.TypeTime)
 	}
 	if value, ok := _u.mutation.AssignedAt(); ok {
 		_spec.SetField(usersubscription.FieldAssignedAt, field.TypeTime, value)

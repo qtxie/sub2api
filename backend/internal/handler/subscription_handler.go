@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"strconv"
+
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -151,8 +154,8 @@ func (h *SubscriptionHandler) GetSummary(c *gin.Context) {
 		// Add group info if preloaded
 		if sub.Group != nil {
 			item.GroupName = sub.Group.Name
-			if sub.Group.DailyLimitUSD != nil {
-				item.DailyLimitUSD = *sub.Group.DailyLimitUSD
+			if effectiveDailyLimit := sub.EffectiveDailyLimitUSDAt(sub.Group, timezone.Now()); effectiveDailyLimit != nil {
+				item.DailyLimitUSD = *effectiveDailyLimit
 			}
 			if sub.Group.WeeklyLimitUSD != nil {
 				item.WeeklyLimitUSD = *sub.Group.WeeklyLimitUSD
@@ -185,4 +188,26 @@ func (h *SubscriptionHandler) GetSummary(c *gin.Context) {
 	}
 
 	response.Success(c, summary)
+}
+
+// ActivateQuotaBoost doubles the current user's daily subscription quota for today.
+// POST /api/v1/subscriptions/:id/quota-boost
+func (h *SubscriptionHandler) ActivateQuotaBoost(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not found in context")
+		return
+	}
+	subscriptionID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid subscription ID")
+		return
+	}
+
+	sub, _, err := h.subscriptionService.ActivateQuotaBoost(c.Request.Context(), subscriptionID, subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.UserSubscriptionFromService(sub))
 }

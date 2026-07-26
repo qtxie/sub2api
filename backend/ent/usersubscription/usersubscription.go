@@ -43,6 +43,14 @@ const (
 	FieldWeeklyUsageUsd = "weekly_usage_usd"
 	// FieldMonthlyUsageUsd holds the string denoting the monthly_usage_usd field in the database.
 	FieldMonthlyUsageUsd = "monthly_usage_usd"
+	// FieldQuotaBoostMonthlyLimit holds the string denoting the quota_boost_monthly_limit field in the database.
+	FieldQuotaBoostMonthlyLimit = "quota_boost_monthly_limit"
+	// FieldQuotaBoostMonthlyUsed holds the string denoting the quota_boost_monthly_used field in the database.
+	FieldQuotaBoostMonthlyUsed = "quota_boost_monthly_used"
+	// FieldQuotaBoostPeriodStart holds the string denoting the quota_boost_period_start field in the database.
+	FieldQuotaBoostPeriodStart = "quota_boost_period_start"
+	// FieldQuotaBoostActivatedAt holds the string denoting the quota_boost_activated_at field in the database.
+	FieldQuotaBoostActivatedAt = "quota_boost_activated_at"
 	// FieldAssignedBy holds the string denoting the assigned_by field in the database.
 	FieldAssignedBy = "assigned_by"
 	// FieldAssignedAt holds the string denoting the assigned_at field in the database.
@@ -106,6 +114,10 @@ var Columns = []string{
 	FieldDailyUsageUsd,
 	FieldWeeklyUsageUsd,
 	FieldMonthlyUsageUsd,
+	FieldQuotaBoostMonthlyLimit,
+	FieldQuotaBoostMonthlyUsed,
+	FieldQuotaBoostPeriodStart,
+	FieldQuotaBoostActivatedAt,
 	FieldAssignedBy,
 	FieldAssignedAt,
 	FieldNotes,
@@ -145,6 +157,14 @@ var (
 	DefaultWeeklyUsageUsd float64
 	// DefaultMonthlyUsageUsd holds the default value on creation for the "monthly_usage_usd" field.
 	DefaultMonthlyUsageUsd float64
+	// DefaultQuotaBoostMonthlyLimit holds the default value on creation for the "quota_boost_monthly_limit" field.
+	DefaultQuotaBoostMonthlyLimit int
+	// QuotaBoostMonthlyLimitValidator is a validator for the "quota_boost_monthly_limit" field. It is called by the builders before save.
+	QuotaBoostMonthlyLimitValidator func(int) error
+	// DefaultQuotaBoostMonthlyUsed holds the default value on creation for the "quota_boost_monthly_used" field.
+	DefaultQuotaBoostMonthlyUsed int
+	// QuotaBoostMonthlyUsedValidator is a validator for the "quota_boost_monthly_used" field. It is called by the builders before save.
+	QuotaBoostMonthlyUsedValidator func(int) error
 	// DefaultAssignedAt holds the default value on creation for the "assigned_at" field.
 	DefaultAssignedAt func() time.Time
 )
@@ -225,6 +245,26 @@ func ByWeeklyUsageUsd(opts ...sql.OrderTermOption) OrderOption {
 // ByMonthlyUsageUsd orders the results by the monthly_usage_usd field.
 func ByMonthlyUsageUsd(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldMonthlyUsageUsd, opts...).ToFunc()
+}
+
+// ByQuotaBoostMonthlyLimit orders the results by the quota_boost_monthly_limit field.
+func ByQuotaBoostMonthlyLimit(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldQuotaBoostMonthlyLimit, opts...).ToFunc()
+}
+
+// ByQuotaBoostMonthlyUsed orders the results by the quota_boost_monthly_used field.
+func ByQuotaBoostMonthlyUsed(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldQuotaBoostMonthlyUsed, opts...).ToFunc()
+}
+
+// ByQuotaBoostPeriodStart orders the results by the quota_boost_period_start field.
+func ByQuotaBoostPeriodStart(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldQuotaBoostPeriodStart, opts...).ToFunc()
+}
+
+// ByQuotaBoostActivatedAt orders the results by the quota_boost_activated_at field.
+func ByQuotaBoostActivatedAt(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldQuotaBoostActivatedAt, opts...).ToFunc()
 }
 
 // ByAssignedBy orders the results by the assigned_by field.

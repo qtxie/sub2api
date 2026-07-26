@@ -921,8 +921,9 @@ func (s *BillingCacheService) checkSubscriptionEligibility(ctx context.Context, 
 		return ErrSubscriptionInvalid
 	}
 
-	// 检查限额（使用传入的Group限额配置）
-	if group.HasDailyLimit() && subData.DailyUsage >= *group.DailyLimitUSD {
+	// 检查限额（使用传入的Group限额配置；日限额需考虑当日 quota boost）
+	effectiveDailyLimit := subscription.EffectiveDailyLimitUSDAt(group, time.Now())
+	if effectiveDailyLimit != nil && subData.DailyUsage >= *effectiveDailyLimit {
 		return ErrDailyLimitExceeded
 	}
 

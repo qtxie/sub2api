@@ -82,20 +82,20 @@
                       :class="
                         getProgressBarClass(
                           subscription.daily_usage_usd,
-                          subscription.group?.daily_limit_usd
+                          getDailyLimit(subscription)
                         )
                       "
                       :style="{
                         width: getProgressWidth(
                           subscription.daily_usage_usd,
-                          subscription.group?.daily_limit_usd
+                          getDailyLimit(subscription)
                         )
                       }"
                     ></div>
                   </div>
                   <span class="w-24 flex-shrink-0 text-right text-[10px] text-gray-500">
                     {{
-                      formatUsage(subscription.daily_usage_usd, subscription.group?.daily_limit_usd)
+                      formatUsage(subscription.daily_usage_usd, getDailyLimit(subscription))
                     }}
                   </span>
                 </div>
@@ -206,8 +206,9 @@ const displaySubscriptions = computed(() => {
 
 function getMaxUsagePercentage(sub: UserSubscription): number {
   const percentages: number[] = []
-  if (sub.group?.daily_limit_usd) {
-    percentages.push(((sub.daily_usage_usd || 0) / sub.group.daily_limit_usd) * 100)
+  const dailyLimit = getDailyLimit(sub)
+  if (dailyLimit) {
+    percentages.push(((sub.daily_usage_usd || 0) / dailyLimit) * 100)
   }
   if (sub.group?.weekly_limit_usd) {
     percentages.push(((sub.weekly_usage_usd || 0) / sub.group.weekly_limit_usd) * 100)
@@ -216,6 +217,10 @@ function getMaxUsagePercentage(sub: UserSubscription): number {
     percentages.push(((sub.monthly_usage_usd || 0) / sub.group.monthly_limit_usd) * 100)
   }
   return percentages.length > 0 ? Math.max(...percentages) : 0
+}
+
+function getDailyLimit(sub: UserSubscription): number | null | undefined {
+  return sub.effective_daily_limit_usd ?? sub.group?.daily_limit_usd
 }
 
 function isUnlimited(sub: UserSubscription): boolean {
