@@ -47,6 +47,29 @@ func TestDetectQCProbeRequest_OriginAndUA(t *testing.T) {
 		require.Equal(t, QCProbeSourceUserAgent, sel.Source)
 	})
 
+	t.Run("empty user agent", func(t *testing.T) {
+		sel := DetectQCProbeRequest("", "", "", settings)
+		require.True(t, sel.Active)
+		require.Equal(t, QCProbeSourceEmptyUserAgent, sel.Source)
+		require.True(t, sel.allowsAccountID(11))
+		require.False(t, sel.allowsAccountID(99))
+	})
+
+	t.Run("dash user agent", func(t *testing.T) {
+		// TokensQC / nginx-style missing UA.
+		for _, ua := range []string{"-", " - ", "—"} {
+			sel := DetectQCProbeRequest("", "", ua, settings)
+			require.True(t, sel.Active, "ua=%q", ua)
+			require.Equal(t, QCProbeSourceEmptyUserAgent, sel.Source, "ua=%q", ua)
+		}
+	})
+
+	t.Run("empty ua still prefers known origin", func(t *testing.T) {
+		sel := DetectQCProbeRequest("https://tokensqc.com", "", "-", settings)
+		require.True(t, sel.Active)
+		require.Equal(t, QCProbeSourceTokensQC, sel.Source)
+	})
+
 	t.Run("no match", func(t *testing.T) {
 		sel := DetectQCProbeRequest("https://example.com", "https://cursor.com", "Mozilla/5.0", settings)
 		require.False(t, sel.Active)

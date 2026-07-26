@@ -21,12 +21,15 @@ const (
 	// manual schedulable flag (still requires active accounts).
 	QCProbePoolScopeGlobal = "global"
 
-	QCProbeSourceZtest      = "ztest"
-	QCProbeSourceTokensQC   = "tokensqc"
-	QCProbeSourceHvoy       = "hvoy"
-	QCProbeSourceAPIRanking = "apiranking"
-	QCProbeSourceLuguang    = "luguang"
-	QCProbeSourceUserAgent  = "user_agent"
+	QCProbeSourceZtest           = "ztest"
+	QCProbeSourceTokensQC        = "tokensqc"
+	QCProbeSourceHvoy            = "hvoy"
+	QCProbeSourceAPIRanking      = "apiranking"
+	QCProbeSourceLuguang         = "luguang"
+	QCProbeSourceUserAgent       = "user_agent"
+	// QCProbeSourceEmptyUserAgent matches server-side QC probes (e.g. TokensQC)
+	// that omit User-Agent entirely or send "-".
+	QCProbeSourceEmptyUserAgent = "empty_user_agent"
 )
 
 // QCProbeSourceConfig controls detection for one QC site.
@@ -269,6 +272,14 @@ func DetectQCProbeRequest(origin, referer, userAgent string, settings *QCProbeRo
 		return selection
 	}
 
+	// TokensQC and similar server-side probes often send an empty User-Agent or
+	// the literal "-". Treat those as QC traffic so the burn pool is applied.
+	if isEmptyQCProbeUserAgent(ua) {
+		selection.Active = true
+		selection.Source = QCProbeSourceEmptyUserAgent
+		return selection
+	}
+
 	// Also scan any extra custom sources not in the default order.
 	for source, src := range settings.Sources {
 		if !src.Enabled {
@@ -344,6 +355,17 @@ func uaMatchesQCProbeSubstrings(ua string, substrings []string) bool {
 		}
 	}
 	return false
+}
+
+// isEmptyQCProbeUserAgent reports UA values that QC sites use when they strip
+// or never set User-Agent (nginx logs these as "-").
+func isEmptyQCProbeUserAgent(ua string) bool {
+	switch strings.TrimSpace(ua) {
+	case "", "-", "—", "–":
+		return true
+	default:
+		return false
+	}
 }
 
 // WithQCProbeSelection stores the QC decision on the request context.
