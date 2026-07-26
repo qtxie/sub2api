@@ -12,6 +12,7 @@ export default {
     switchToDark: 'Switch to Dark Mode',
     dashboard: 'Dashboard',
     login: 'Login',
+    register: 'Register',
     getStarted: 'Get Started',
     goToDashboard: 'Go to Dashboard',
     mascot: 'Black Cat',

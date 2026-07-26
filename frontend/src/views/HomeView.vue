@@ -51,6 +51,13 @@
             {{ t('home.dashboard') }}
           </router-link>
           <router-link
+            v-else-if="registrationEnabled"
+            to="/register"
+            class="ml-1 inline-flex items-center rounded-full bg-gray-900 px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+          >
+            {{ t('home.register') }}
+          </router-link>
+          <router-link
             v-else
             to="/login"
             class="ml-1 inline-flex items-center rounded-full bg-gray-900 px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
@@ -188,11 +195,10 @@ const dashboardPath = computed(() => (isAdmin.value ? '/admin/dashboard' : '/das
 
 const primaryCtaPath = computed(() => {
   if (isAuthenticated.value) return dashboardPath.value
-  return registrationEnabled.value ? '/register' : '/login'
+  return '/login'
 })
 const primaryCtaLabel = computed(() => {
   if (isAuthenticated.value) return t('home.goToDashboard')
-  if (registrationEnabled.value) return t('home.getStarted')
   return t('home.login')
 })
 

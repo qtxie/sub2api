@@ -12,6 +12,7 @@ export default {
     switchToDark: '切换到深色模式',
     dashboard: '控制台',
     login: '登录',
+    register: '注册',
     getStarted: '立即开始',
     goToDashboard: '进入控制台',
     mascot: '黑猫',
