@@ -18,13 +18,15 @@ import (
 )
 
 const (
-	openAIFailbackPhaseCooldown  = "cooldown"
-	openAIFailbackPhaseProbation = "probation"
-	openAIFailbackProductionSlow = "production_slow"
-	openAIFailbackProbeSlow      = "probe_slow"
-	openAIFailbackStateTTL       = 7 * 24 * time.Hour
-	openAIFailbackStoreTimeout   = 2 * time.Second
-	openAIFailbackCASAttempts    = 5
+	openAIFailbackPhaseCooldown           = "cooldown"
+	openAIFailbackPhaseProbation          = "probation"
+	openAIFailbackPhaseSlowObservation    = "slow_observation"
+	openAIFailbackProductionSlow          = "production_slow"
+	openAIFailbackProbeSlow               = "probe_slow"
+	openAIFailbackProductionSlowTripCount = 3
+	openAIFailbackStateTTL                = 7 * 24 * time.Hour
+	openAIFailbackStoreTimeout            = 2 * time.Second
+	openAIFailbackCASAttempts             = 5
 	// After cooldown ends, require a probe for this long. If no probe runs at all
 	// (success or failure), clear the failback state so the account is not stuck
 	// forever. A failed probe rewrites CooldownUntil and continues cooldown.
@@ -101,6 +103,7 @@ type openAIFailbackState struct {
 	Phase                   string `json:"phase"`
 	CooldownLevel           int    `json:"cooldown_level"`
 	ProbeFailuresAtLevel    int    `json:"probe_failures_at_level,omitempty"`
+	ConsecutiveSlowTTFT     int    `json:"consecutive_slow_ttft,omitempty"`
 	CooldownSeconds         int64  `json:"cooldown_seconds"`
 	CooldownUntilUnixMilli  int64  `json:"cooldown_until_unix_ms"`
 	ProbationUntilUnixMilli int64  `json:"probation_until_unix_ms,omitempty"`
@@ -550,19 +553,45 @@ func (c *openAIFailbackController) recordProductionResult(
 
 		if !exists {
 			if productionSlow {
-				return c.cooldownState(0, now, openAIFailbackProductionSlow), true
+				return openAIFailbackState{
+					Phase:               openAIFailbackPhaseSlowObservation,
+					ConsecutiveSlowTTFT: 1,
+					UpdatedAtUnixMilli:  now.UnixMilli(),
+				}, true
 			}
 			return openAIFailbackState{}, false
+		}
+		if current.Phase == openAIFailbackPhaseSlowObservation {
+			if firstTokenMS == nil {
+				return current, true
+			}
+			if !productionSlow {
+				return openAIFailbackState{}, false
+			}
+			current.ConsecutiveSlowTTFT++
+			current.UpdatedAtUnixMilli = now.UnixMilli()
+			if current.ConsecutiveSlowTTFT >= openAIFailbackProductionSlowTripCount {
+				return c.cooldownState(0, now, openAIFailbackProductionSlow), true
+			}
+			return current, true
 		}
 		if current.Phase != openAIFailbackPhaseProbation {
 			return current, true
 		}
 		if firstTokenMS != nil && time.Duration(*firstTokenMS)*time.Millisecond > c.cfg.maxTTFT {
+			current.ConsecutiveSlowTTFT++
+			current.UpdatedAtUnixMilli = now.UnixMilli()
+			if current.ConsecutiveSlowTTFT < openAIFailbackProductionSlowTripCount {
+				return current, true
+			}
 			level := 0
 			if now.UnixMilli() < current.ProbationUntilUnixMilli {
 				level = current.CooldownLevel + 1
 			}
 			return c.cooldownState(level, now, openAIFailbackProductionSlow), true
+		}
+		if firstTokenMS != nil {
+			current.ConsecutiveSlowTTFT = 0
 		}
 		current.HealthyRequests++
 		current.UpdatedAtUnixMilli = now.UnixMilli()
@@ -971,7 +1000,8 @@ func decodeOpenAIFailbackState(raw string) (openAIFailbackState, bool) {
 	if err := json.Unmarshal([]byte(raw), &state); err != nil {
 		return openAIFailbackState{}, false
 	}
-	if state.Phase != openAIFailbackPhaseCooldown && state.Phase != openAIFailbackPhaseProbation {
+	if state.Phase != openAIFailbackPhaseCooldown && state.Phase != openAIFailbackPhaseProbation &&
+		state.Phase != openAIFailbackPhaseSlowObservation {
 		return openAIFailbackState{}, false
 	}
 	return state, true

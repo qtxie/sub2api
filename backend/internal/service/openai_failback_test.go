@@ -32,7 +32,14 @@ func testOpenAIFailbackConfig() openAIFailbackConfig {
 	}
 }
 
-func TestOpenAIFailbackControllerSlowProductionResultStartsSoftCooldownAtStrictBoundary(t *testing.T) {
+func recordOpenAIFailbackSlowProductionResults(ctx context.Context, controller *openAIFailbackController, accountID int64, model string, count int) {
+	slowTTFT := 30_001
+	for i := 0; i < count; i++ {
+		controller.recordProductionResult(ctx, accountID, model, true, &slowTTFT)
+	}
+}
+
+func TestOpenAIFailbackControllerRequiresThreeConsecutiveSlowProductionResults(t *testing.T) {
 	ctx := context.Background()
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
 
@@ -43,9 +50,23 @@ func TestOpenAIFailbackControllerSlowProductionResultStartsSoftCooldownAtStrictB
 	_, found := controller.readState(ctx, key)
 	require.False(t, found, "the trip condition is strictly greater than 30 seconds")
 
-	aboveThreshold := 30_001
-	controller.recordProductionResult(ctx, 9, "gpt-5-mini", true, &aboveThreshold)
+	recordOpenAIFailbackSlowProductionResults(ctx, controller, 9, "gpt-5-mini", 2)
 	state := requireOpenAIFailbackState(t, controller, 9, "gpt-5-mini")
+	require.Equal(t, openAIFailbackPhaseSlowObservation, state.Phase)
+	require.Equal(t, 2, state.ConsecutiveSlowTTFT)
+	require.Equal(t, openAIFailbackAllow, controller.selectionAction(ctx, 9, "gpt-5-mini"))
+	require.Zero(t, controller.snapshotMetrics().ProductionSlow)
+
+	controller.recordProductionResult(ctx, 9, "gpt-5-mini", true, nil)
+	state = requireOpenAIFailbackState(t, controller, 9, "gpt-5-mini")
+	require.Equal(t, 2, state.ConsecutiveSlowTTFT, "an unmeasured success must not alter the measured TTFT streak")
+
+	controller.recordProductionResult(ctx, 9, "gpt-5-mini", true, &atThreshold)
+	_, found = controller.readState(ctx, key)
+	require.False(t, found, "a measured healthy TTFT resets the streak")
+
+	recordOpenAIFailbackSlowProductionResults(ctx, controller, 9, "gpt-5-mini", openAIFailbackProductionSlowTripCount)
+	state = requireOpenAIFailbackState(t, controller, 9, "gpt-5-mini")
 	require.Equal(t, openAIFailbackPhaseCooldown, state.Phase)
 	require.Equal(t, openAIFailbackProductionSlow, state.LastFailure)
 	require.Equal(t, int64(120), state.CooldownSeconds)
@@ -56,11 +77,28 @@ func TestOpenAIFailbackControllerSlowProductionResultStartsSoftCooldownAtStrictB
 	require.EqualValues(t, 1, metrics.ProductionSlow)
 }
 
+func TestOpenAIFailbackControllerSlowStreakPersistsAcrossControllers(t *testing.T) {
+	ctx := context.Background()
+	store := &openAIFailbackStoreStub{}
+	firstController := newOpenAIFailbackController(store, testOpenAIFailbackConfig())
+	recordOpenAIFailbackSlowProductionResults(ctx, firstController, 9, "gpt-5-mini", 1)
+
+	stored, valid := decodeOpenAIFailbackState(store.value)
+	require.True(t, valid)
+	require.Equal(t, openAIFailbackPhaseSlowObservation, stored.Phase)
+	require.Equal(t, 1, stored.ConsecutiveSlowTTFT)
+
+	secondController := newOpenAIFailbackController(store, testOpenAIFailbackConfig())
+	recordOpenAIFailbackSlowProductionResults(ctx, secondController, 9, "gpt-5-mini", 2)
+	state := requireOpenAIFailbackState(t, secondController, 9, "gpt-5-mini")
+	require.Equal(t, openAIFailbackPhaseCooldown, state.Phase)
+	require.Equal(t, openAIFailbackProductionSlow, state.LastFailure)
+}
+
 func TestOpenAIFailbackControllerProductionErrorHardensSlowCooldown(t *testing.T) {
 	tests := map[string]func(context.Context, *openAIFailbackController){
 		"production slow": func(ctx context.Context, controller *openAIFailbackController) {
-			slowTTFT := 30_001
-			controller.recordProductionResult(ctx, 9, "gpt-5-mini", true, &slowTTFT)
+			recordOpenAIFailbackSlowProductionResults(ctx, controller, 9, "gpt-5-mini", openAIFailbackProductionSlowTripCount)
 		},
 		"probe slow": func(ctx context.Context, controller *openAIFailbackController) {
 			controller.recordProbeFailure(ctx, 9, "gpt-5-mini", openAIFailbackProbeSlow)
@@ -161,6 +199,22 @@ func TestOpenAIFailbackControllerSlowProbationResultRelapses(t *testing.T) {
 	slowTTFT := 20_001
 	controller.recordProductionResult(ctx, 20, "gpt-5-mini", true, &slowTTFT)
 	state := requireOpenAIFailbackState(t, controller, 20, "gpt-5-mini")
+	require.Equal(t, openAIFailbackPhaseProbation, state.Phase)
+	require.Equal(t, 1, state.ConsecutiveSlowTTFT)
+
+	healthyTTFT := 200
+	controller.recordProductionResult(ctx, 20, "gpt-5-mini", true, &healthyTTFT)
+	state = requireOpenAIFailbackState(t, controller, 20, "gpt-5-mini")
+	require.Zero(t, state.ConsecutiveSlowTTFT)
+
+	controller.recordProductionResult(ctx, 20, "gpt-5-mini", true, &slowTTFT)
+	controller.recordProductionResult(ctx, 20, "gpt-5-mini", true, &slowTTFT)
+	state = requireOpenAIFailbackState(t, controller, 20, "gpt-5-mini")
+	require.Equal(t, openAIFailbackPhaseProbation, state.Phase)
+	require.Equal(t, 2, state.ConsecutiveSlowTTFT)
+
+	controller.recordProductionResult(ctx, 20, "gpt-5-mini", true, &slowTTFT)
+	state = requireOpenAIFailbackState(t, controller, 20, "gpt-5-mini")
 	require.Equal(t, 1, state.CooldownLevel)
 	require.Equal(t, "production_slow", state.LastFailure)
 	require.Equal(t, int64(300), state.CooldownSeconds)
@@ -168,8 +222,7 @@ func TestOpenAIFailbackControllerSlowProbationResultRelapses(t *testing.T) {
 
 func TestOpenAIFailbackSelectionSwitchesFromSlowSuccessToHealthyAccount(t *testing.T) {
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
-	slowTTFT := 30_001
-	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", true, &slowTTFT)
+	recordOpenAIFailbackSlowProductionResults(context.Background(), controller, 51, "gpt-5-mini", openAIFailbackProductionSlowTripCount)
 
 	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
 	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
@@ -197,9 +250,8 @@ func TestOpenAIFailbackSelectionSwitchesFromSlowSuccessToHealthyAccount(t *testi
 
 func TestOpenAIFailbackSelectionFailsOpenWhenEveryAccountIsSlow(t *testing.T) {
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
-	slowTTFT := 30_001
-	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", true, &slowTTFT)
-	controller.recordProductionResult(context.Background(), 52, "gpt-5-mini", true, &slowTTFT)
+	recordOpenAIFailbackSlowProductionResults(context.Background(), controller, 51, "gpt-5-mini", openAIFailbackProductionSlowTripCount)
+	recordOpenAIFailbackSlowProductionResults(context.Background(), controller, 52, "gpt-5-mini", openAIFailbackProductionSlowTripCount)
 
 	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
 	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
@@ -223,8 +275,7 @@ func TestOpenAIFailbackSelectionFailsOpenWhenEveryAccountIsSlow(t *testing.T) {
 
 func TestOpenAIFailbackSelectionEscapesSlowStickyAccount(t *testing.T) {
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
-	slowTTFT := 30_001
-	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", true, &slowTTFT)
+	recordOpenAIFailbackSlowProductionResults(context.Background(), controller, 51, "gpt-5-mini", openAIFailbackProductionSlowTripCount)
 
 	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
 	svc.cache = &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:slow_sticky": 51}}
@@ -249,8 +300,7 @@ func TestOpenAIFailbackSelectionEscapesSlowStickyAccount(t *testing.T) {
 func TestOpenAIFailbackSelectionPreservesNonMovablePreviousResponseAccount(t *testing.T) {
 	groupID := int64(77)
 	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
-	slowTTFT := 30_001
-	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", true, &slowTTFT)
+	recordOpenAIFailbackSlowProductionResults(context.Background(), controller, 51, "gpt-5-mini", openAIFailbackProductionSlowTripCount)
 
 	accounts := openAIFailbackSelectionTestAccounts()
 	for i := range accounts {
