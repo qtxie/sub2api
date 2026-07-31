@@ -56,6 +56,40 @@ func TestOpenAIFailbackControllerSlowProductionResultStartsSoftCooldownAtStrictB
 	require.EqualValues(t, 1, metrics.ProductionSlow)
 }
 
+func TestOpenAIFailbackControllerProductionErrorHardensSlowCooldown(t *testing.T) {
+	tests := map[string]func(context.Context, *openAIFailbackController){
+		"production slow": func(ctx context.Context, controller *openAIFailbackController) {
+			slowTTFT := 30_001
+			controller.recordProductionResult(ctx, 9, "gpt-5-mini", true, &slowTTFT)
+		},
+		"probe slow": func(ctx context.Context, controller *openAIFailbackController) {
+			controller.recordProbeFailure(ctx, 9, "gpt-5-mini", openAIFailbackProbeSlow)
+		},
+	}
+
+	for name, startSlowCooldown := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+			controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+			controller.now = func() time.Time { return now }
+
+			startSlowCooldown(ctx, controller)
+			before := requireOpenAIFailbackState(t, controller, 9, "gpt-5-mini")
+			require.True(t, controller.shouldFailOpenSlow(ctx, 9, "gpt-5-mini"))
+
+			now = now.Add(time.Minute)
+			controller.recordProductionResult(ctx, 9, "gpt-5-mini", false, nil)
+			state := requireOpenAIFailbackState(t, controller, 9, "gpt-5-mini")
+			require.Equal(t, openAIFailbackPhaseCooldown, state.Phase)
+			require.Equal(t, before.CooldownLevel, state.CooldownLevel)
+			require.Equal(t, "production_error", state.LastFailure)
+			require.Equal(t, now.Add(2*time.Minute).UnixMilli(), state.CooldownUntilUnixMilli)
+			require.False(t, controller.shouldFailOpenSlow(ctx, 9, "gpt-5-mini"))
+		})
+	}
+}
+
 func TestOpenAIFailbackControllerAdaptiveCooldownAndHealthyReset(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)

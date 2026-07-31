@@ -536,6 +536,13 @@ func (c *openAIFailbackController) recordProductionResult(
 			if currentQuickRelapse {
 				level = current.CooldownLevel + 1
 			} else if exists && current.Phase == openAIFailbackPhaseCooldown {
+				switch current.LastFailure {
+				case openAIFailbackProductionSlow, openAIFailbackProbeSlow:
+					// A slow-only cooldown may fail open as emergency capacity. Once
+					// that traffic returns a real error, stop treating the account as
+					// usable slow capacity and restart a hard cooldown from now.
+					return c.cooldownState(current.CooldownLevel, now, "production_error"), true
+				}
 				return current, true
 			}
 			return c.cooldownState(level, now, "production_error"), true
@@ -565,7 +572,9 @@ func (c *openAIFailbackController) recordProductionResult(
 		return current, true
 	})
 
-	cooldownStarted := found && state.Phase == openAIFailbackPhaseCooldown && (!beforeFound || before.Phase != openAIFailbackPhaseCooldown)
+	cooldownStarted := found && state.Phase == openAIFailbackPhaseCooldown &&
+		(!beforeFound || before.Phase != openAIFailbackPhaseCooldown ||
+			(!success && before.LastFailure != state.LastFailure))
 	if cooldownStarted && (!success || state.LastFailure == openAIFailbackProductionSlow) {
 		slog.Warn("openai_failback_cooldown_started",
 			"account_id", accountID,

@@ -3538,6 +3538,9 @@ func (c *Config) Validate() error {
 			failback.FailbackMaxTTFTMs <= 0 || failback.FailbackMinHealthyRequests <= 0 {
 			return fmt.Errorf("gateway.openai_scheduler failback durations, probe failure threshold, TTFT, and healthy request count must be positive; max cooldown must be at least the default")
 		}
+		if failback.FailbackProductionSlowTTFTMs < failback.FailbackMaxTTFTMs {
+			return fmt.Errorf("gateway.openai_scheduler.failback_production_slow_ttft_ms must be greater than or equal to failback_max_ttft_ms")
+		}
 	}
 	softMap := c.Gateway.SoftModelMapping
 	if softMap.StickyEnabled {

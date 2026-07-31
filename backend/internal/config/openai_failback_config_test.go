@@ -19,6 +19,7 @@ func TestLoadOpenAIFailbackDefaults(t *testing.T) {
 	require.Equal(t, 1560, failback.FailbackCooldownMaxSeconds)
 	require.Equal(t, 300, failback.FailbackProbationSeconds)
 	require.Equal(t, 20, failback.FailbackProbeTimeoutSeconds)
+	require.Equal(t, 30_000, failback.FailbackProductionSlowTTFTMs)
 	require.Equal(t, 20_000, failback.FailbackMaxTTFTMs)
 	require.Equal(t, 3, failback.FailbackMinHealthyRequests)
 }
@@ -34,6 +35,12 @@ func TestValidateOpenAIFailbackConfiguration(t *testing.T) {
 	cfg.Gateway.OpenAIScheduler.FailbackCooldownMaxSeconds = 1560
 	cfg.Gateway.OpenAIScheduler.FailbackProbeFailuresPerIncrement = 0
 	require.ErrorContains(t, cfg.Validate(), "probe failure threshold")
+
+	cfg.Gateway.OpenAIScheduler.FailbackProbeFailuresPerIncrement = 2
+	cfg.Gateway.OpenAIScheduler.FailbackProductionSlowTTFTMs = 19_999
+	require.ErrorContains(t, cfg.Validate(), "failback_production_slow_ttft_ms must be greater than or equal to failback_max_ttft_ms")
+	cfg.Gateway.OpenAIScheduler.FailbackProductionSlowTTFTMs = 20_000
+	require.NoError(t, cfg.Validate())
 
 	cfg.Gateway.OpenAIScheduler.FailbackProbeEnabled = false
 	require.NoError(t, cfg.Validate())
