@@ -1283,6 +1283,9 @@ type GatewayOpenAISchedulerConfig struct {
 	FailbackProbationSeconds int `mapstructure:"failback_probation_seconds"`
 	// FailbackProbeTimeoutSeconds bounds the real upstream probe.
 	FailbackProbeTimeoutSeconds int `mapstructure:"failback_probe_timeout_seconds"`
+	// FailbackProductionSlowTTFTMs is the per-request production TTFT that marks
+	// an otherwise successful account/model as degraded for subsequent routing.
+	FailbackProductionSlowTTFTMs int `mapstructure:"failback_production_slow_ttft_ms"`
 	// FailbackMaxTTFTMs is the maximum healthy probe and probation TTFT.
 	FailbackMaxTTFTMs int `mapstructure:"failback_max_ttft_ms"`
 	// FailbackMinHealthyRequests is the number of successful production requests
@@ -2557,6 +2560,7 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.failback_cooldown_max_seconds", 1560)
 	viper.SetDefault("gateway.openai_scheduler.failback_probation_seconds", 300)
 	viper.SetDefault("gateway.openai_scheduler.failback_probe_timeout_seconds", 20)
+	viper.SetDefault("gateway.openai_scheduler.failback_production_slow_ttft_ms", 30000)
 	viper.SetDefault("gateway.openai_scheduler.failback_max_ttft_ms", 20000)
 	viper.SetDefault("gateway.openai_scheduler.failback_min_healthy_requests", 3)
 	viper.SetDefault("gateway.soft_model_mapping.sticky_enabled", true)
@@ -3530,7 +3534,8 @@ func (c *Config) Validate() error {
 		if failback.FailbackDefaultCooldownSeconds <= 0 || failback.FailbackCooldownIncrementSeconds < 0 ||
 			failback.FailbackProbeFailuresPerIncrement <= 0 ||
 			failback.FailbackCooldownMaxSeconds < failback.FailbackDefaultCooldownSeconds || failback.FailbackProbationSeconds <= 0 ||
-			failback.FailbackProbeTimeoutSeconds <= 0 || failback.FailbackMaxTTFTMs <= 0 || failback.FailbackMinHealthyRequests <= 0 {
+			failback.FailbackProbeTimeoutSeconds <= 0 || failback.FailbackProductionSlowTTFTMs <= 0 ||
+			failback.FailbackMaxTTFTMs <= 0 || failback.FailbackMinHealthyRequests <= 0 {
 			return fmt.Errorf("gateway.openai_scheduler failback durations, probe failure threshold, TTFT, and healthy request count must be positive; max cooldown must be at least the default")
 		}
 	}

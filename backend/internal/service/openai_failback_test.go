@@ -26,9 +26,34 @@ func testOpenAIFailbackConfig() openAIFailbackConfig {
 		maxCooldown:               26 * time.Minute,
 		probation:                 5 * time.Minute,
 		probeTimeout:              20 * time.Second,
+		productionSlowTTFT:        30 * time.Second,
 		maxTTFT:                   20 * time.Second,
 		minHealthyRequests:        3,
 	}
+}
+
+func TestOpenAIFailbackControllerSlowProductionResultStartsSoftCooldownAtStrictBoundary(t *testing.T) {
+	ctx := context.Background()
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+
+	atThreshold := 30_000
+	controller.recordProductionResult(ctx, 9, "gpt-5-mini", true, &atThreshold)
+	key, ok := openAIFailbackStateKey(9, "gpt-5-mini")
+	require.True(t, ok)
+	_, found := controller.readState(ctx, key)
+	require.False(t, found, "the trip condition is strictly greater than 30 seconds")
+
+	aboveThreshold := 30_001
+	controller.recordProductionResult(ctx, 9, "gpt-5-mini", true, &aboveThreshold)
+	state := requireOpenAIFailbackState(t, controller, 9, "gpt-5-mini")
+	require.Equal(t, openAIFailbackPhaseCooldown, state.Phase)
+	require.Equal(t, openAIFailbackProductionSlow, state.LastFailure)
+	require.Equal(t, int64(120), state.CooldownSeconds)
+	require.True(t, controller.shouldFailOpenSlow(ctx, 9, "gpt-5-mini"))
+	require.Equal(t, openAIFailbackAllow, controller.selectionAction(ctx, 9, "gpt-5-nano"), "slow state must remain model-scoped")
+
+	metrics := controller.snapshotMetrics()
+	require.EqualValues(t, 1, metrics.ProductionSlow)
 }
 
 func TestOpenAIFailbackControllerAdaptiveCooldownAndHealthyReset(t *testing.T) {
@@ -105,6 +130,124 @@ func TestOpenAIFailbackControllerSlowProbationResultRelapses(t *testing.T) {
 	require.Equal(t, 1, state.CooldownLevel)
 	require.Equal(t, "production_slow", state.LastFailure)
 	require.Equal(t, int64(300), state.CooldownSeconds)
+}
+
+func TestOpenAIFailbackSelectionSwitchesFromSlowSuccessToHealthyAccount(t *testing.T) {
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	slowTTFT := 30_001
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", true, &slowTTFT)
+
+	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(52), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+	metrics := controller.snapshotMetrics()
+	require.EqualValues(t, 1, metrics.SlowSwitch)
+	require.Zero(t, metrics.SlowFailOpen)
+	snapshot := svc.SnapshotOpenAIAccountSchedulerMetrics()
+	require.EqualValues(t, 1, snapshot.FailbackProductionSlowTotal)
+	require.EqualValues(t, 1, snapshot.FailbackSlowSwitchTotal)
+	require.Zero(t, snapshot.FailbackSlowFailOpenTotal)
+}
+
+func TestOpenAIFailbackSelectionFailsOpenWhenEveryAccountIsSlow(t *testing.T) {
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	slowTTFT := 30_001
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", true, &slowTTFT)
+	controller.recordProductionResult(context.Background(), 52, "gpt-5-mini", true, &slowTTFT)
+
+	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
+	selection, _, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(51), selection.Account.ID, "the best slow account remains emergency capacity")
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+	metrics := controller.snapshotMetrics()
+	require.EqualValues(t, 1, metrics.SlowFailOpen)
+	require.EqualValues(t, 1, svc.SnapshotOpenAIAccountSchedulerMetrics().FailbackSlowFailOpenTotal)
+}
+
+func TestOpenAIFailbackSelectionEscapesSlowStickyAccount(t *testing.T) {
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	slowTTFT := 30_001
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", true, &slowTTFT)
+
+	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
+	svc.cache = &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:slow_sticky": 51}}
+	svc.rateLimitService = newOpenAIAdvancedSchedulerRateLimitService("true")
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), nil, "", "slow_sticky", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(52), selection.Account.ID)
+	require.False(t, decision.StickySessionHit)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestOpenAIFailbackSelectionPreservesNonMovablePreviousResponseAccount(t *testing.T) {
+	groupID := int64(77)
+	controller := newOpenAIFailbackController(nil, testOpenAIFailbackConfig())
+	slowTTFT := 30_001
+	controller.recordProductionResult(context.Background(), 51, "gpt-5-mini", true, &slowTTFT)
+
+	accounts := openAIFailbackSelectionTestAccounts()
+	for i := range accounts {
+		accounts[i].GroupIDs = []int64{groupID}
+		accounts[i].Extra = map[string]any{"openai_apikey_responses_websockets_v2_enabled": true}
+	}
+	svc := newOpenAIFailbackSelectionTestService(controller, &openAIFailbackProbeUpstream{})
+	svc.accountRepo = schedulerGroupAwareOpenAIAccountRepo{schedulerTestOpenAIAccountRepo{accounts: accounts}}
+	svc.cache = &schedulerTestGatewayCache{}
+	svc.cfg = newSchedulerTestOpenAIWSV2Config()
+	svc.cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc.rateLimitService = newOpenAIAdvancedSchedulerRateLimitService("true", "true")
+	store := svc.getOpenAIWSStateStore()
+	require.NoError(t, store.BindResponseAccount(context.Background(), groupID, "resp_slow_unmovable", 51, time.Hour))
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForCapability(
+		context.Background(), &groupID, "resp_slow_unmovable", "", "gpt-5", nil,
+		OpenAIUpstreamTransportAny,
+		OpenAIEndpointCapabilityChatCompletions,
+		false, false, true,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(51), selection.Account.ID)
+	require.True(t, decision.StickyPreviousHit)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+	require.Zero(t, controller.snapshotMetrics().SlowFailOpen)
 }
 
 func TestOpenAIFailbackControllerNonStreamingSuccessesCompleteProbation(t *testing.T) {

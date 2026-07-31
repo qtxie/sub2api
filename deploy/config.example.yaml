@@ -442,6 +442,9 @@ gateway:
     # A passed probe immediately admits the account into this probation window.
     failback_probation_seconds: 300
     failback_probe_timeout_seconds: 20
+    # A successful production request above this raw TTFT is routed away from on later requests.
+    failback_production_slow_ttft_ms: 30000
+    # Recovery is deliberately stricter than the production trip threshold to avoid flapping.
     failback_max_ttft_ms: 20000
     failback_min_healthy_requests: 3
   # OpenAI soft model mapping sticky routing (account soft_model_mapping).

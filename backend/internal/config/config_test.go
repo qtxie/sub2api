@@ -475,6 +475,9 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIScheduler.StickyEscapeErrorRate != 0.5 {
 		t.Fatalf("Gateway.OpenAIScheduler.StickyEscapeErrorRate = %v, want 0.5", cfg.Gateway.OpenAIScheduler.StickyEscapeErrorRate)
 	}
+	if cfg.Gateway.OpenAIScheduler.FailbackProductionSlowTTFTMs != 30000 {
+		t.Fatalf("Gateway.OpenAIScheduler.FailbackProductionSlowTTFTMs = %d, want 30000", cfg.Gateway.OpenAIScheduler.FailbackProductionSlowTTFTMs)
+	}
 	if !cfg.Gateway.OpenAIWS.SessionHashReadOldFallback {
 		t.Fatalf("Gateway.OpenAIWS.SessionHashReadOldFallback = false, want true")
 	}
@@ -2358,6 +2361,11 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			name:    "sticky_escape_error_rate 不能大于 1",
 			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.StickyEscapeErrorRate = 1.1 },
 			wantErr: "gateway.openai_scheduler.sticky_escape_error_rate",
+		},
+		{
+			name:    "failback production slow TTFT must be positive",
+			mutate:  func(c *Config) { c.Gateway.OpenAIScheduler.FailbackProductionSlowTTFTMs = 0 },
+			wantErr: "gateway.openai_scheduler",
 		},
 	}
 

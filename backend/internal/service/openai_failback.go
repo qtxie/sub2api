@@ -20,6 +20,8 @@ import (
 const (
 	openAIFailbackPhaseCooldown  = "cooldown"
 	openAIFailbackPhaseProbation = "probation"
+	openAIFailbackProductionSlow = "production_slow"
+	openAIFailbackProbeSlow      = "probe_slow"
 	openAIFailbackStateTTL       = 7 * 24 * time.Hour
 	openAIFailbackStoreTimeout   = 2 * time.Second
 	openAIFailbackCASAttempts    = 5
@@ -75,6 +77,7 @@ type openAIFailbackConfig struct {
 	maxCooldown               time.Duration
 	probation                 time.Duration
 	probeTimeout              time.Duration
+	productionSlowTTFT        time.Duration
 	maxTTFT                   time.Duration
 	minHealthyRequests        int
 }
@@ -88,6 +91,7 @@ func newOpenAIFailbackConfig(cfg config.GatewayOpenAISchedulerConfig) openAIFail
 		maxCooldown:               time.Duration(cfg.FailbackCooldownMaxSeconds) * time.Second,
 		probation:                 time.Duration(cfg.FailbackProbationSeconds) * time.Second,
 		probeTimeout:              time.Duration(cfg.FailbackProbeTimeoutSeconds) * time.Second,
+		productionSlowTTFT:        time.Duration(cfg.FailbackProductionSlowTTFTMs) * time.Millisecond,
 		maxTTFT:                   time.Duration(cfg.FailbackMaxTTFTMs) * time.Millisecond,
 		minHealthyRequests:        cfg.FailbackMinHealthyRequests,
 	}
@@ -118,21 +122,27 @@ type openAIFailbackLocalLease struct {
 }
 
 type openAIFailbackMetrics struct {
-	probeTotal   atomic.Int64
-	probeSuccess atomic.Int64
-	probeFailure atomic.Int64
-	blocked      atomic.Int64
-	relapse      atomic.Int64
-	reset        atomic.Int64
+	probeTotal     atomic.Int64
+	probeSuccess   atomic.Int64
+	probeFailure   atomic.Int64
+	blocked        atomic.Int64
+	relapse        atomic.Int64
+	reset          atomic.Int64
+	productionSlow atomic.Int64
+	slowSwitch     atomic.Int64
+	slowFailOpen   atomic.Int64
 }
 
 type openAIFailbackMetricsSnapshot struct {
-	ProbeTotal   int64
-	ProbeSuccess int64
-	ProbeFailure int64
-	Blocked      int64
-	Relapse      int64
-	Reset        int64
+	ProbeTotal     int64
+	ProbeSuccess   int64
+	ProbeFailure   int64
+	Blocked        int64
+	Relapse        int64
+	Reset          int64
+	ProductionSlow int64
+	SlowSwitch     int64
+	SlowFailOpen   int64
 }
 
 type openAIFailbackController struct {
@@ -284,7 +294,7 @@ func (s *OpenAIGatewayService) runAcquiredOpenAIFailbackProbe(
 	}
 	if time.Duration(result.TTFTMS)*time.Millisecond > controller.cfg.maxTTFT {
 		stateCtx, stateCancel := context.WithTimeout(context.Background(), openAIFailbackStoreTimeout)
-		controller.recordProbeFailure(stateCtx, account.ID, mappedModel, "probe_slow")
+		controller.recordProbeFailure(stateCtx, account.ID, mappedModel, openAIFailbackProbeSlow)
 		stateCancel()
 		return false
 	}
@@ -374,6 +384,52 @@ func (c *openAIFailbackController) selectionActionWithRetryAt(ctx context.Contex
 		return openAIFailbackAllow, time.Time{}
 	}
 	return c.selectionActionForState(ctx, key, accountID, model, state, true)
+}
+
+// shouldFailOpenSlow reports whether an active block came only from measured
+// slowness. Unlike errors, slow capacity remains usable when no healthy
+// compatible account can serve the request.
+func (c *openAIFailbackController) shouldFailOpenSlow(ctx context.Context, accountID int64, model string) bool {
+	if c == nil || !c.cfg.enabled {
+		return false
+	}
+	key, ok := openAIFailbackStateKey(accountID, model)
+	if !ok {
+		return false
+	}
+	state, found := c.readState(ctx, key)
+	if !found || state.Phase != openAIFailbackPhaseCooldown || c.now().UnixMilli() >= state.CooldownUntilUnixMilli {
+		return false
+	}
+	switch state.LastFailure {
+	case openAIFailbackProductionSlow, openAIFailbackProbeSlow:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *openAIFailbackController) recordSlowSelectionSwitch(fromAccountID, toAccountID int64, model string) {
+	if c == nil || fromAccountID <= 0 || toAccountID <= 0 || fromAccountID == toAccountID {
+		return
+	}
+	c.metrics.slowSwitch.Add(1)
+	slog.Info("openai_failback_slow_account_switched",
+		"from_account_id", fromAccountID,
+		"to_account_id", toAccountID,
+		"model", model,
+	)
+}
+
+func (c *openAIFailbackController) recordSlowSelectionFailOpen(accountID int64, model string) {
+	if c == nil || accountID <= 0 {
+		return
+	}
+	c.metrics.slowFailOpen.Add(1)
+	slog.Warn("openai_failback_slow_account_fail_open",
+		"account_id", accountID,
+		"model", model,
+	)
 }
 
 func (c *openAIFailbackController) selectionActionForState(
@@ -466,11 +522,13 @@ func (c *openAIFailbackController) recordProductionResult(
 	}
 	now := c.now()
 	before, beforeFound := c.readState(ctx, key)
-	if success && !beforeFound {
+	productionSlow := success && firstTokenMS != nil && c.cfg.productionSlowTTFT > 0 &&
+		time.Duration(*firstTokenMS)*time.Millisecond > c.cfg.productionSlowTTFT
+	if success && !beforeFound && !productionSlow {
 		return
 	}
 	quickRelapse := beforeFound && before.Phase == openAIFailbackPhaseProbation && now.UnixMilli() < before.ProbationUntilUnixMilli
-	slowResult := success && firstTokenMS != nil && time.Duration(*firstTokenMS)*time.Millisecond > c.cfg.maxTTFT
+	probationSlow := success && firstTokenMS != nil && time.Duration(*firstTokenMS)*time.Millisecond > c.cfg.maxTTFT
 	state, found := c.mutateState(ctx, key, func(current openAIFailbackState, exists bool) (openAIFailbackState, bool) {
 		if !success {
 			level := 0
@@ -483,15 +541,21 @@ func (c *openAIFailbackController) recordProductionResult(
 			return c.cooldownState(level, now, "production_error"), true
 		}
 
-		if !exists || current.Phase != openAIFailbackPhaseProbation {
-			return current, exists
+		if !exists {
+			if productionSlow {
+				return c.cooldownState(0, now, openAIFailbackProductionSlow), true
+			}
+			return openAIFailbackState{}, false
+		}
+		if current.Phase != openAIFailbackPhaseProbation {
+			return current, true
 		}
 		if firstTokenMS != nil && time.Duration(*firstTokenMS)*time.Millisecond > c.cfg.maxTTFT {
 			level := 0
 			if now.UnixMilli() < current.ProbationUntilUnixMilli {
 				level = current.CooldownLevel + 1
 			}
-			return c.cooldownState(level, now, "production_slow"), true
+			return c.cooldownState(level, now, openAIFailbackProductionSlow), true
 		}
 		current.HealthyRequests++
 		current.UpdatedAtUnixMilli = now.UnixMilli()
@@ -501,16 +565,21 @@ func (c *openAIFailbackController) recordProductionResult(
 		return current, true
 	})
 
-	if !success && state.Phase == openAIFailbackPhaseCooldown && (!beforeFound || before.Phase != openAIFailbackPhaseCooldown) {
+	cooldownStarted := found && state.Phase == openAIFailbackPhaseCooldown && (!beforeFound || before.Phase != openAIFailbackPhaseCooldown)
+	if cooldownStarted && (!success || state.LastFailure == openAIFailbackProductionSlow) {
 		slog.Warn("openai_failback_cooldown_started",
 			"account_id", accountID,
 			"model", model,
 			"cooldown_level", state.CooldownLevel,
 			"cooldown_seconds", state.CooldownSeconds,
 			"reason", state.LastFailure,
+			"ttft_ms", nullableOpenAIFailbackTTFT(firstTokenMS),
 		)
 	}
-	if quickRelapse && (!success || slowResult) && state.Phase == openAIFailbackPhaseCooldown {
+	if cooldownStarted && state.LastFailure == openAIFailbackProductionSlow {
+		c.metrics.productionSlow.Add(1)
+	}
+	if quickRelapse && (!success || probationSlow) && state.Phase == openAIFailbackPhaseCooldown {
 		c.metrics.relapse.Add(1)
 		slog.Warn("openai_failback_probation_relapse",
 			"account_id", accountID,
@@ -904,11 +973,14 @@ func (c *openAIFailbackController) snapshotMetrics() openAIFailbackMetricsSnapsh
 		return openAIFailbackMetricsSnapshot{}
 	}
 	return openAIFailbackMetricsSnapshot{
-		ProbeTotal:   c.metrics.probeTotal.Load(),
-		ProbeSuccess: c.metrics.probeSuccess.Load(),
-		ProbeFailure: c.metrics.probeFailure.Load(),
-		Blocked:      c.metrics.blocked.Load(),
-		Relapse:      c.metrics.relapse.Load(),
-		Reset:        c.metrics.reset.Load(),
+		ProbeTotal:     c.metrics.probeTotal.Load(),
+		ProbeSuccess:   c.metrics.probeSuccess.Load(),
+		ProbeFailure:   c.metrics.probeFailure.Load(),
+		Blocked:        c.metrics.blocked.Load(),
+		Relapse:        c.metrics.relapse.Load(),
+		Reset:          c.metrics.reset.Load(),
+		ProductionSlow: c.metrics.productionSlow.Load(),
+		SlowSwitch:     c.metrics.slowSwitch.Load(),
+		SlowFailOpen:   c.metrics.slowFailOpen.Load(),
 	}
 }

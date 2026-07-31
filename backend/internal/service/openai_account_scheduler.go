@@ -100,23 +100,26 @@ type OpenAIAccountScheduleDecision struct {
 }
 
 type OpenAIAccountSchedulerMetricsSnapshot struct {
-	SelectTotal              int64
-	StickyPreviousHitTotal   int64
-	StickySessionHitTotal    int64
-	LoadBalanceSelectTotal   int64
-	AccountSwitchTotal       int64
-	SchedulerLatencyMsTotal  int64
-	SchedulerLatencyMsAvg    float64
-	StickyHitRatio           float64
-	AccountSwitchRate        float64
-	LoadSkewAvg              float64
-	RuntimeStatsAccountCount int
-	FailbackProbeTotal       int64
-	FailbackProbeSuccess     int64
-	FailbackProbeFailure     int64
-	FailbackBlockedTotal     int64
-	FailbackRelapseTotal     int64
-	FailbackResetTotal       int64
+	SelectTotal                 int64
+	StickyPreviousHitTotal      int64
+	StickySessionHitTotal       int64
+	LoadBalanceSelectTotal      int64
+	AccountSwitchTotal          int64
+	SchedulerLatencyMsTotal     int64
+	SchedulerLatencyMsAvg       float64
+	StickyHitRatio              float64
+	AccountSwitchRate           float64
+	LoadSkewAvg                 float64
+	RuntimeStatsAccountCount    int
+	FailbackProbeTotal          int64
+	FailbackProbeSuccess        int64
+	FailbackProbeFailure        int64
+	FailbackBlockedTotal        int64
+	FailbackRelapseTotal        int64
+	FailbackResetTotal          int64
+	FailbackProductionSlowTotal int64
+	FailbackSlowSwitchTotal     int64
+	FailbackSlowFailOpenTotal   int64
 }
 
 type OpenAIAccountScheduler interface {
@@ -2168,6 +2171,7 @@ func (s *OpenAIGatewayService) selectAccountWithFailback(
 
 	effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
 	pendingProbes := make([]pendingFailbackProbe, 0, 1)
+	var slowFallback *pendingFailbackProbe
 	var earliestRetryAt time.Time
 	recordRetryAt := func(retryAt time.Time) {
 		if retryAt.IsZero() {
@@ -2210,6 +2214,47 @@ func (s *OpenAIGatewayService) selectAccountWithFailback(
 		}
 		pendingProbes = nil
 	}
+	releaseSlowFallback := func() {
+		if slowFallback == nil {
+			return
+		}
+		releaseSelection(slowFallback.selection)
+		slowFallback = nil
+	}
+	stashSlowFallback := func(selection *AccountSelectionResult, decision OpenAIAccountScheduleDecision, mappedModel string) {
+		if slowFallback == nil {
+			slowFallback = &pendingFailbackProbe{
+				selection:   selection,
+				decision:    decision,
+				mappedModel: mappedModel,
+			}
+			return
+		}
+		releaseSelection(selection)
+	}
+	returnAllowedSelection := func(selection *AccountSelectionResult, decision OpenAIAccountScheduleDecision) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+		if slowFallback != nil && slowFallback.selection != nil && slowFallback.selection.Account != nil &&
+			selection != nil && selection.Account != nil {
+			controller.recordSlowSelectionSwitch(
+				slowFallback.selection.Account.ID,
+				selection.Account.ID,
+				slowFallback.mappedModel,
+			)
+		}
+		releaseSlowFallback()
+		dispatchPendingProbes()
+		return selection, decision, nil
+	}
+	returnSlowFallback := func() (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+		fallback := slowFallback
+		slowFallback = nil
+		releasePendingProbes()
+		if fallback == nil || fallback.selection == nil || fallback.selection.Account == nil {
+			return nil, OpenAIAccountScheduleDecision{}, ErrNoAvailableAccounts
+		}
+		controller.recordSlowSelectionFailOpen(fallback.selection.Account.ID, fallback.mappedModel)
+		return fallback.selection, fallback.decision, nil
+	}
 
 	for {
 		selection, decision, err := s.selectAccountWithSchedulerOnce(
@@ -2231,34 +2276,42 @@ func (s *OpenAIGatewayService) selectAccountWithFailback(
 					selectedDecision := pending.decision
 					pending.selection = nil
 					releasePendingProbes()
-					return selected, selectedDecision, nil
+					return returnAllowedSelection(selected, selectedDecision)
 				}
 				action, retryAt := controller.selectionActionWithRetryAt(
 					ctx,
 					pending.selection.Account.ID,
 					pending.mappedModel,
 				)
-				if action == openAIFailbackBlock {
+				if action == openAIFailbackBlock && controller.shouldFailOpenSlow(
+					ctx,
+					pending.selection.Account.ID,
+					pending.mappedModel,
+				) {
+					stashSlowFallback(pending.selection, pending.decision, pending.mappedModel)
+					pending.selection = nil
+				} else if action == openAIFailbackBlock {
 					recordRetryAt(retryAt)
 				}
 				releaseSelection(pending.selection)
 			}
 			pendingProbes = nil
+			if slowFallback != nil {
+				return returnSlowFallback()
+			}
 			return selection, decision, temporaryCapacityError(err)
 		}
 
 		account := selection.Account
 		mappedModel := canonicalOpenAIAccountSchedulingModel(account, requestedModel)
 		if !shouldApplyOpenAIFailback(platform, account, mappedModel, requiredCapability, requiredImageCapability) {
-			dispatchPendingProbes()
-			return selection, decision, nil
+			return returnAllowedSelection(selection, decision)
 		}
 
 		action, retryAt := controller.selectionActionWithRetryAt(ctx, account.ID, mappedModel)
 		switch action {
 		case openAIFailbackAllow:
-			dispatchPendingProbes()
-			return selection, decision, nil
+			return returnAllowedSelection(selection, decision)
 		case openAIFailbackProbe:
 			if selection.Acquired {
 				pendingProbes = append(pendingProbes, pendingFailbackProbe{
@@ -2270,14 +2323,27 @@ func (s *OpenAIGatewayService) selectAccountWithFailback(
 				releaseSelection(selection)
 			}
 		default:
-			recordRetryAt(retryAt)
-			releaseSelection(selection)
+			if controller.shouldFailOpenSlow(ctx, account.ID, mappedModel) {
+				if decision.StickyPreviousHit && !previousResponseCanMove {
+					releaseSlowFallback()
+					dispatchPendingProbes()
+					return selection, decision, nil
+				}
+				stashSlowFallback(selection, decision, mappedModel)
+			} else {
+				recordRetryAt(retryAt)
+				releaseSelection(selection)
+			}
 		}
 		if effectiveExcludedIDs == nil {
 			effectiveExcludedIDs = make(map[int64]struct{})
 		}
 		if _, exists := effectiveExcludedIDs[account.ID]; exists {
+			if slowFallback != nil {
+				return returnSlowFallback()
+			}
 			releasePendingProbes()
+			releaseSlowFallback()
 			return nil, decision, temporaryCapacityError(ErrNoAvailableAccounts)
 		}
 		effectiveExcludedIDs[account.ID] = struct{}{}
@@ -2599,6 +2665,9 @@ func (s *OpenAIGatewayService) SnapshotOpenAIAccountSchedulerMetrics() OpenAIAcc
 		snapshot.FailbackBlockedTotal = failback.Blocked
 		snapshot.FailbackRelapseTotal = failback.Relapse
 		snapshot.FailbackResetTotal = failback.Reset
+		snapshot.FailbackProductionSlowTotal = failback.ProductionSlow
+		snapshot.FailbackSlowSwitchTotal = failback.SlowSwitch
+		snapshot.FailbackSlowFailOpenTotal = failback.SlowFailOpen
 	}
 	return snapshot
 }
