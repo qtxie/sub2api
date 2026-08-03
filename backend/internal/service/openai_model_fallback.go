@@ -189,6 +189,9 @@ func recordOpenAISameAccountFallbackUpstreamErrorFromFailover(
 		// First-output timeouts apply their stream-timeout policy at the source.
 		return
 	}
+	if failoverErr.AccountStateHandled {
+		return
+	}
 	if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(failoverErr.StatusCode, failoverErr.ResponseBody) {
 		// Non-soft paths already recorded model-unavailable before same-account retry.
 		// Soft-mapped sources deferred that write; the primary miss is flushed via
@@ -376,6 +379,7 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 	}
 
 	var (
+		lastResult                 *OpenAIForwardResult
 		lastErr                    error
 		primaryFailedWithTrigger   bool
 		triedPrimary               bool
@@ -404,6 +408,7 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 			attemptBody = ReplaceModelInBody(body, candidate)
 		}
 		result, err := forward(attemptBody)
+		lastResult = result
 		writeSafety.observe(c, err)
 
 		isPrimary := candidate == requestedModel
@@ -505,5 +510,5 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 		deferredFlushed = true
 	}
 	recordOpenAISameAccountFallbackUpstreamErrorFromFailover(ctx, s, account, lastErr, requestedModel, deferredFlushed)
-	return nil, lastErr
+	return lastResult, lastErr
 }

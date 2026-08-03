@@ -20,6 +20,7 @@ import (
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
 	clearGrokResponsesClientToolMapping(c)
+	clearOpenAIResponsesNamespaceNames(c)
 	return s.forwardWithSameAccountModelFallback(ctx, c, account, body, func(candidateBody []byte) (*OpenAIForwardResult, error) {
 		return s.forwardOnce(ctx, c, account, candidateBody)
 	})
@@ -68,7 +69,8 @@ func (s *OpenAIGatewayService) forwardOnce(ctx context.Context, c *gin.Context, 
 	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, GetOpenAIClientTransport(c))
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
-	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled) {
+	compactPath := isOpenAIResponsesCompactPath(c)
+	if shouldFlattenOpenAIResponsesNamespaces(account, wsDecision.Transport, passthroughEnabled, compactPath) {
 		body, err = flattenOpenAIResponsesNamespaces(c, body)
 		if err != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
@@ -79,7 +81,10 @@ func (s *OpenAIGatewayService) forwardOnce(ctx context.Context, c *gin.Context, 
 		}
 	}
 	if shouldStripOpenAIResponsesInputNamespaces(account, wsDecision.Transport, passthroughEnabled) {
-		body, err = stripOpenAIResponsesInputNamespaces(body)
+		keepToolCallNamespaces := shouldKeepOpenAIResponsesToolCallNamespaces(
+			account, wsDecision.Transport, passthroughEnabled, compactPath,
+		)
+		body, err = stripOpenAIResponsesInputNamespaces(body, keepToolCallNamespaces)
 		if err != nil {
 			setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
@@ -279,7 +284,7 @@ func (s *OpenAIGatewayService) forwardOnce(ctx context.Context, c *gin.Context, 
 		markPatchSet("model", billingModel)
 	}
 	upstreamModel := billingModel
-	isCompactRequest := isOpenAIResponsesCompactPath(c)
+	isCompactRequest := compactPath
 	compactMapped := false
 	if isCompactRequest {
 		compactMappedModel := resolveOpenAICompactForwardModel(account, billingModel)

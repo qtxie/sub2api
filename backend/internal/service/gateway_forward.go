@@ -95,7 +95,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	originalModel := parsed.Model
 	originalBody := append([]byte(nil), parsed.Body.Bytes()...)
 	chain := []string{originalModel}
-	var lastErr error
+	var (
+		lastResult *ForwardResult
+		lastErr    error
+	)
 	for index := 0; index < len(chain); index++ {
 		candidate := chain[index]
 		candidateBody := originalBody
@@ -109,6 +112,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		attempt.Model = candidate
 		attempt.OnUpstreamAccepted = parsed.OnUpstreamAccepted
 		result, err := s.forwardOnce(ctx, c, account, attempt)
+		lastResult = result
 		if err == nil {
 			if replaceErr := parsed.ReplaceBody(attempt.Body.Bytes()); replaceErr != nil {
 				return nil, replaceErr
@@ -121,7 +125,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 		lastErr = err
 		if !IsModelUnavailableFailover(err) {
-			return nil, err
+			return result, err
 		}
 		if len(chain) == 1 {
 			var settings *SettingService
@@ -132,7 +136,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			chain = BuildSameAccountModelFallbackChain(ctx, settings, account, account.Platform, originalModel)
 		}
 	}
-	return nil, lastErr
+	return lastResult, lastErr
 }
 
 func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, account *Account, parsed *ParsedRequest) (*ForwardResult, error) {
@@ -911,6 +915,11 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 					StatusCode:   403,
 					ResponseBody: body,
 				}
+			}
+			// 流中断（缺失 terminal 事件、读错误、数据间隔超时等）时保留已观测到的
+			// usage 与错误一起返回，handler 在错误处理完成后照常提交 usage 记录。
+			if partial := partialStreamUsageResult(resp, streamResult, originalModel, mappedModel, startTime, err); partial != nil {
+				return partial, err
 			}
 			return nil, err
 		}
