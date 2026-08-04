@@ -83,8 +83,6 @@ func (r *userSubscriptionRepository) GetByIDForUpdate(ctx context.Context, id in
 	client := clientFromContext(ctx, r.client)
 	m, err := client.UserSubscription.Query().
 		Where(usersubscription.IDEQ(id)).
-		WithUser().
-		WithGroup().
 		ForUpdate().
 		Only(ctx)
 	if err != nil {

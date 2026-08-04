@@ -258,6 +258,10 @@ func (s *subscriptionUserSubRepoStub) GetByID(_ context.Context, id int64) (*Use
 	return &cp, nil
 }
 
+func (s *subscriptionUserSubRepoStub) GetByIDForUpdate(ctx context.Context, id int64) (*UserSubscription, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *subscriptionUserSubRepoStub) Update(_ context.Context, sub *UserSubscription) error {
 	if sub == nil {
 		return ErrSubscriptionNilInput
