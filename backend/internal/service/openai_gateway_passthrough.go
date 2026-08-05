@@ -829,6 +829,14 @@ func isOpenAIUpstreamCapacityShedEvent(payload []byte) bool {
 	}
 }
 
+func openAIStreamPreOutputErrorEventShouldFailover(payload []byte, message string) bool {
+	if isOpenAIUpstreamCapacityShedEvent(payload) ||
+		isOpenAITransientProcessingError(http.StatusBadRequest, message, payload) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(message)), "servers are currently overloaded")
+}
+
 func openAIStreamFailedEventSemanticStatus(payload []byte, message string) int {
 	if isOpenAIContextWindowError(message, payload) {
 		return http.StatusBadRequest
@@ -1217,6 +1225,18 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			}
 			eventType := strings.TrimSpace(gjson.Get(trimmedData, "type").String())
+			// Some OpenAI capacity-shed responses emit a bare error event before
+			// response.failed. Intercept it while the preamble is still buffered;
+			// otherwise writing it would commit the downstream stream and make the
+			// following response.failed unsafe to replay on another attempt.
+			if eventType == "error" && !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+				errorMessage := extractOpenAISSEErrorMessage(dataBytes)
+				if openAIStreamPreOutputErrorEventShouldFailover(dataBytes, errorMessage) {
+					s.parseSSEUsageBytes(dataBytes, usage)
+					return resultWithUsage(),
+						s.newOpenAIStreamFailoverError(c, account, true, upstreamRequestID, dataBytes, errorMessage, resp.Header)
+				}
+			}
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析

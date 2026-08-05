@@ -418,6 +418,17 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningAndTimeout(ct
 				responseID = extractOpenAIResponseIDFromJSONBytes(dataBytes)
 			}
 			forceFlushFailedEvent := false
+			// Capacity shedding may arrive as a bare error event before the
+			// terminal response.failed event. Convert it to a failover while the
+			// preamble is still buffered so a retry starts a clean SSE stream.
+			if eventType == "error" && !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+				errorMessage := extractOpenAISSEErrorMessage(dataBytes)
+				if openAIStreamPreOutputErrorEventShouldFailover(dataBytes, errorMessage) {
+					s.parseSSEUsageBytes(dataBytes, usage)
+					streamEarlyErr = s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, dataBytes, errorMessage, resp.Header)
+					return
+				}
+			}
 			if eventType == "response.failed" {
 				failedMessage = extractOpenAISSEErrorMessage(dataBytes)
 				// response.failed 自带上游已消耗的 usage（input token 通常已扣）；必须先解析

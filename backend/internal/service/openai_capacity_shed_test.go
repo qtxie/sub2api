@@ -71,6 +71,25 @@ func TestStreamFailedEventCapacityShedRetriesOnSameAccount(t *testing.T) {
 	require.False(t, openAIStreamFailedEventRetryableOnSameAccount(nonPool, other, "boom"))
 }
 
+func TestOpenAIStreamPreOutputErrorEventCapacityClassification(t *testing.T) {
+	require.True(t, openAIStreamPreOutputErrorEventShouldFailover(
+		[]byte(`{"type":"error","error":{"code":"server_is_overloaded","message":"Please retry later."}}`),
+		"Please retry later.",
+	))
+	require.True(t, openAIStreamPreOutputErrorEventShouldFailover(
+		[]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Selected model is at capacity. Please try a different model."}}`),
+		"Selected model is at capacity. Please try a different model.",
+	))
+	require.True(t, openAIStreamPreOutputErrorEventShouldFailover(
+		nil,
+		"Our servers are currently overloaded. Please try again later.",
+	))
+	require.False(t, openAIStreamPreOutputErrorEventShouldFailover(
+		[]byte(`{"type":"error","error":{"message":"failed"}}`),
+		"failed",
+	))
+}
+
 // 出站身份的版本声明只能有一个来源：UA 的版本段、version 头、探针版本三处必须同源，
 // 各自硬编码会漂移成互相矛盾的身份，而自相矛盾或陈旧的身份会被上游优先降载。
 func TestCodexOutboundVersionHasSingleSource(t *testing.T) {
