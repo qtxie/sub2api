@@ -11,6 +11,7 @@ import (
 // Forward exhausts the configured Antigravity model chain on the selected
 // account before returning control to the handler's account failover loop.
 func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte, isStickySession bool) (*ForwardResult, error) {
+	beginUpstreamResponseModelObservation(c)
 	requestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	result, err := s.forwardOnce(ctx, c, account, body, isStickySession)
 	if err == nil || requestedModel == "" || account == nil || !IsModelUnavailableFailover(err) {

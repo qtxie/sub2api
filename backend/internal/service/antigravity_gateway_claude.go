@@ -452,14 +452,16 @@ func (s *AntigravityGatewayService) forwardOnce(ctx context.Context, c *gin.Cont
 	}
 
 	return &ForwardResult{
-		RequestID:        requestID,
-		Usage:            *usage,
-		Model:            originalModel,
-		UpstreamModel:    billingModel,
-		Stream:           claudeReq.Stream,
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
-		ClientDisconnect: clientDisconnect,
+		RequestID:                     requestID,
+		Usage:                         *usage,
+		Model:                         originalModel,
+		UpstreamModel:                 billingModel,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		Stream:                        claudeReq.Stream,
+		Duration:                      time.Since(startTime),
+		FirstTokenMs:                  firstTokenMs,
+		ClientDisconnect:              clientDisconnect,
 	}, nil
 }
 
