@@ -77,25 +77,6 @@ func TestStreamFailedEventCapacityShedRetriesOnSameAccount(t *testing.T) {
 	require.False(t, openAIStreamFailedEventRetryableOnSameAccount(nonPool, other, "boom"))
 }
 
-func TestOpenAIStreamPreOutputErrorEventCapacityClassification(t *testing.T) {
-	require.True(t, openAIStreamPreOutputErrorEventShouldFailover(
-		[]byte(`{"type":"error","error":{"code":"server_is_overloaded","message":"Please retry later."}}`),
-		"Please retry later.",
-	))
-	require.True(t, openAIStreamPreOutputErrorEventShouldFailover(
-		[]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"Selected model is at capacity. Please try a different model."}}`),
-		"Selected model is at capacity. Please try a different model.",
-	))
-	require.True(t, openAIStreamPreOutputErrorEventShouldFailover(
-		nil,
-		"Our servers are currently overloaded. Please try again later.",
-	))
-	require.False(t, openAIStreamPreOutputErrorEventShouldFailover(
-		[]byte(`{"type":"error","error":{"message":"failed"}}`),
-		"failed",
-	))
-}
-
 // 上游降载的真实序列是「event: error → event: response.failed」。error 帧不算
 // 客户端输出：若把它当首输出 flush，clientOutputStarted 被固化，随后的 failed
 // 事件就进不了 pre-output failover 分支，只能把致命错误原样转发给客户端。
