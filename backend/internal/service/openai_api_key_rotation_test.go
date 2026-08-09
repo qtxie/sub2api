@@ -35,6 +35,18 @@ func (s *openAIAPIKeyRotationStoreStub) RefreshSessionTTL(context.Context, int64
 func (s *openAIAPIKeyRotationStoreStub) DeleteSessionAccountID(context.Context, int64, string) error {
 	return nil
 }
+func (s *openAIAPIKeyRotationStoreStub) SetGrokVideoPendingBilling(context.Context, string, []byte, time.Duration) error {
+	return nil
+}
+func (s *openAIAPIKeyRotationStoreStub) GetGrokVideoPendingBilling(context.Context, string) ([]byte, error) {
+	return nil, nil
+}
+func (s *openAIAPIKeyRotationStoreStub) ClaimGrokVideoBilled(context.Context, string, time.Duration) (bool, error) {
+	return true, nil
+}
+func (s *openAIAPIKeyRotationStoreStub) ReleaseGrokVideoBilled(context.Context, string) error {
+	return nil
+}
 
 func (s *openAIAPIKeyRotationStoreStub) ensurePool(fingerprint string, poolSize int) {
 	if s.fingerprint != fingerprint || s.active < 0 || s.active >= poolSize {

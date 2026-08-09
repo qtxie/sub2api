@@ -12,6 +12,7 @@ type geminiBodyForward func(body []byte) (*ForwardResult, error)
 
 func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*ForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
+	beginGeminiImageOutputObservation(c)
 	return s.forwardBodyWithSameAccountModelFallback(ctx, account, body, func(attemptBody []byte) (*ForwardResult, error) {
 		return s.forwardOnce(ctx, c, account, attemptBody)
 	})
@@ -68,6 +69,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(
 	body []byte,
 ) (*ForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
+	beginGeminiImageOutputObservation(c)
 	requestedModel = strings.TrimSpace(requestedModel)
 	result, err := s.forwardNativeOnce(ctx, c, account, requestedModel, action, stream, body)
 	if err == nil || requestedModel == "" || account == nil || !IsModelUnavailableFailover(err) {
