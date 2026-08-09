@@ -433,6 +433,7 @@ func TestHandleChatStreamingResponse_SilentRefusalReasoningSummaryExempt(t *test
 	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
 
 	result, err := svc.handleChatStreamingResponse(
+		context.Background(),
 		resp,
 		c,
 		rawChatCompletionsTestAccount(),

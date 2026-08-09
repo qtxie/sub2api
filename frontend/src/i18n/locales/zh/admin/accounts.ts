@@ -569,6 +569,11 @@ export default {
       openai: {
         baseUrlHint: '留空使用官方 OpenAI API',
         apiKeyHint: '您的 OpenAI API Key',
+        apiKeyList: '备用 API Key 列表',
+        apiKeyListPlaceholder: '每行一个备用 API Key',
+        apiKeyListHint: '可选。当前 key 连续 3 次在流已开始后返回 response.failed 时，自动切换到下一把 key。',
+        apiKeyListKeepHint: '已保存备用 API Key。留空表示保留；填写内容将替换整个列表。',
+        apiKeyListClear: '清空已保存的备用 API Key 列表',
         oauthPassthrough: '自动透传（仅替换认证）',
         oauthPassthroughDesc:
           '开启后，该 OpenAI 账号将自动透传请求与响应，仅替换认证并保留计费/并发/审计及必要安全过滤；如遇兼容性问题可随时关闭回滚。',

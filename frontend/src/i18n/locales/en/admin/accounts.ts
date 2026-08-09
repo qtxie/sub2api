@@ -498,6 +498,11 @@ export default {
       openai: {
         baseUrlHint: 'Leave default for official OpenAI API',
         apiKeyHint: 'Your OpenAI API Key',
+        apiKeyList: 'Fallback API key list',
+        apiKeyListPlaceholder: 'One fallback API key per line',
+        apiKeyListHint: 'Optional. After 3 consecutive response.failed events arrive after streaming starts, the account switches to the next key.',
+        apiKeyListKeepHint: 'Fallback API keys are saved. Leave blank to keep them, or enter a replacement list.',
+        apiKeyListClear: 'Clear the saved fallback API key list',
         oauthPassthrough: 'Auto passthrough (auth only)',
         oauthPassthroughDesc:
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',

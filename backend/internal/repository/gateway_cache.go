@@ -15,6 +15,7 @@ import (
 
 const stickySessionPrefix = "sticky_session:"
 const liveCallPrefix = "live:call:"
+const openAIAPIKeyRotationPrefix = "openai_api_key_rotation:"
 
 type gatewayCache struct {
 	rdb *redis.Client
@@ -64,9 +65,153 @@ func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64
 	return c.rdb.Del(ctx, key).Err()
 }
 
+var resolveOpenAIAPIKeyIndexScript = redis.NewScript(`
+	local fingerprint = redis.call('HGET', KEYS[1], 'fingerprint')
+	local pool_size = tonumber(ARGV[2])
+	if fingerprint ~= ARGV[1] then
+		redis.call('HSET', KEYS[1], 'fingerprint', ARGV[1], 'active_index', 0, 'failures', 0, 'generation', 0)
+		return {0, 0}
+	end
+	local active = tonumber(redis.call('HGET', KEYS[1], 'active_index')) or 0
+	local generation = tonumber(redis.call('HGET', KEYS[1], 'generation')) or 0
+	if active < 0 or active >= pool_size then
+		redis.call('HSET', KEYS[1], 'active_index', 0, 'failures', 0, 'generation', generation + 1)
+		return {0, generation + 1}
+	end
+	return {active, generation}
+`)
+
+var recordOpenAIAPIKeyStreamFailureScript = redis.NewScript(`
+	local fingerprint = redis.call('HGET', KEYS[1], 'fingerprint')
+	local attempted = tonumber(ARGV[2])
+	local attempted_generation = tonumber(ARGV[3])
+	local pool_size = tonumber(ARGV[4])
+	local threshold = tonumber(ARGV[5])
+	if fingerprint ~= ARGV[1] then
+		return {-1, 0, -1, 0, 0}
+	end
+	local active = tonumber(redis.call('HGET', KEYS[1], 'active_index')) or 0
+	local generation = tonumber(redis.call('HGET', KEYS[1], 'generation')) or 0
+	if active < 0 or active >= pool_size then
+		return {active, 0, generation, 0, 0}
+	end
+	local failures = tonumber(redis.call('HGET', KEYS[1], 'failures')) or 0
+	if active ~= attempted or generation ~= attempted_generation then
+		return {active, failures, generation, 0, 0}
+	end
+	failures = failures + 1
+	if pool_size > 1 and failures >= threshold then
+		active = (active + 1) % pool_size
+		generation = generation + 1
+		redis.call('HSET', KEYS[1], 'active_index', active, 'failures', 0, 'generation', generation)
+		return {active, 0, generation, 1, 1}
+	end
+	redis.call('HSET', KEYS[1], 'failures', failures)
+	return {active, failures, generation, 0, 1}
+`)
+
+var resetOpenAIAPIKeyStreamFailuresScript = redis.NewScript(`
+	local fingerprint = redis.call('HGET', KEYS[1], 'fingerprint')
+	if fingerprint ~= ARGV[1] then
+		return {-1, 0}
+	end
+	local active = tonumber(redis.call('HGET', KEYS[1], 'active_index')) or 0
+	local generation = tonumber(redis.call('HGET', KEYS[1], 'generation')) or 0
+	if active ~= tonumber(ARGV[2]) or generation ~= tonumber(ARGV[3]) then
+		return {-1, 0}
+	end
+	local failures = tonumber(redis.call('HGET', KEYS[1], 'failures')) or 0
+	if failures > 0 then
+		redis.call('HSET', KEYS[1], 'failures', 0)
+	end
+	return {failures, 1}
+`)
+
+func openAIAPIKeyRotationKey(accountID int64) string {
+	return fmt.Sprintf("%s{%d}", openAIAPIKeyRotationPrefix, accountID)
+}
+
+func (c *gatewayCache) ResolveOpenAIAPIKeyIndex(ctx context.Context, accountID int64, poolFingerprint string, poolSize int) (service.OpenAIAPIKeyRotationSelection, error) {
+	if poolSize <= 1 {
+		return service.OpenAIAPIKeyRotationSelection{}, nil
+	}
+	values, err := resolveOpenAIAPIKeyIndexScript.Run(
+		ctx,
+		c.rdb,
+		[]string{openAIAPIKeyRotationKey(accountID)},
+		poolFingerprint,
+		poolSize,
+	).Int64Slice()
+	if err != nil {
+		return service.OpenAIAPIKeyRotationSelection{}, err
+	}
+	if len(values) != 2 {
+		return service.OpenAIAPIKeyRotationSelection{}, fmt.Errorf("unexpected OpenAI API key selection result length: %d", len(values))
+	}
+	return service.OpenAIAPIKeyRotationSelection{ActiveIndex: int(values[0]), Generation: values[1]}, nil
+}
+
+func (c *gatewayCache) RecordOpenAIAPIKeyStreamFailure(
+	ctx context.Context,
+	accountID int64,
+	poolFingerprint string,
+	attemptedIndex int,
+	attemptedGeneration int64,
+	poolSize, threshold int,
+) (service.OpenAIAPIKeyRotationResult, error) {
+	values, err := recordOpenAIAPIKeyStreamFailureScript.Run(
+		ctx,
+		c.rdb,
+		[]string{openAIAPIKeyRotationKey(accountID)},
+		poolFingerprint,
+		attemptedIndex,
+		attemptedGeneration,
+		poolSize,
+		threshold,
+	).Int64Slice()
+	if err != nil {
+		return service.OpenAIAPIKeyRotationResult{}, err
+	}
+	if len(values) != 5 {
+		return service.OpenAIAPIKeyRotationResult{}, fmt.Errorf("unexpected OpenAI API key rotation result length: %d", len(values))
+	}
+	return service.OpenAIAPIKeyRotationResult{
+		ActiveIndex:  int(values[0]),
+		FailureCount: int(values[1]),
+		Generation:   values[2],
+		Rotated:      values[3] == 1,
+		Recorded:     values[4] == 1,
+	}, nil
+}
+
+func (c *gatewayCache) ResetOpenAIAPIKeyStreamFailures(
+	ctx context.Context,
+	accountID int64,
+	poolFingerprint string,
+	attemptedIndex int,
+	attemptedGeneration int64,
+) (previousFailures int, reset bool, err error) {
+	values, err := resetOpenAIAPIKeyStreamFailuresScript.Run(
+		ctx,
+		c.rdb,
+		[]string{openAIAPIKeyRotationKey(accountID)},
+		poolFingerprint,
+		attemptedIndex,
+		attemptedGeneration,
+	).Int64Slice()
+	if err != nil {
+		return 0, false, err
+	}
+	if len(values) != 2 {
+		return 0, false, fmt.Errorf("unexpected OpenAI API key reset result length: %d", len(values))
+	}
+	return int(values[0]), values[1] == 1, nil
+}
+
 // Compile-time assertion: gatewayCache must implement CyberSessionBlockStore.
 var _ service.CyberSessionBlockStore = (*gatewayCache)(nil)
 var _ service.LiveCallStore = (*gatewayCache)(nil)
+var _ service.OpenAIAPIKeyRotationStore = (*gatewayCache)(nil)
 
 const cyberSessionBlockPrefix = "cyber_session_block:"
 

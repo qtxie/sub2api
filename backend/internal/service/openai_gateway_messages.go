@@ -34,12 +34,17 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	ctx = withOpenAIAPIKeyRotationTracker(ctx)
 	beginUpstreamResponseModelObservation(c)
 
-	return s.forwardWithSameAccountModelFallback(ctx, c, account, body, func(candidateBody []byte) (*OpenAIForwardResult, error) {
+	result, err := s.forwardWithSameAccountModelFallback(ctx, c, account, body, func(candidateBody []byte) (*OpenAIForwardResult, error) {
 		mappedModelHint := mappedModelHintForFallbackAttempt(body, candidateBody, defaultMappedModel)
 		return s.forwardAsAnthropicOnce(ctx, c, account, candidateBody, promptCacheKey, mappedModelHint)
 	})
+	if err == nil {
+		s.resetOpenAIAPIKeyCommittedStreamFailures(ctx, account)
+	}
+	return result, err
 }
 
 func (s *OpenAIGatewayService) forwardAsAnthropicOnce(
@@ -477,7 +482,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropicOnce(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleAnthropicStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime)
+		result, handleErr = s.handleAnthropicStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime)
 	} else {
 		// Client wants JSON: buffer the streaming response and assemble a JSON reply.
 		result, handleErr = s.handleAnthropicBufferedStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime)
@@ -838,6 +843,7 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 // pattern to send Anthropic ping events during periods of upstream silence,
 // preventing proxy/client timeout disconnections.
 func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
+	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
@@ -958,6 +964,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 					return true
 				}
 				message := extractOpenAISSEErrorMessage(payloadBytes)
+				if eventType == "response.failed" && clientOutputStarted && openAIStreamFailedEventShouldFailover(payloadBytes, message) {
+					s.recordOpenAIAPIKeyCommittedStreamFailure(ctx, account)
+				}
 				// Once Anthropic output has started, switching accounts would splice
 				// two model streams together. Surface a proper Anthropic error event
 				// instead of returning a failover error that the handler cannot retry.

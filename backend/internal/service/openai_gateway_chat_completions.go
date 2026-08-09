@@ -58,12 +58,17 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	ctx = withOpenAIAPIKeyRotationTracker(ctx)
 	beginUpstreamResponseModelObservation(c)
 
-	return s.forwardWithSameAccountModelFallback(ctx, c, account, body, func(candidateBody []byte) (*OpenAIForwardResult, error) {
+	result, err := s.forwardWithSameAccountModelFallback(ctx, c, account, body, func(candidateBody []byte) (*OpenAIForwardResult, error) {
 		mappedModelHint := mappedModelHintForFallbackAttempt(body, candidateBody, defaultMappedModel)
 		return s.forwardAsChatCompletionsOnce(ctx, c, account, candidateBody, promptCacheKey, mappedModelHint)
 	})
+	if err == nil {
+		s.resetOpenAIAPIKeyCommittedStreamFailures(ctx, account)
+	}
+	return result, err
 }
 
 func (s *OpenAIGatewayService) forwardAsChatCompletionsOnce(
@@ -328,7 +333,7 @@ func (s *OpenAIGatewayService) forwardAsChatCompletionsOnce(
 	var result *OpenAIForwardResult
 	var handleErr error
 	if clientStream {
-		result, handleErr = s.handleChatStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body))
+		result, handleErr = s.handleChatStreamingResponse(ctx, resp, c, account, originalModel, billingModel, upstreamModel, startTime, len(body))
 	} else {
 		result, handleErr = s.handleChatBufferedStreamingResponse(resp, c, account, originalModel, billingModel, upstreamModel, startTime)
 	}
@@ -519,6 +524,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 // handleChatStreamingResponse reads Responses SSE events from upstream,
 // converts each to Chat Completions SSE chunks, and writes them to the client.
 func (s *OpenAIGatewayService) handleChatStreamingResponse(
+	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
 	account *Account,
@@ -642,6 +648,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 					clientDisconnected = true
 				}
 				return true
+			}
+			if clientOutputStarted && openAIStreamFailedEventShouldFailover(payloadBytes, message) {
+				s.recordOpenAIAPIKeyCommittedStreamFailure(ctx, account)
 			}
 			// Once chat output has started, switching models/accounts would splice
 			// two streams on the same client response. Only pre-output failures may

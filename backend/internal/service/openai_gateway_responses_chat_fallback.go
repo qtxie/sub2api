@@ -93,7 +93,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	)
 
 	// Build and send upstream request via the shared CC pipeline
-	apiKey, targetURL, err := s.resolveCCFallbackTarget(account)
+	apiKey, targetURL, err := s.resolveCCFallbackTarget(ctx, account)
 	if err != nil {
 		return nil, err
 	}

@@ -68,6 +68,7 @@ func TestHandleChatStreamingResponse_ClassifiesHTTP2ReadError(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: &config.Config{}}
 
 	result, err := svc.handleChatStreamingResponse(
+		context.Background(),
 		resp,
 		c,
 		&Account{ID: 1, Name: "openai-oauth", Platform: PlatformOpenAI},

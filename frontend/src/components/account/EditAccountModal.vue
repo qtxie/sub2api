@@ -81,6 +81,40 @@
           />
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
+        <div v-if="account.platform === 'openai'">
+          <label class="input-label">{{ t('admin.accounts.openai.apiKeyList') }}</label>
+          <textarea
+            v-model="editApiKeyListInput"
+            rows="4"
+            class="input font-mono"
+            data-testid="edit-openai-api-key-list"
+            autocomplete="off"
+            data-1p-ignore
+            data-lpignore="true"
+            data-bwignore="true"
+            :placeholder="t('admin.accounts.openai.apiKeyListPlaceholder')"
+            @input="clearOpenAIAPIKeyList = false"
+          ></textarea>
+          <p class="input-hint">
+            {{
+              account.credentials_status?.has_api_key_list
+                ? t('admin.accounts.openai.apiKeyListKeepHint')
+                : t('admin.accounts.openai.apiKeyListHint')
+            }}
+          </p>
+          <label
+            v-if="account.credentials_status?.has_api_key_list"
+            class="mt-2 flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300"
+          >
+            <input
+              v-model="clearOpenAIAPIKeyList"
+              type="checkbox"
+              data-testid="clear-openai-api-key-list"
+              class="rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+            />
+            <span>{{ t('admin.accounts.openai.apiKeyListClear') }}</span>
+          </label>
+        </div>
 
         <!-- Model Restriction Section (不适用于 Antigravity) -->
         <div v-if="account.platform !== 'antigravity'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -2709,6 +2743,7 @@ import {
 } from '@/components/account/credentialsBuilder'
 import { formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
+import { parseOpenAIAPIKeyListInput } from '@/utils/openaiApiKeyList'
 import { VERTEX_LOCATION_OPTIONS } from '@/constants/account'
 import {
   OPENAI_WS_MODE_CTX_POOL,
@@ -2784,6 +2819,8 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+const editApiKeyListInput = ref('')
+const clearOpenAIAPIKeyList = ref(false)
 // Bedrock credentials
 const editBedrockAccessKeyId = ref('')
 const editBedrockSecretAccessKey = ref('')
@@ -3665,6 +3702,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     selectedErrorCodes.value = []
   }
   editApiKey.value = ''
+  editApiKeyListInput.value = ''
+  clearOpenAIAPIKeyList.value = false
 }
 
 async function loadTLSProfiles() {
@@ -4193,6 +4232,16 @@ const handleSubmit = async () => {
       } else if (!hasExistingApiKey) {
         appStore.showError(t('admin.accounts.apiKeyIsRequired'))
         return
+      }
+      if (props.account.platform === 'openai') {
+        if (editApiKeyListInput.value.trim()) {
+          newCredentials.api_key_list = parseOpenAIAPIKeyListInput(
+            editApiKeyListInput.value,
+            editApiKey.value
+          )
+        } else if (clearOpenAIAPIKeyList.value) {
+          newCredentials.api_key_list = []
+        }
       }
 
       // Add model mapping if configured（OpenAI 开启自动透传时保留现有映射，不再编辑）

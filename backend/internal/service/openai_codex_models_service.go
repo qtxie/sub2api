@@ -265,7 +265,7 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 				"Codex models manifest requires a custom API key upstream base URL",
 			)
 		}
-		authToken = strings.TrimSpace(credAccount.GetOpenAIApiKey())
+		authToken = strings.TrimSpace(s.resolveOpenAIAPIKey(ctx, credAccount))
 		if authToken == "" {
 			return nil, infraerrors.New(http.StatusBadGateway, "OPENAI_CODEX_MODELS_API_KEY_MISSING", "account has no API key for the Codex models upstream")
 		}

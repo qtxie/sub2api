@@ -1044,6 +1044,53 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('api_key')
   })
 
+  it('preserves a redacted fallback API key list when the editor is left blank', async () => {
+    const account = buildAccount()
+    delete account.credentials.api_key
+    account.credentials_status = { has_api_key: true, has_api_key_list: true }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('api_key_list')
+  })
+
+  it('replaces a redacted fallback API key list when new keys are entered', async () => {
+    const account = buildAccount()
+    delete account.credentials.api_key
+    account.credentials_status = { has_api_key: true, has_api_key_list: true }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper
+      .get('[data-testid="edit-openai-api-key-list"]')
+      .setValue(' sk-next-1 \nsk-next-1\nsk-next-2')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.api_key_list).toEqual([
+      'sk-next-1',
+      'sk-next-2'
+    ])
+  })
+
+  it('explicitly clears a saved fallback API key list', async () => {
+    const account = buildAccount()
+    delete account.credentials.api_key
+    account.credentials_status = { has_api_key: true, has_api_key_list: true }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="clear-openai-api-key-list"]').setValue(true)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.api_key_list).toEqual([])
+  })
+
   it('allows saving apikey account against legacy backend without credentials_status', async () => {
     // 新前端 + 旧后端：credentials_status 缺失，但 credentials.api_key 仍是明文，应允许保存
     const account = buildAccount()

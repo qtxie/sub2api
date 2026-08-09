@@ -115,3 +115,50 @@ func TestUpdateAccount_EmptyCredentialsSkipsUpdate(t *testing.T) {
 	require.Equal(t, "rt-existing", repo.account.Credentials["refresh_token"], "空 credentials 不应触碰已有 token")
 	require.Equal(t, "renamed", repo.account.Name)
 }
+
+func TestUpdateAccount_OpenAIAPIKeyListSaveSemantics(t *testing.T) {
+	newRepo := func() *updateAccountCredsRepoStub {
+		return &updateAccountCredsRepoStub{
+			account: &Account{
+				ID:       205,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeAPIKey,
+				Status:   StatusActive,
+				Credentials: map[string]any{
+					"api_key":      "sk-primary",
+					"api_key_list": []any{"sk-existing"},
+					"base_url":     "https://api.openai.com",
+				},
+			},
+		}
+	}
+
+	t.Run("omitted list is preserved", func(t *testing.T) {
+		repo := newRepo()
+		_, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), repo.account.ID, &UpdateAccountInput{
+			Credentials: map[string]any{"base_url": "https://upstream.example.com"},
+		})
+		require.NoError(t, err)
+		require.Equal(t, []string{"sk-existing"}, repo.account.Credentials[OpenAIAPIKeyListCredentialKey])
+	})
+
+	t.Run("replacement is normalized", func(t *testing.T) {
+		repo := newRepo()
+		_, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), repo.account.ID, &UpdateAccountInput{
+			Credentials: map[string]any{
+				OpenAIAPIKeyListCredentialKey: []any{" sk-next ", "sk-primary", "sk-next"},
+			},
+		})
+		require.NoError(t, err)
+		require.Equal(t, []string{"sk-next"}, repo.account.Credentials[OpenAIAPIKeyListCredentialKey])
+	})
+
+	t.Run("explicit empty list clears", func(t *testing.T) {
+		repo := newRepo()
+		_, err := (&adminServiceImpl{accountRepo: repo}).UpdateAccount(context.Background(), repo.account.ID, &UpdateAccountInput{
+			Credentials: map[string]any{OpenAIAPIKeyListCredentialKey: []any{}},
+		})
+		require.NoError(t, err)
+		require.Equal(t, []string{}, repo.account.Credentials[OpenAIAPIKeyListCredentialKey])
+	})
+}
