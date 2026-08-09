@@ -1370,3 +1370,26 @@ image_storage:
   presign_expiry_hours: 24
   # 当上游返回的是图片 url 时，下载该图片再转存的字节上限（默认 32MB）
   max_download_bytes: 33554432
+
+# =============================================================================
+# User Session Archive (independent from Prompt Audit)
+# =============================================================================
+# Each user must also be explicitly enabled by an administrator. Repeated
+# content is deduplicated only within that user while every occurrence/order is
+# preserved. "database" stores exact bytes in PostgreSQL BYTEA. For large
+# deployments, use a private S3-compatible bucket; no public URL is generated.
+session_archive:
+  storage: "database" # database | s3
+  failure_policy: "strict" # strict blocks an enabled user's request if archiving fails
+  max_request_bytes: 268435456
+  max_part_bytes: 67108864
+  retention_days: 0 # 0 = keep until an administrator deletes it
+  allow_remote_download: false
+  allow_insecure_http: false
+  endpoint: ""
+  region: "auto"
+  bucket: ""
+  access_key_id: ""
+  secret_access_key: ""
+  prefix: "user-sessions/"
+  force_path_style: false

@@ -101,6 +101,7 @@ type Config struct {
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 	ImageStorage            ImageStorageConfig            `mapstructure:"image_storage"`
+	SessionArchive          SessionArchiveConfig          `mapstructure:"session_archive"`
 }
 
 type LogConfig struct {
@@ -248,6 +249,34 @@ type ImageStorageConfig struct {
 	PublicBaseURL   string `mapstructure:"public_base_url"`      // 配了则返回 public_base_url/key 直链；否则 presigned
 	PresignExpiry   int    `mapstructure:"presign_expiry_hours"` // public_base_url 为空时的 presigned 过期时长(小时)
 	MaxDownloadByte int64  `mapstructure:"max_download_bytes"`   // 下载上游 url 图片的字节上限
+}
+
+// SessionArchiveConfig configures the standalone, per-user session archive.
+// Functional opt-in is stored on users.session_storage_enabled; this section
+// only controls storage and failure behaviour.
+type SessionArchiveConfig struct {
+	Storage             string `mapstructure:"storage"`        // database | s3
+	FailurePolicy       string `mapstructure:"failure_policy"` // strict | best_effort
+	MaxRequestBytes     int64  `mapstructure:"max_request_bytes"`
+	MaxPartBytes        int64  `mapstructure:"max_part_bytes"`
+	RetentionDays       int    `mapstructure:"retention_days"`
+	AllowRemoteDownload bool   `mapstructure:"allow_remote_download"`
+	AllowInsecureHTTP   bool   `mapstructure:"allow_insecure_http"`
+	Endpoint            string `mapstructure:"endpoint"`
+	Region              string `mapstructure:"region"`
+	Bucket              string `mapstructure:"bucket"`
+	AccessKeyID         string `mapstructure:"access_key_id"`
+	SecretAccessKey     string `mapstructure:"secret_access_key"`
+	Prefix              string `mapstructure:"prefix"`
+	ForcePathStyle      bool   `mapstructure:"force_path_style"`
+}
+
+func (c SessionArchiveConfig) UsesS3() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Storage), "s3")
+}
+
+func (c SessionArchiveConfig) Strict() bool {
+	return !strings.EqualFold(strings.TrimSpace(c.FailurePolicy), "best_effort")
 }
 
 // IsConfigured 检查对象存储必要字段是否已配置
@@ -2225,6 +2254,23 @@ func setDefaults() {
 	viper.SetDefault("image_storage.secret_access_key", "")
 	viper.SetDefault("image_storage.public_base_url", "")
 
+	// Standalone per-user session archive. Database storage keeps exact bytes in
+	// BYTEA; S3 mode stores binaries in a private content-addressed bucket.
+	viper.SetDefault("session_archive.storage", "database")
+	viper.SetDefault("session_archive.failure_policy", "strict")
+	viper.SetDefault("session_archive.max_request_bytes", int64(256*1024*1024))
+	viper.SetDefault("session_archive.max_part_bytes", int64(64*1024*1024))
+	viper.SetDefault("session_archive.retention_days", 0)
+	viper.SetDefault("session_archive.allow_remote_download", false)
+	viper.SetDefault("session_archive.allow_insecure_http", false)
+	viper.SetDefault("session_archive.endpoint", "")
+	viper.SetDefault("session_archive.region", "auto")
+	viper.SetDefault("session_archive.bucket", "")
+	viper.SetDefault("session_archive.access_key_id", "")
+	viper.SetDefault("session_archive.secret_access_key", "")
+	viper.SetDefault("session_archive.prefix", "user-sessions/")
+	viper.SetDefault("session_archive.force_path_style", false)
+
 	// Ops (vNext)
 	viper.SetDefault("ops.enabled", true)
 	viper.SetDefault("ops.use_preaggregated_tables", true)
@@ -2644,6 +2690,40 @@ func setEnvReachableDefaults() {
 }
 
 func (c *Config) Validate() error {
+	if strings.TrimSpace(c.SessionArchive.Storage) == "" {
+		c.SessionArchive.Storage = "database"
+	}
+	if strings.TrimSpace(c.SessionArchive.FailurePolicy) == "" {
+		c.SessionArchive.FailurePolicy = "strict"
+	}
+	if c.SessionArchive.MaxRequestBytes == 0 {
+		c.SessionArchive.MaxRequestBytes = 256 * 1024 * 1024
+	}
+	if c.SessionArchive.MaxPartBytes == 0 {
+		c.SessionArchive.MaxPartBytes = 64 * 1024 * 1024
+	}
+	switch strings.ToLower(strings.TrimSpace(c.SessionArchive.Storage)) {
+	case "database", "s3":
+	default:
+		return fmt.Errorf("session_archive.storage must be database or s3")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.SessionArchive.FailurePolicy)) {
+	case "strict", "best_effort":
+	default:
+		return fmt.Errorf("session_archive.failure_policy must be strict or best_effort")
+	}
+	if c.SessionArchive.MaxRequestBytes < 0 {
+		return fmt.Errorf("session_archive.max_request_bytes must be positive")
+	}
+	if c.SessionArchive.MaxPartBytes < 0 || c.SessionArchive.MaxPartBytes > c.SessionArchive.MaxRequestBytes {
+		return fmt.Errorf("session_archive.max_part_bytes must be positive and no larger than max_request_bytes")
+	}
+	if c.SessionArchive.RetentionDays < 0 {
+		return fmt.Errorf("session_archive.retention_days must be non-negative")
+	}
+	if c.SessionArchive.UsesS3() && (strings.TrimSpace(c.SessionArchive.Bucket) == "" || strings.TrimSpace(c.SessionArchive.AccessKeyID) == "" || strings.TrimSpace(c.SessionArchive.SecretAccessKey) == "") {
+		return fmt.Errorf("session_archive S3 storage requires bucket, access_key_id, and secret_access_key")
+	}
 	forwardedClientIPHeaders, err := NormalizeForwardedClientIPHeaders(c.Security.ForwardedClientIPHeaders)
 	if err != nil {
 		return fmt.Errorf("security.forwarded_client_ip_headers: %w", err)

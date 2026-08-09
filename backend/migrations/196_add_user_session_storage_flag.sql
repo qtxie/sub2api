@@ -1,0 +1,2 @@
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS session_storage_enabled BOOLEAN NOT NULL DEFAULT FALSE;

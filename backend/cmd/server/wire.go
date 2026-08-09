@@ -19,6 +19,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/sessionarchive"
 
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -39,6 +40,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		repository.ProviderSet,
 		service.ProviderSet,
 		securityaudit.ProviderSet,
+		sessionarchive.ProviderSet,
 		payment.ProviderSet,
 		middleware.ProviderSet,
 		handler.ProviderSet,
@@ -116,6 +118,7 @@ func provideCleanup(
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	auditLog *service.AuditLogService,
 	promptAudit *securityaudit.PromptService,
+	sessionArchive *sessionarchive.Service,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -161,6 +164,12 @@ func provideCleanup(
 			{"PromptAuditService", func() error {
 				if promptAudit != nil {
 					return promptAudit.Shutdown(ctx)
+				}
+				return nil
+			}},
+			{"SessionArchiveService", func() error {
+				if sessionArchive != nil {
+					return sessionArchive.Shutdown(ctx)
 				}
 				return nil
 			}},

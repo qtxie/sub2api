@@ -114,11 +114,25 @@ func RegisterAdminRoutes(
 		// 独立提示词输入审计
 		registerPromptAuditRoutes(admin, h)
 
+		// 独立用户会话保存（不属于提示词审计/风控）
+		registerSessionArchiveRoutes(admin, h, stepUpAuth)
+
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+	}
+}
+
+func registerSessionArchiveRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
+	sessions := admin.Group("/user-sessions")
+	{
+		sessions.GET("", h.Admin.SessionArchive.List)
+		sessions.GET("/:id", h.Admin.SessionArchive.Get)
+		sessions.GET("/:id/export", h.Admin.SessionArchive.Export)
+		sessions.GET("/:id/blobs/:blob_id", h.Admin.SessionArchive.Download)
+		sessions.DELETE("/:id", gin.HandlerFunc(stepUpAuth), h.Admin.SessionArchive.Delete)
 	}
 }
 

@@ -2225,6 +2225,10 @@ func init() {
 	userDescRpmLimit := userFields[20].Descriptor()
 	// user.DefaultRpmLimit holds the default value on creation for the rpm_limit field.
 	user.DefaultRpmLimit = userDescRpmLimit.Default.(int)
+	// userDescSessionStorageEnabled is the schema descriptor for session_storage_enabled field.
+	userDescSessionStorageEnabled := userFields[21].Descriptor()
+	// user.DefaultSessionStorageEnabled holds the default value on creation for the session_storage_enabled field.
+	user.DefaultSessionStorageEnabled = userDescSessionStorageEnabled.Default.(bool)
 	userallowedgroupFields := schema.UserAllowedGroup{}.Fields()
 	_ = userallowedgroupFields
 	// userallowedgroupDescCreatedAt is the schema descriptor for created_at field.

@@ -73,16 +73,17 @@ type CreateUserRequest struct {
 // UpdateUserRequest represents admin update user request
 // 使用指针类型来区分"未提供"和"设置为0"
 type UpdateUserRequest struct {
-	Email         string   `json:"email" binding:"omitempty,email"`
-	Password      string   `json:"password" binding:"omitempty,min=6"`
-	Username      *string  `json:"username"`
-	Notes         *string  `json:"notes"`
-	Role          string   `json:"role" binding:"omitempty,oneof=admin user"`
-	Balance       *float64 `json:"balance"`
-	Concurrency   *int     `json:"concurrency"`
-	RPMLimit      *int     `json:"rpm_limit"`
-	Status        string   `json:"status" binding:"omitempty,oneof=active disabled"`
-	AllowedGroups *[]int64 `json:"allowed_groups"`
+	Email                 string   `json:"email" binding:"omitempty,email"`
+	Password              string   `json:"password" binding:"omitempty,min=6"`
+	Username              *string  `json:"username"`
+	Notes                 *string  `json:"notes"`
+	Role                  string   `json:"role" binding:"omitempty,oneof=admin user"`
+	Balance               *float64 `json:"balance"`
+	Concurrency           *int     `json:"concurrency"`
+	RPMLimit              *int     `json:"rpm_limit"`
+	SessionStorageEnabled *bool    `json:"session_storage_enabled"`
+	Status                string   `json:"status" binding:"omitempty,oneof=active disabled"`
+	AllowedGroups         *[]int64 `json:"allowed_groups"`
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates map[int64]*float64 `json:"group_rates"`
@@ -327,13 +328,15 @@ func (h *UserHandler) Update(c *gin.Context) {
 
 	// 把普通用户提升为管理员属权限敏感操作：需最近完成 step-up 2FA 验证。
 	// 目标已是管理员时（前端编辑表单总是携带 role）不触发，避免日常编辑被打断。
-	if req.Role == service.RoleAdmin {
+	if req.Role == service.RoleAdmin || req.SessionStorageEnabled != nil {
 		target, err := h.adminService.GetUser(c.Request.Context(), userID)
 		if err != nil {
 			response.ErrorFrom(c, err)
 			return
 		}
-		if target.Role != service.RoleAdmin {
+		rolePromotion := req.Role == service.RoleAdmin && target.Role != service.RoleAdmin
+		sessionStorageChange := req.SessionStorageEnabled != nil && target.SessionStorageEnabled != *req.SessionStorageEnabled
+		if rolePromotion || sessionStorageChange {
 			if !middleware.EnforceStepUp(c, h.totpService, h.userService, h.settingService) {
 				return
 			}
@@ -342,18 +345,19 @@ func (h *UserHandler) Update(c *gin.Context) {
 
 	// 使用指针类型直接传递，nil 表示未提供该字段
 	user, err := h.adminService.UpdateUser(c.Request.Context(), userID, &service.UpdateUserInput{
-		Email:         req.Email,
-		Password:      req.Password,
-		Username:      req.Username,
-		Notes:         req.Notes,
-		Role:          req.Role,
-		Balance:       req.Balance,
-		Concurrency:   req.Concurrency,
-		RPMLimit:      req.RPMLimit,
-		Status:        req.Status,
-		AllowedGroups: req.AllowedGroups,
-		GroupRates:    req.GroupRates,
-		ActorAdminID:  getAdminIDFromContext(c),
+		Email:                 req.Email,
+		Password:              req.Password,
+		Username:              req.Username,
+		Notes:                 req.Notes,
+		Role:                  req.Role,
+		Balance:               req.Balance,
+		Concurrency:           req.Concurrency,
+		RPMLimit:              req.RPMLimit,
+		SessionStorageEnabled: req.SessionStorageEnabled,
+		Status:                req.Status,
+		AllowedGroups:         req.AllowedGroups,
+		GroupRates:            req.GroupRates,
+		ActorAdminID:          getAdminIDFromContext(c),
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

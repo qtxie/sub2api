@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/sessionarchive"
 
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,7 @@ type OpenAIGatewayHandler struct {
 	errorPassthroughService    *service.ErrorPassthroughService
 	contentModerationService   *service.ContentModerationService
 	securityAuditCoordinator   *securityaudit.Coordinator
+	sessionArchive             *sessionarchive.Service
 	grokMediaEligibilityProber grokMediaEligibilityProber
 	opsService                 *service.OpsService
 	concurrencyHelper          *ConcurrencyHelper
@@ -1868,6 +1870,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	)
 	setOpsRequestContext(c, reqModel, true)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeWSV2))
+	if err := h.sessionArchive.CaptureFrame(c, apiKey, firstMessage, "ws:1"); err != nil {
+		reqLog.Error("sessionarchive.websocket_capture_failed", zap.Int("turn", 1), zap.Error(err))
+		closeOpenAIClientWS(wsConn, coderws.StatusTryAgainLater, "user session could not be saved")
+		return
+	}
 
 	if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, reqModel, firstMessage, "first_turn"); decision != nil && !decision.AllowNextStage {
 		writeSecurityAuditWSError(ctx, wsConn, decision)
@@ -2204,6 +2211,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				if model == "" {
 					model = reqModel
+				}
+				if err := h.sessionArchive.CaptureFrame(c, apiKey, payload, fmt.Sprintf("ws:%d", turn)); err != nil {
+					reqLog.Error("sessionarchive.websocket_capture_failed", zap.Int("turn", turn), zap.Error(err))
+					return service.NewOpenAIWSClientCloseError(coderws.StatusTryAgainLater, "user session could not be saved", err)
 				}
 				if decision := h.checkSecurityAuditStage(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIResponses, model, payload, "subsequent_turn"); decision != nil && !decision.AllowNextStage {
 					writeSecurityAuditWSError(ctx, wsConn, decision)

@@ -153,16 +153,17 @@ type CreateUserInput struct {
 }
 
 type UpdateUserInput struct {
-	Email         string
-	Password      string
-	Username      *string
-	Notes         *string
-	Role          string   // 空字符串表示"未提供"(不修改);合法值 admin/user
-	Balance       *float64 // 使用指针区分"未提供"和"设置为0"
-	Concurrency   *int     // 使用指针区分"未提供"和"设置为0"
-	RPMLimit      *int     // 使用指针区分"未提供"和"设置为0"
-	Status        string
-	AllowedGroups *[]int64 // 使用指针区分"未提供"和"设置为空数组"
+	Email                 string
+	Password              string
+	Username              *string
+	Notes                 *string
+	Role                  string   // 空字符串表示"未提供"(不修改);合法值 admin/user
+	Balance               *float64 // 使用指针区分"未提供"和"设置为0"
+	Concurrency           *int     // 使用指针区分"未提供"和"设置为0"
+	RPMLimit              *int     // 使用指针区分"未提供"和"设置为0"
+	SessionStorageEnabled *bool    // nil 表示未提供；仅管理员可修改
+	Status                string
+	AllowedGroups         *[]int64 // 使用指针区分"未提供"和"设置为空数组"
 	// GroupRates 用户专属分组倍率配置
 	// map[groupID]*rate，nil 表示删除该分组的专属倍率
 	GroupRates map[int64]*float64

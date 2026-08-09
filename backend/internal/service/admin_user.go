@@ -216,6 +216,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	oldStatus := user.Status
 	oldRole := user.Role
 	oldRPMLimit := user.RPMLimit
+	oldSessionStorageEnabled := user.SessionStorageEnabled
 	oldAllowedGroups := append([]int64(nil), user.AllowedGroups...)
 
 	// fields 与下面的 input.X 判空条件一一对应：管理员没提交的列不写回，
@@ -274,6 +275,11 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 		fields.RPMLimit = true
 	}
 
+	if input.SessionStorageEnabled != nil {
+		user.SessionStorageEnabled = *input.SessionStorageEnabled
+		fields.SessionStorageEnabled = true
+	}
+
 	if input.AllowedGroups != nil {
 		user.AllowedGroups = *input.AllowedGroups
 		fields.AllowedGroups = true
@@ -288,6 +294,10 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 		logger.LegacyPrintf("service.admin", "audit: user role changed actor_admin_id=%d target_user_id=%d old_role=%s new_role=%s",
 			input.ActorAdminID, user.ID, oldRole, user.Role)
 	}
+	if user.SessionStorageEnabled != oldSessionStorageEnabled {
+		logger.LegacyPrintf("service.admin", "audit: user session storage changed actor_admin_id=%d target_user_id=%d old_enabled=%t new_enabled=%t",
+			input.ActorAdminID, user.ID, oldSessionStorageEnabled, user.SessionStorageEnabled)
+	}
 
 	// 同步用户专属分组倍率
 	if input.GroupRates != nil && s.userGroupRateRepo != nil {
@@ -299,7 +309,7 @@ func (s *adminServiceImpl) UpdateUser(ctx context.Context, id int64, input *Upda
 	if s.authCacheInvalidator != nil {
 		// RPMLimit 直接参与 billing_cache_service.checkRPM 的三级级联，
 		// allowed_groups 参与 API Key 专属分组授权判断；不失效缓存会让修改在一个 L2 TTL 内失去效果。
-		if user.Concurrency != oldConcurrency || user.Status != oldStatus || user.Role != oldRole || user.RPMLimit != oldRPMLimit || !sameInt64Set(user.AllowedGroups, oldAllowedGroups) {
+		if user.Concurrency != oldConcurrency || user.Status != oldStatus || user.Role != oldRole || user.RPMLimit != oldRPMLimit || user.SessionStorageEnabled != oldSessionStorageEnabled || !sameInt64Set(user.AllowedGroups, oldAllowedGroups) {
 			s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, user.ID)
 		}
 	}

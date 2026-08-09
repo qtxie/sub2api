@@ -509,7 +509,9 @@ export default {
         selectStatus: 'Select status',
         rpmLimit: 'Requests Per Minute (RPM)',
         rpmLimitPlaceholder: '0 = unlimited',
-        rpmLimitHint: 'Max requests per minute for this user; 0 = unlimited. Acts as a fallback only when the group has no rpm_limit set.'
+        rpmLimitHint: 'Max requests per minute for this user; 0 = unlimited. Acts as a fallback only when the group has no rpm_limit set.',
+        sessionStorage: 'Save user sessions',
+        sessionStorageHint: 'Store future input text, images, and files for this user. Existing archives are retained when disabled.'
       },
       columns: {
         user: 'User',

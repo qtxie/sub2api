@@ -122,6 +122,7 @@ func (r *userRepository) create(ctx context.Context, userIn *service.User, guard
 		SetNillableLastLoginAt(userIn.LastLoginAt).
 		SetNillableLastActiveAt(userIn.LastActiveAt).
 		SetRpmLimit(userIn.RPMLimit).
+		SetSessionStorageEnabled(userIn.SessionStorageEnabled).
 		Save(txCtx)
 	if err != nil {
 		return translatePersistenceError(err, nil, service.ErrEmailExists)
@@ -281,6 +282,9 @@ func (r *userRepository) Update(ctx context.Context, userIn *service.User, field
 	}
 	if fields.RPMLimit {
 		updateOp = updateOp.SetRpmLimit(userIn.RPMLimit)
+	}
+	if fields.SessionStorageEnabled {
+		updateOp = updateOp.SetSessionStorageEnabled(userIn.SessionStorageEnabled)
 	}
 	if fields.Status {
 		updateOp = updateOp.SetStatus(userIn.Status)
@@ -1391,6 +1395,7 @@ func applyUserEntityToService(dst *service.User, src *dbent.User) {
 	dst.SignupSource = src.SignupSource
 	dst.LastLoginAt = src.LastLoginAt
 	dst.LastActiveAt = src.LastActiveAt
+	dst.SessionStorageEnabled = src.SessionStorageEnabled
 	dst.CreatedAt = src.CreatedAt
 	dst.UpdatedAt = src.UpdatedAt
 }

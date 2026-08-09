@@ -5,6 +5,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/sessionarchive"
 
 	"github.com/google/wire"
 )
@@ -41,6 +42,7 @@ func ProvideAdminHandlers(
 	channelMonitorTemplateHandler *admin.ChannelMonitorRequestTemplateHandler,
 	contentModerationHandler *admin.ContentModerationHandler,
 	promptAuditHandler *securityaudit.PromptAdminHandler,
+	sessionArchiveHandler *sessionarchive.AdminHandler,
 	paymentHandler *admin.PaymentHandler,
 	affiliateHandler *admin.AffiliateHandler,
 	complianceHandler *admin.ComplianceHandler,
@@ -81,6 +83,7 @@ func ProvideAdminHandlers(
 		ChannelMonitorTemplate: channelMonitorTemplateHandler,
 		ContentModeration:      contentModerationHandler,
 		PromptAudit:            promptAuditHandler,
+		SessionArchive:         sessionArchiveHandler,
 		Payment:                paymentHandler,
 		Affiliate:              affiliateHandler,
 		Compliance:             complianceHandler,
@@ -125,10 +128,12 @@ func ProvideOpenAIGatewayHandler(
 	grokQuotaService *service.GrokQuotaService,
 	cfg *config.Config,
 	coordinator *securityaudit.Coordinator,
+	sessionArchive *sessionarchive.Service,
 ) *OpenAIGatewayHandler {
 	h := NewOpenAIGatewayHandler(gatewayService, concurrencyService, billingCacheService, apiKeyService,
 		usageRecordWorkerPool, errorPassthroughService, contentModerationService, opsService, cfg)
 	h.securityAuditCoordinator = coordinator
+	h.sessionArchive = sessionArchive
 	h.grokMediaEligibilityProber = grokQuotaService
 	return h
 }
