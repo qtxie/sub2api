@@ -42,6 +42,8 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	repo, client := newAPIKeyRepoSQLite(t)
 	ctx := context.Background()
 	user := mustCreateAPIKeyRepoUser(t, ctx, client, "getbykey-auth-dispatch-unit@test.com")
+	_, err := client.User.UpdateOneID(user.ID).SetSessionStorageEnabled(true).Save(ctx)
+	require.NoError(t, err)
 
 	group, err := client.Group.Create().
 		SetName("g-auth-dispatch-unit").
@@ -74,6 +76,8 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	got, err := repo.GetByKeyForAuth(ctx, key.Key)
 	require.NoError(t, err)
 	require.Equal(t, key.Name, got.Name)
+	require.NotNil(t, got.User)
+	require.True(t, got.User.SessionStorageEnabled)
 	require.NotNil(t, got.Group)
 	require.Equal(t, group.MessagesDispatchModelConfig, got.Group.MessagesDispatchModelConfig)
 }

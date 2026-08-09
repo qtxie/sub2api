@@ -14,7 +14,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 20 // v20: user session_storage_enabled for gateway archive capture
+const apiKeyAuthSnapshotVersion = 21 // v21: include session_storage_enabled in the auth projection
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
