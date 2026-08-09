@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -276,6 +277,37 @@ func TestAPIKeyService_SnapshotRoundTrip_PreservesMessagesDispatchModelConfig(t 
 	require.Equal(t, apiKey.Name, roundTrip.Name)
 	require.NotNil(t, roundTrip.Group)
 	require.Equal(t, apiKey.Group.MessagesDispatchModelConfig, roundTrip.Group.MessagesDispatchModelConfig)
+}
+
+func TestAPIKeyService_SnapshotRoundTrip_PreservesSessionStorageEnabled(t *testing.T) {
+	svc := NewAPIKeyService(nil, nil, nil, nil, nil, nil, &config.Config{})
+	apiKey := &APIKey{
+		ID:     1,
+		UserID: 2,
+		Key:    "k-session-storage",
+		Status: StatusActive,
+		User: &User{
+			ID:                    2,
+			Status:                StatusActive,
+			Role:                  RoleUser,
+			Balance:               10,
+			Concurrency:           3,
+			SessionStorageEnabled: true,
+		},
+	}
+
+	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
+	require.True(t, snapshot.User.SessionStorageEnabled)
+
+	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
+	require.NoError(t, err)
+	var restored APIKeyAuthCacheEntry
+	require.NoError(t, json.Unmarshal(payload, &restored))
+
+	roundTrip := svc.snapshotToAPIKey(apiKey.Key, restored.Snapshot)
+	require.NotNil(t, roundTrip)
+	require.NotNil(t, roundTrip.User)
+	require.True(t, roundTrip.User.SessionStorageEnabled)
 }
 
 func TestAPIKeyService_SnapshotRoundTrip_PreservesReasoningEffortPolicy(t *testing.T) {

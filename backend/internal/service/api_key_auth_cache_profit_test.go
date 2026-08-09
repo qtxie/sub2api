@@ -53,7 +53,7 @@ func TestAPIKeyAuthSnapshotProfitControlRoundtrip(t *testing.T) {
 	snapshot := svc.snapshotFromAPIKey(context.Background(), apiKey)
 	require.NotNil(t, snapshot)
 	require.Equal(t, apiKeyAuthSnapshotVersion, snapshot.Version)
-	require.Equal(t, 19, snapshot.Version, "v19 起认证快照携带 search/audio/video_model_prices 计费字段")
+	require.Equal(t, 20, snapshot.Version, "v20 起认证快照携带用户会话归档开关")
 
 	// 模拟 L2 缓存的完整 JSON 往返（与 apiKeyCache.SetAuthCache/GetAuthCache 同构）。
 	payload, err := json.Marshal(&APIKeyAuthCacheEntry{Snapshot: snapshot})
@@ -79,12 +79,12 @@ func TestAPIKeyAuthSnapshotProfitControlRoundtrip(t *testing.T) {
 	require.InDelta(t, 0.06*(1-0.25), gate.threshold, 1e-12)
 }
 
-// 旧版本快照（v16 及更早，无利润字段保真保证）必须被淘汰回源，不得复用。
+// 上一版本快照（v19，缺少 session_storage_enabled）必须被淘汰回源，不得复用。
 func TestAPIKeyAuthSnapshotOldVersionEvicted(t *testing.T) {
 	svc := &APIKeyService{}
 	snapshot := svc.snapshotFromAPIKey(context.Background(), profitAuthTestAPIKey())
 	require.NotNil(t, snapshot)
-	snapshot.Version = 16
+	snapshot.Version = apiKeyAuthSnapshotVersion - 1
 
 	materialized, used, err := svc.applyAuthCacheEntry("sk-old", &APIKeyAuthCacheEntry{Snapshot: snapshot})
 	require.NoError(t, err)
