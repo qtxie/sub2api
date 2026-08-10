@@ -203,6 +203,7 @@ func (e *Extractor) partsFromValue(ctx context.Context, value any, path string) 
 }
 
 func (e *Extractor) partsFromMap(ctx context.Context, m map[string]any, path string) ([]Part, error) {
+	m = withoutEncryptedContent(m)
 	typ := strings.ToLower(stringValue(m["type"], ""))
 	if text, ok := m["text"].(string); ok {
 		p, err := e.makePart("text", []byte(text), path+".text", "", "text/plain; charset=utf-8")
@@ -269,6 +270,19 @@ func (e *Extractor) partsFromMap(ctx context.Context, m map[string]any, path str
 	data, _ := json.Marshal(m)
 	p, err := e.makePart("text", data, path, "", "application/json")
 	return []Part{p}, err
+}
+
+func withoutEncryptedContent(m map[string]any) map[string]any {
+	if _, ok := m["encrypted_content"]; !ok {
+		return m
+	}
+	clean := make(map[string]any, len(m)-1)
+	for key, value := range m {
+		if key != "encrypted_content" {
+			clean[key] = value
+		}
+	}
+	return clean
 }
 
 func (e *Extractor) base64Part(raw, kind, path, filename, declaredMIME string) ([]Part, error) {

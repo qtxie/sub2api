@@ -7,6 +7,7 @@ import (
 	"errors"
 	"mime/multipart"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -59,6 +60,38 @@ func TestExtractorRejectsOpaqueFileReference(t *testing.T) {
 	body := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_file","file_id":"file-secret"}]}]}`)
 	_, err := (&Extractor{MaxPartBytes: 1024}).Extract(context.Background(), body, "application/json")
 	require.ErrorIs(t, err, ErrOpaqueFileReference)
+}
+
+func TestExtractorOmitsEncryptedContentFromArchivedItems(t *testing.T) {
+	body := []byte(`{"input":[` +
+		`{"type":"reasoning","id":"rs_1","encrypted_content":"reasoning-secret","summary":[{"type":"summary_text","text":"useful summary"}]},` +
+		`{"type":"compaction","id":"cmp_1","encrypted_content":"compaction-secret","status":"completed"},` +
+		`{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"query\":\"value\"}"},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}` +
+		`]}`)
+
+	turns, err := (&Extractor{MaxPartBytes: 4096}).Extract(context.Background(), body, "application/json")
+	require.NoError(t, err)
+	require.Len(t, turns, 4)
+	require.JSONEq(t, `{"id":"rs_1","summary":[{"text":"useful summary","type":"summary_text"}],"type":"reasoning"}`, string(turns[0].Parts[0].Data))
+	require.JSONEq(t, `{"id":"cmp_1","status":"completed","type":"compaction"}`, string(turns[1].Parts[0].Data))
+	require.JSONEq(t, `{"arguments":"{\"query\":\"value\"}","call_id":"call_1","name":"lookup","type":"function_call"}`, string(turns[2].Parts[0].Data))
+	require.Equal(t, []byte("hello"), turns[3].Parts[0].Data)
+	for _, turn := range turns {
+		for _, part := range turn.Parts {
+			require.NotContains(t, string(part.Data), "encrypted_content")
+			require.NotContains(t, string(part.Data), "-secret")
+		}
+	}
+}
+
+func TestExtractorOmitsEncryptedContentBeforePartSizeValidation(t *testing.T) {
+	body := []byte(`{"input":[{"type":"reasoning","encrypted_content":"` + strings.Repeat("x", 1024) + `","summary":[]}]}`)
+
+	turns, err := (&Extractor{MaxPartBytes: 128}).Extract(context.Background(), body, "application/json")
+	require.NoError(t, err)
+	require.Len(t, turns, 1)
+	require.JSONEq(t, `{"summary":[],"type":"reasoning"}`, string(turns[0].Parts[0].Data))
 }
 
 func TestSafeRemoteFetcherRejectsPrivateAndCredentialedURLs(t *testing.T) {
