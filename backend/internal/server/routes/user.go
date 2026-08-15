@@ -82,6 +82,13 @@ func RegisterUserRoutes(
 			keys.DELETE("/:id", h.APIKey.Delete)
 		}
 
+		imageStudio := authenticated.Group("/image-studio")
+		imageStudio.Use(panelRateLimiter.Heavy())
+		{
+			imageStudio.POST("/pricing", h.ImageStudio.Pricing)
+			imageStudio.POST("/generations", h.ImageStudio.Generate)
+		}
+
 		// 用户可用分组（非管理员接口）
 		groups := authenticated.Group("/groups")
 		{
