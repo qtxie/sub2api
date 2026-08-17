@@ -231,8 +231,8 @@ func shouldApplyOpenAIFailback(
 	requiredCapability OpenAIEndpointCapability,
 	requiredImageCapability OpenAIImagesCapability,
 ) bool {
-	if normalizeOpenAICompatiblePlatform(platform) != PlatformOpenAI || account == nil ||
-		normalizeOpenAICompatiblePlatform(account.Platform) != PlatformOpenAI ||
+	if NormalizeOpenAICompatiblePlatform(platform) != PlatformOpenAI || account == nil ||
+		NormalizeOpenAICompatiblePlatform(account.Platform) != PlatformOpenAI ||
 		strings.TrimSpace(mappedModel) == "" || requiredImageCapability != "" {
 		return false
 	}

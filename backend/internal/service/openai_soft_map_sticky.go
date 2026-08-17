@@ -205,7 +205,7 @@ func isOpenAISoftMapStickyTriggerError(err error) bool {
 
 func shouldDeferOpenAISameAccountModelUnavailableRecording(account *Account, requestedModel string) bool {
 	return account != nil &&
-		normalizeOpenAICompatiblePlatform(account.Platform) == PlatformOpenAI &&
+		NormalizeOpenAICompatiblePlatform(account.Platform) == PlatformOpenAI &&
 		account.HasSoftModelFallbacks(requestedModel)
 }
 
@@ -221,7 +221,7 @@ func (c *openAISoftMapStickyController) resolveAttemptPlan(
 		chain:   append([]string(nil), baseChain...),
 	}
 	if c == nil || !c.cfg.stickyEnabled || account == nil ||
-		normalizeOpenAICompatiblePlatform(account.Platform) != PlatformOpenAI ||
+		NormalizeOpenAICompatiblePlatform(account.Platform) != PlatformOpenAI ||
 		requestedModel == "" {
 		return plan
 	}

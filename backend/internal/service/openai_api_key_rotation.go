@@ -215,7 +215,7 @@ func openAIAPIKeyPoolFingerprint(pool []string) string {
 func (s *OpenAIGatewayService) resolveOpenAIAPIKey(ctx context.Context, account *Account) string {
 	pool := account.GetOpenAIAPIKeyPool()
 	if len(pool) == 0 {
-		return ""
+		return strings.TrimSpace(account.GetOpenAIProtocolAPIKey())
 	}
 	fingerprint := openAIAPIKeyPoolFingerprint(pool)
 	index := 0
