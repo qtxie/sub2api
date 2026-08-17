@@ -272,6 +272,7 @@ func extractGeminiRoot(root map[string]any) []promptSegment {
 	result = append(result, extractGeminiSystemInstruction(root["system_instruction"])...)
 	result = append(result, extractGemini(root["contents"])...)
 	result = append(result, extractGemini(root["content"])...)
+	result = append(result, extractResponses(root["input"])...)
 	result = append(result, extractGeminiInstances(root["instances"])...)
 	if requests, ok := root["requests"].([]any); ok {
 		for _, item := range requests {

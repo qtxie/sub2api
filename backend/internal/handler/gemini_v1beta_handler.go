@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -606,6 +607,62 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		)
 		return
 	}
+}
+
+// GeminiV1BetaInteractions proxies the non-streaming Gemini Interactions API:
+// POST /v1beta/interactions
+//
+// The common native handler owns authentication, scheduling, failover,
+// concurrency, moderation, and usage recording. Supplying a synthetic
+// model/action parameter lets Interactions use that same request pipeline while
+// the service forwards the original documented JSON body to the fixed upstream
+// endpoint.
+func (h *GatewayHandler) GeminiV1BetaInteractions(c *gin.Context) {
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		if maxErr, ok := extractMaxBytesError(err); ok {
+			googleError(c, http.StatusRequestEntityTooLarge, buildBodyTooLargeMessage(maxErr.Limit))
+			return
+		}
+		googleError(c, http.StatusBadRequest, "Failed to read request body")
+		return
+	}
+	if len(body) == 0 {
+		googleError(c, http.StatusBadRequest, "Request body is empty")
+		return
+	}
+
+	var envelope struct {
+		Model      string `json:"model"`
+		Stream     bool   `json:"stream"`
+		Background bool   `json:"background"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		googleError(c, http.StatusBadRequest, "Invalid interactions request body")
+		return
+	}
+	modelName := strings.TrimPrefix(strings.TrimSpace(envelope.Model), "models/")
+	if modelName == "" {
+		googleError(c, http.StatusBadRequest, "Missing model in request body")
+		return
+	}
+	if !service.IsSafeGeminiModelPathSegment(modelName) {
+		googleError(c, http.StatusBadRequest, "Invalid model in request body")
+		return
+	}
+	if envelope.Stream {
+		googleError(c, http.StatusBadRequest, "Streaming interactions are not supported by this endpoint")
+		return
+	}
+	if envelope.Background {
+		googleError(c, http.StatusBadRequest, "Background interactions are not supported by this endpoint")
+		return
+	}
+
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	c.Request.ContentLength = int64(len(body))
+	c.Params = append(c.Params, gin.Param{Key: "modelAction", Value: modelName + ":interactions"})
+	h.GeminiV1BetaModels(c)
 }
 
 func parseGeminiModelAction(rest string) (model string, action string, err error) {

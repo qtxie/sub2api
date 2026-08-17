@@ -107,7 +107,29 @@ func countGeminiInlineImageOutputs(payload []byte) int {
 		})
 		return true
 	})
+	// The Interactions API returns generated images as image content blocks in
+	// model_output steps rather than generateContent inlineData parts.
+	gjson.GetBytes(payload, "steps").ForEach(func(_, step gjson.Result) bool {
+		if !strings.EqualFold(strings.TrimSpace(step.Get("type").String()), "model_output") {
+			return true
+		}
+		step.Get("content").ForEach(func(_, block gjson.Result) bool {
+			if geminiInteractionBlockIsImage(block) {
+				count++
+			}
+			return true
+		})
+		return true
+	})
 	return count
+}
+
+func geminiInteractionBlockIsImage(block gjson.Result) bool {
+	if !strings.EqualFold(strings.TrimSpace(block.Get("type").String()), "image") {
+		return false
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(block.Get("mime_type").String()))
+	return isGeminiInlineImageMIMEType(mimeType) && strings.TrimSpace(block.Get("data").String()) != ""
 }
 
 func geminiPartIsInlineImage(part gjson.Result) bool {

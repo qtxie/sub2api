@@ -72,6 +72,7 @@ func (o *upstreamResponseModelObserver) ObserveGemini(payload []byte) {
 		"modelVersion",
 		"response.modelVersion",
 		"response.response.modelVersion",
+		"model",
 	)
 	// Gemini streaming has no universal terminal event carrying modelVersion;
 	// treating each declaration as terminal retains the latest chunk.

@@ -4,7 +4,7 @@
       <div class="studio-status" aria-live="polite">
         <div class="studio-model-mark">
           <Icon name="sparkles" size="sm" />
-          <span>GPT Image 2</span>
+          <span>{{ selectedModelCapability?.label || t('imageStudio.model') }}</span>
         </div>
         <span class="studio-status-divider"></span>
         <span class="studio-status-key">{{ selectedKey?.name || t('imageStudio.selectApiKey') }}</span>
@@ -30,7 +30,25 @@
               </select>
             </div>
 
-            <div class="control-group">
+            <div v-if="capabilitiesError" class="capabilities-error" role="alert">
+              {{ capabilitiesError }}
+            </div>
+
+            <div v-if="capabilities" class="control-group">
+              <label for="image-studio-model" class="control-label">{{ t('imageStudio.model') }}</label>
+              <select
+                id="image-studio-model"
+                v-model="form.model"
+                class="studio-select"
+                :disabled="generating || loadingCapabilities"
+              >
+                <option v-for="model in capabilities.models" :key="model.id" :value="model.id">
+                  {{ model.label }}
+                </option>
+              </select>
+            </div>
+
+            <div v-if="provider === 'openai'" class="control-group">
               <label for="image-studio-size" class="control-label">{{ t('imageStudio.size') }}</label>
               <div class="size-select-shell">
                 <span class="size-shape" :class="selectedSizeShape" aria-hidden="true"></span>
@@ -108,9 +126,42 @@
               </p>
             </div>
 
-            <fieldset class="control-group">
+            <div v-if="provider !== 'openai' && aspectRatioOptions.length" class="control-group">
+              <label for="image-studio-aspect-ratio" class="control-label">{{ t('imageStudio.aspectRatio') }}</label>
+              <div class="size-select-shell">
+                <span class="size-shape" :class="selectedSizeShape" aria-hidden="true"></span>
+                <select
+                  id="image-studio-aspect-ratio"
+                  v-model="form.aspectRatio"
+                  class="studio-select size-select"
+                  :disabled="generating"
+                >
+                  <option v-for="ratio in aspectRatioOptions" :key="ratio" :value="ratio">
+                    {{ ratio === 'auto' ? t('imageStudio.aspectRatioAuto') : ratio }}
+                  </option>
+                </select>
+              </div>
+            </div>
+
+            <div v-if="provider === 'gemini' && imageSizeOptions.length" class="control-group">
+              <label for="image-studio-image-size" class="control-label">{{ t('imageStudio.imageSize') }}</label>
+              <select id="image-studio-image-size" v-model="form.imageSize" class="studio-select" :disabled="generating">
+                <option v-for="size in imageSizeOptions" :key="size" :value="size">{{ size }}</option>
+              </select>
+            </div>
+
+            <div v-if="provider === 'grok' && resolutionOptions.length" class="control-group">
+              <label for="image-studio-resolution" class="control-label">{{ t('imageStudio.resolution') }}</label>
+              <select id="image-studio-resolution" v-model="form.resolution" class="studio-select" :disabled="generating">
+                <option v-for="resolution in resolutionOptions" :key="resolution" :value="resolution">
+                  {{ resolution.toUpperCase() }}
+                </option>
+              </select>
+            </div>
+
+            <fieldset v-if="qualityOptions.length" class="control-group">
               <legend class="control-label">{{ t('imageStudio.quality') }}</legend>
-              <div class="segmented-control four-columns">
+              <div class="segmented-control" :class="segmentColumnClass(qualityOptions.length)">
                 <button
                   v-for="option in qualityOptions"
                   :key="option.value"
@@ -123,7 +174,7 @@
               </div>
             </fieldset>
 
-            <fieldset class="control-group background-control">
+            <fieldset v-if="backgroundOptions.length" class="control-group background-control">
               <legend class="control-label">{{ t('imageStudio.background') }}</legend>
               <div class="segmented-control two-columns">
                 <button
@@ -138,7 +189,7 @@
               </div>
             </fieldset>
 
-            <fieldset class="control-group min-w-0">
+            <fieldset v-if="outputFormats.length" class="control-group min-w-0">
               <legend class="control-label">{{ t('imageStudio.format') }}</legend>
               <div class="segmented-control three-columns compact">
                 <button
@@ -153,12 +204,12 @@
               </div>
             </fieldset>
 
-            <div class="control-group count-control">
+            <div v-if="maxImageCount > 1" class="control-group count-control">
               <span class="control-label">{{ t('imageStudio.count') }}</span>
               <div class="stepper">
                 <button type="button" :title="t('imageStudio.decreaseCount')" :disabled="generating || form.count <= 1" @click="form.count--">-</button>
                 <output>{{ form.count }}</output>
-                <button type="button" :title="t('imageStudio.increaseCount')" :disabled="generating || form.count >= 4" @click="form.count++">+</button>
+                <button type="button" :title="t('imageStudio.increaseCount')" :disabled="generating || form.count >= maxImageCount" @click="form.count++">+</button>
               </div>
             </div>
           </div>
@@ -189,7 +240,7 @@
               :disabled="generating"
             ></textarea>
             <div class="prompt-submit-area">
-              <span class="prompt-selection">{{ selectedSizeLabel }} · {{ selectedQualityLabel }} · {{ form.count }}</span>
+              <span class="prompt-selection">{{ selectionSummary }}</span>
               <button v-if="!generating" type="submit" class="generate-button" :disabled="!canGenerate">
                 <Icon name="sparkles" size="sm" />
                 <span>{{ t('imageStudio.generate') }}</span>
@@ -244,7 +295,7 @@
                 v-for="placeholder in placeholders"
                 :key="placeholder.id"
                 class="generation-placeholder"
-                :style="aspectRatioStyle(form.size)"
+                :style="aspectRatioStyle(currentAspectToken)"
                 data-testid="generation-placeholder"
               >
                 <template v-if="placeholder.status === 'generating'">
@@ -264,7 +315,7 @@
                 <button
                   type="button"
                   class="gallery-image-button"
-                  :style="aspectRatioStyle(item.size)"
+                  :style="aspectRatioStyle(item.aspectRatio || item.size)"
                   :title="t('imageStudio.preview')"
                   @click="previewItem = item"
                 >
@@ -273,7 +324,7 @@
                 <div class="gallery-item-meta">
                   <div class="min-w-0">
                     <p>{{ item.prompt }}</p>
-                    <span>{{ formatCreatedAt(item.createdAt) }} · {{ item.size }}</span>
+                    <span>{{ formatCreatedAt(item.createdAt) }} · {{ galleryItemSummary(item) }}</span>
                   </div>
                   <div class="gallery-actions">
                     <button type="button" :title="t('imageStudio.reuseSettings')" @click="reuseItem(item)">
@@ -302,7 +353,7 @@
         <img :src="previewItem.imageSrc" :alt="previewItem.prompt" />
         <div class="preview-caption">
           <p>{{ previewItem.prompt }}</p>
-          <span>{{ previewItem.size }} · {{ previewItem.quality }} · {{ previewItem.outputFormat.toUpperCase() }}</span>
+          <span>{{ galleryItemSummary(previewItem) }}</span>
         </div>
       </div>
     </div>
@@ -317,12 +368,17 @@ import { Icon } from '@/components/icons'
 import { keysAPI } from '@/api/keys'
 import {
   generateImage,
+  getImageStudioCapabilities,
   getImageStudioPricing,
   type ImageBackground,
   type ImageOutputFormat,
   type ImageQuality,
+  type ImageStudioCapabilitiesResponse,
+  type ImageStudioGenerationRequest,
   type ImageStudioImage,
-  type ImageStudioPricingResponse
+  type ImageStudioModelCapability,
+  type ImageStudioPricingResponse,
+  type ImageStudioProvider
 } from '@/api/imageStudio'
 import type { ApiKey } from '@/types'
 import { useAppStore } from '@/stores/app'
@@ -352,8 +408,11 @@ const userId = computed(() => authStore.user?.id || 0)
 
 const imageKeys = ref<ApiKey[]>([])
 const gallery = ref<ImageStudioGalleryItem[]>([])
+const capabilities = ref<ImageStudioCapabilitiesResponse | null>(null)
 const loadingKeys = ref(true)
 const loadingGallery = ref(true)
+const loadingCapabilities = ref(false)
+const capabilitiesError = ref('')
 const loadingPricing = ref(false)
 const pricing = ref<ImageStudioPricingResponse | null>(null)
 const pricingError = ref('')
@@ -362,6 +421,7 @@ const elapsedSeconds = ref(0)
 const previewItem = ref<ImageStudioGalleryItem | null>(null)
 const placeholders = ref<Array<{ id: string; status: 'generating' | 'error'; error: string }>>([])
 let generationController: AbortController | null = null
+let capabilitiesController: AbortController | null = null
 let pricingController: AbortController | null = null
 let generationTimer: number | null = null
 let placeholderSequence = 0
@@ -369,7 +429,11 @@ let placeholderSequence = 0
 const form = reactive({
   apiKeyId: 0,
   prompt: '',
+  model: '',
   size: 'auto',
+  aspectRatio: '',
+  imageSize: '',
+  resolution: '',
   quality: 'auto' as ImageQuality,
   background: 'auto' as ImageBackground,
   outputFormat: 'png' as ImageOutputFormat,
@@ -391,23 +455,31 @@ const sizeOptions = computed(() => [
   { value: '3840x2160', label: t('imageStudio.landscape'), detail: '3840 x 2160 · 4K', shape: 'landscape', experimental: true },
   { value: '2160x3840', label: t('imageStudio.portrait'), detail: '2160 x 3840 · 4K', shape: 'portrait', experimental: true }
 ])
-const qualityOptions = computed(() => [
-  { value: 'auto' as ImageQuality, label: t('imageStudio.qualityAuto') },
-  { value: 'low' as ImageQuality, label: t('imageStudio.qualityLow') },
-  { value: 'medium' as ImageQuality, label: t('imageStudio.qualityMedium') },
-  { value: 'high' as ImageQuality, label: t('imageStudio.qualityHigh') }
-])
-const backgroundOptions = computed(() => [
-  { value: 'auto' as ImageBackground, label: t('imageStudio.backgroundAuto') },
-  { value: 'opaque' as ImageBackground, label: t('imageStudio.backgroundOpaque') }
-])
-const outputFormats: ImageOutputFormat[] = ['png', 'jpeg', 'webp']
 const selectedKey = computed(() => imageKeys.value.find((key) => key.id === form.apiKeyId))
+const provider = computed<ImageStudioProvider | null>(() => capabilities.value?.provider || null)
+const selectedModelCapability = computed<ImageStudioModelCapability | null>(() => (
+  capabilities.value?.models.find((model) => model.id === form.model) || null
+))
+const aspectRatioOptions = computed(() => selectedModelCapability.value?.aspect_ratios || [])
+const imageSizeOptions = computed(() => selectedModelCapability.value?.image_sizes || [])
+const resolutionOptions = computed(() => selectedModelCapability.value?.resolutions || [])
+const qualityOptions = computed(() => (selectedModelCapability.value?.qualities || []).map((value) => ({
+  value,
+  label: t(`imageStudio.quality${value.charAt(0).toUpperCase()}${value.slice(1)}`)
+})))
+const backgroundOptions = computed(() => (selectedModelCapability.value?.backgrounds || []).map((value) => ({
+  value,
+  label: value === 'auto' ? t('imageStudio.backgroundAuto') : t('imageStudio.backgroundOpaque')
+})))
+const outputFormats = computed(() => selectedModelCapability.value?.output_formats || [])
+const maxImageCount = computed(() => provider.value === 'gemini' ? 1 : selectedModelCapability.value?.max_images || 1)
 const selectedSizeOption = computed(() => sizeOptions.value.find((option) => option.value === form.size))
 const sizeValidation = computed(() => validateGPTImage2Size(form.size))
 const customWidthBounds = computed(() => gptImage2DimensionBounds(Number(customSize.height)))
 const customHeightBounds = computed(() => gptImage2DimensionBounds(Number(customSize.width)))
+const currentAspectToken = computed(() => provider.value === 'openai' ? form.size : form.aspectRatio)
 const selectedSizeShape = computed(() => {
+  if (provider.value !== 'openai') return shapeForAspectRatio(form.aspectRatio)
   if (sizeMode.value === 'auto') return 'auto'
   if (sizeMode.value !== 'custom') return selectedSizeOption.value?.shape || 'square'
   const width = Number(customSize.width)
@@ -418,7 +490,7 @@ const selectedSizeShape = computed(() => {
 const selectedSizeLabel = computed(() => form.size === 'auto' ? t('imageStudio.sizeAuto') : form.size)
 const selectedQualityLabel = computed(() => qualityOptions.value.find((option) => option.value === form.quality)?.label || form.quality)
 const sizeErrorMessage = computed(() => {
-  if (sizeValidation.value.valid) return ''
+  if (provider.value !== 'openai' || sizeValidation.value.valid) return ''
   const messages = {
     format: 'imageStudio.sizeErrorFormat',
     multiple: 'imageStudio.sizeErrorMultiple',
@@ -429,16 +501,51 @@ const sizeErrorMessage = computed(() => {
   } as const
   return t(messages[sizeValidation.value.error || 'format'])
 })
-const canGenerate = computed(() => !generating.value && sizeValidation.value.valid && form.apiKeyId > 0 && form.prompt.trim().length > 0)
+const canGenerate = computed(() => {
+  if (generating.value || loadingCapabilities.value || !capabilities.value || !selectedModelCapability.value) return false
+  if (form.apiKeyId <= 0 || !form.prompt.trim()) return false
+  if (provider.value === 'openai') {
+    return sizeValidation.value.valid
+      && qualityOptions.value.some((option) => option.value === form.quality)
+      && backgroundOptions.value.some((option) => option.value === form.background)
+      && outputFormats.value.includes(form.outputFormat)
+  }
+  if (!aspectRatioOptions.value.includes(form.aspectRatio)) return false
+  if (provider.value === 'gemini') {
+    return imageSizeOptions.value.length === 0 || imageSizeOptions.value.includes(form.imageSize)
+  }
+  return resolutionOptions.value.includes(form.resolution)
+    && (form.quality === 'low' || form.quality === 'medium')
+    && qualityOptions.value.some((option) => option.value === form.quality)
+    && form.count >= 1 && form.count <= maxImageCount.value
+})
+const selectionSummary = computed(() => {
+  if (provider.value === 'openai') return [selectedSizeLabel.value, selectedQualityLabel.value, form.count].join(' · ')
+  if (provider.value === 'gemini') return [form.aspectRatio, form.imageSize].filter(Boolean).join(' · ')
+  if (provider.value === 'grok') return [form.aspectRatio, form.resolution.toUpperCase(), selectedQualityLabel.value, form.count].filter(Boolean).join(' · ')
+  return t('imageStudio.selectApiKey')
+})
 const selectedPrice = computed(() => {
   const prices = pricing.value?.prices || []
-  return prices.find((price) => price.size === form.size)
-    || prices.find((price) => price.billing_tier === imageBillingTierForSize(form.size))
+  const modelPrices = prices.filter((price) => !price.model || price.model === form.model)
+  if (provider.value === 'openai') {
+    return modelPrices.find((price) => price.size === form.size)
+      || modelPrices.find((price) => price.billing_tier === imageBillingTierForSize(form.size))
+  }
+  if (provider.value === 'gemini') {
+    return modelPrices.find((price) => price.image_size === form.imageSize || price.size === form.imageSize)
+      || modelPrices.find((price) => price.billing_tier.toLowerCase() === form.imageSize.toLowerCase())
+      || modelPrices[0]
+  }
+  return modelPrices.find((price) => price.resolution === form.resolution || price.size === form.resolution)
+    || modelPrices.find((price) => price.billing_tier.toLowerCase() === form.resolution.toLowerCase())
+    || modelPrices[0]
 })
 const selectedUnitPrice = computed(() => selectedPrice.value?.unit_price ?? null)
+const pricedImageCount = computed(() => provider.value === 'gemini' ? 1 : form.count)
 const formattedEstimate = computed(() => {
   if (loadingPricing.value) return '...'
-  if (selectedUnitPrice.value != null) return formatPrice(selectedUnitPrice.value * form.count)
+  if (selectedUnitPrice.value != null) return formatPrice(selectedUnitPrice.value * pricedImageCount.value)
   if (pricing.value?.pricing_kind === 'usage_based') return t('imageStudio.usageBasedPricing')
   return '—'
 })
@@ -537,7 +644,10 @@ function restoreSize(size: string, savedMode?: string) {
 }
 
 function imageKeyAllowed(key: ApiKey): boolean {
-  return key.status === 'active' && key.group?.platform === 'openai' && key.group.allow_image_generation === true
+  const platform = key.group?.platform
+  return key.status === 'active'
+    && (platform === 'openai' || platform === 'gemini' || platform === 'grok')
+    && key.group?.allow_image_generation === true
 }
 
 async function loadKeys() {
@@ -554,6 +664,7 @@ async function loadKeys() {
     imageKeys.value = keys
     restoreSettings()
     if (!keys.some((key) => key.id === form.apiKeyId)) form.apiKeyId = keys[0]?.id || 0
+    if (form.apiKeyId) await loadCapabilities()
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, t('imageStudio.loadKeysFailed')))
   } finally {
@@ -565,11 +676,15 @@ function restoreSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey()) || '{}') as Partial<typeof form> & { sizeMode?: string }
     if (typeof saved.apiKeyId === 'number') form.apiKeyId = saved.apiKeyId
+    if (typeof saved.model === 'string') form.model = saved.model
     if (typeof saved.size === 'string') restoreSize(saved.size, saved.sizeMode)
-    if (qualityOptions.value.some((option) => option.value === saved.quality)) form.quality = saved.quality!
-    if (backgroundOptions.value.some((option) => option.value === saved.background)) form.background = saved.background!
-    if (outputFormats.includes(saved.outputFormat as ImageOutputFormat)) form.outputFormat = saved.outputFormat!
-    if (typeof saved.count === 'number') form.count = Math.min(4, Math.max(1, saved.count))
+    if (typeof saved.aspectRatio === 'string') form.aspectRatio = saved.aspectRatio
+    if (typeof saved.imageSize === 'string') form.imageSize = saved.imageSize
+    if (typeof saved.resolution === 'string') form.resolution = saved.resolution
+    if (typeof saved.quality === 'string') form.quality = saved.quality as ImageQuality
+    if (typeof saved.background === 'string') form.background = saved.background as ImageBackground
+    if (typeof saved.outputFormat === 'string') form.outputFormat = saved.outputFormat as ImageOutputFormat
+    if (typeof saved.count === 'number') form.count = Math.max(1, saved.count)
   } catch {
     localStorage.removeItem(storageKey())
   }
@@ -578,30 +693,69 @@ function restoreSettings() {
 function persistSettings() {
   if (!userId.value) return
   try {
-    localStorage.setItem(storageKey(), JSON.stringify({
-      apiKeyId: form.apiKeyId,
-      size: form.size,
-      sizeMode: sizeMode.value,
-      quality: form.quality,
-      background: form.background,
-      outputFormat: form.outputFormat,
-      count: form.count
-    }))
+    localStorage.setItem(storageKey(), JSON.stringify({ ...form, prompt: undefined, sizeMode: sizeMode.value }))
   } catch {
     // Settings persistence is optional.
   }
+}
+
+async function loadCapabilities() {
+  capabilitiesController?.abort()
+  capabilities.value = null
+  capabilitiesError.value = ''
+  pricingController?.abort()
+  pricing.value = null
+  pricingError.value = ''
+  if (!form.apiKeyId) return
+  const requestedKeyId = form.apiKeyId
+  const requestController = new AbortController()
+  capabilitiesController = requestController
+  loadingCapabilities.value = true
+  try {
+    const result = await getImageStudioCapabilities(requestedKeyId, requestController.signal)
+    if (capabilitiesController !== requestController || form.apiKeyId !== requestedKeyId) return
+    capabilities.value = result
+    if (!result.models.some((model) => model.id === form.model)) form.model = result.default_model
+    applyModelCapabilities()
+    await loadPricing()
+  } catch (error: any) {
+    if (capabilitiesController === requestController && error?.code !== 'ERR_CANCELED' && error?.name !== 'AbortError') {
+      capabilitiesError.value = extractApiErrorMessage(error, t('imageStudio.loadCapabilitiesFailed'))
+    }
+  } finally {
+    if (capabilitiesController === requestController) {
+      loadingCapabilities.value = false
+      capabilitiesController = null
+    }
+  }
+}
+
+function applyModelCapabilities() {
+  const model = selectedModelCapability.value
+  if (!model) return
+  form.aspectRatio = validOrFirst(form.aspectRatio, model.aspect_ratios)
+  form.imageSize = validOrFirst(form.imageSize, model.image_sizes)
+  form.resolution = validOrFirst(form.resolution, model.resolutions)
+  form.quality = validOrFirst(form.quality, model.qualities) as ImageQuality
+  form.background = validOrFirst(form.background, model.backgrounds) as ImageBackground
+  form.outputFormat = validOrFirst(form.outputFormat, model.output_formats) as ImageOutputFormat
+  form.count = provider.value === 'gemini' ? 1 : Math.min(Math.max(1, form.count), model.max_images)
+}
+
+function validOrFirst<T extends string>(current: string, values: T[]): T | '' {
+  return values.includes(current as T) ? current as T : values[0] || ''
 }
 
 async function loadPricing() {
   pricingController?.abort()
   pricing.value = null
   pricingError.value = ''
-  if (!form.apiKeyId) return
+  if (!form.apiKeyId || !form.model) return
   const requestController = new AbortController()
   pricingController = requestController
   loadingPricing.value = true
   try {
-    const result = await getImageStudioPricing(form.apiKeyId, requestController.signal)
+    const result = await getImageStudioPricing(form.apiKeyId, form.model, requestController.signal)
     if (pricingController === requestController) pricing.value = result
   } catch (error: any) {
     if (pricingController === requestController && error?.code !== 'ERR_CANCELED' && error?.name !== 'AbortError') {
@@ -628,7 +782,7 @@ async function loadGallery() {
 
 function startPlaceholders() {
   elapsedSeconds.value = 0
-  placeholders.value = Array.from({ length: form.count }, () => ({
+  placeholders.value = Array.from({ length: pricedImageCount.value }, () => ({
     id: `image-generation-${Date.now()}-${placeholderSequence++}`,
     status: 'generating' as const,
     error: ''
@@ -646,9 +800,8 @@ function stopGenerationTimer() {
 
 function resultSource(result: ImageStudioImage): string {
   if (result.b64_json) {
-    const mime = ['image/png', 'image/jpeg', 'image/webp'].includes(result.mime_type || '')
-      ? result.mime_type!
-      : `image/${form.outputFormat}`
+    const fallbackMime = provider.value === 'openai' ? `image/${form.outputFormat}` : 'image/jpeg'
+    const mime = ['image/png', 'image/jpeg', 'image/webp'].includes(result.mime_type || '') ? result.mime_type! : fallbackMime
     return sanitizeImageStudioSource(`data:${mime};base64,${result.b64_json}`)
   }
   return sanitizeImageStudioSource(result.url)
@@ -658,29 +811,51 @@ function resultFormat(result: ImageStudioImage): ImageOutputFormat {
   if (result.mime_type === 'image/jpeg') return 'jpeg'
   if (result.mime_type === 'image/webp') return 'webp'
   if (result.mime_type === 'image/png') return 'png'
-  return form.outputFormat
+  return provider.value === 'openai' ? form.outputFormat : 'jpeg'
+}
+
+function generationPayload(prompt: string): ImageStudioGenerationRequest {
+  const base = { api_key_id: form.apiKeyId, prompt, model: form.model }
+  if (provider.value === 'gemini') {
+    return {
+      ...base,
+      aspect_ratio: form.aspectRatio,
+      ...(form.imageSize ? { image_size: form.imageSize } : {})
+    }
+  }
+  if (provider.value === 'grok') {
+    return {
+      ...base,
+      aspect_ratio: form.aspectRatio,
+      resolution: form.resolution,
+      quality: form.quality as 'low' | 'medium',
+      n: form.count
+    }
+  }
+  return {
+    ...base,
+    size: form.size,
+    quality: form.quality,
+    background: form.background,
+    output_format: form.outputFormat,
+    n: form.count
+  }
 }
 
 async function generate() {
-  if (!canGenerate.value) return
+  if (!canGenerate.value || !provider.value) return
   const prompt = form.prompt.trim()
+  const generatedProvider = provider.value
   generating.value = true
   generationController = new AbortController()
   startPlaceholders()
   try {
-    const response = await generateImage({
-      api_key_id: form.apiKeyId,
-      prompt,
-      size: form.size,
-      quality: form.quality,
-      background: form.background,
-      output_format: form.outputFormat,
-      n: form.count
-    }, generationController.signal)
+    const response = await generateImage(generationPayload(prompt), generationController.signal)
     const createdAt = Date.now()
     const items = response.data.map((result, index): ImageStudioGalleryItem | null => {
       const imageSrc = resultSource(result)
       if (!imageSrc) return null
+      const size = generatedProvider === 'openai' ? form.size : form.aspectRatio
       return {
         id: globalThis.crypto?.randomUUID?.() || `${createdAt}-${index}-${Math.random()}`,
         userId: userId.value,
@@ -688,10 +863,14 @@ async function generate() {
         prompt,
         revisedPrompt: result.revised_prompt,
         apiKeyId: form.apiKeyId,
-        model: 'gpt-image-2',
-        size: form.size,
-        quality: form.quality,
-        background: form.background,
+        provider: generatedProvider,
+        model: form.model,
+        size,
+        ...(generatedProvider !== 'openai' ? { aspectRatio: form.aspectRatio } : {}),
+        ...(generatedProvider === 'gemini' && form.imageSize ? { imageSize: form.imageSize } : {}),
+        ...(generatedProvider === 'grok' ? { resolution: form.resolution } : {}),
+        ...(generatedProvider !== 'gemini' ? { quality: form.quality } : {}),
+        ...(generatedProvider === 'openai' ? { background: form.background } : {}),
         outputFormat: resultFormat(result),
         imageSrc
       }
@@ -725,10 +904,14 @@ function cancelGeneration() {
 function reuseItem(item: ImageStudioGalleryItem) {
   if (imageKeys.value.some((key) => key.id === item.apiKeyId)) form.apiKeyId = item.apiKeyId
   form.prompt = item.prompt
-  restoreSize(item.size)
-  if (qualityOptions.value.some((option) => option.value === item.quality)) form.quality = item.quality as ImageQuality
-  if (backgroundOptions.value.some((option) => option.value === item.background)) form.background = item.background as ImageBackground
-  if (outputFormats.includes(item.outputFormat as ImageOutputFormat)) form.outputFormat = item.outputFormat as ImageOutputFormat
+  form.model = item.model
+  if (item.provider === 'openai') restoreSize(item.size)
+  if (item.aspectRatio) form.aspectRatio = item.aspectRatio
+  if (item.imageSize) form.imageSize = item.imageSize
+  if (item.resolution) form.resolution = item.resolution
+  if (item.quality) form.quality = item.quality as ImageQuality
+  if (item.background) form.background = item.background as ImageBackground
+  if (item.outputFormat) form.outputFormat = item.outputFormat as ImageOutputFormat
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
@@ -757,9 +940,34 @@ async function clearGallery() {
   }
 }
 
-function aspectRatioStyle(size: string): Record<string, string> {
-  const [width, height] = size.split('x').map(Number)
+function shapeForAspectRatio(value: string): 'auto' | 'square' | 'landscape' | 'portrait' {
+  if (!value || value === 'auto') return 'auto'
+  const [width, height] = value.split(':').map(Number)
+  if (!width || !height || width === height) return 'square'
+  return width > height ? 'landscape' : 'portrait'
+}
+
+function aspectRatioStyle(value: string): Record<string, string> {
+  if (!value || value === 'auto') return { aspectRatio: '1 / 1' }
+  const separator = value.includes(':') ? ':' : 'x'
+  const [width, height] = value.split(separator).map(Number)
   return width > 0 && height > 0 ? { aspectRatio: `${width} / ${height}` } : { aspectRatio: '1 / 1' }
+}
+
+function segmentColumnClass(count: number): string {
+  if (count <= 2) return 'two-columns'
+  if (count === 3) return 'three-columns'
+  return 'four-columns'
+}
+
+function galleryItemSummary(item: ImageStudioGalleryItem): string {
+  return [
+    item.model,
+    item.provider === 'openai' ? item.size : item.aspectRatio,
+    item.imageSize || item.resolution,
+    item.quality,
+    item.outputFormat?.toUpperCase()
+  ].filter(Boolean).join(' · ')
 }
 
 function formatPrice(value: number): string {
@@ -779,8 +987,27 @@ function downloadName(item: ImageStudioGalleryItem): string {
   return `image-studio-${new Date(item.createdAt).toISOString().replace(/[:.]/g, '-')}.${item.outputFormat}`
 }
 
-watch(() => [form.apiKeyId, form.size, sizeMode.value, form.quality, form.background, form.outputFormat, form.count], persistSettings)
-watch(() => form.apiKeyId, loadPricing)
+watch(() => [
+  form.apiKeyId,
+  form.model,
+  form.size,
+  sizeMode.value,
+  form.aspectRatio,
+  form.imageSize,
+  form.resolution,
+  form.quality,
+  form.background,
+  form.outputFormat,
+  form.count
+], persistSettings)
+watch(() => form.apiKeyId, () => {
+  if (!loadingKeys.value) void loadCapabilities()
+})
+watch(() => form.model, (model, previousModel) => {
+  if (!capabilities.value || !model || model === previousModel) return
+  applyModelCapabilities()
+  void loadPricing()
+})
 
 onMounted(async () => {
   await Promise.all([loadKeys(), loadGallery()])
@@ -788,6 +1015,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   generationController?.abort()
+  capabilitiesController?.abort()
   pricingController?.abort()
   stopGenerationTimer()
 })
@@ -808,6 +1036,7 @@ onBeforeUnmount(() => {
 .studio-workspace { display: flex; flex-direction: column; }
 .control-group { display: flex; flex-direction: column; gap: .5rem; }
 .control-label { color: rgb(55 65 81); font-size: .75rem; font-weight: 700; }
+.capabilities-error { border: 1px solid rgb(254 202 202); border-radius: 6px; background: rgb(254 242 242); padding: .625rem .75rem; color: rgb(185 28 28); font-size: .75rem; line-height: 1.45; }
 .studio-select, .studio-prompt { width: 100%; border: 1px solid rgb(209 213 219); border-radius: 6px; background: white; color: rgb(17 24 39); font-size: .875rem; outline: none; transition: border-color .15s, box-shadow .15s; }
 .studio-select { height: 2.625rem; padding: 0 .75rem; }
 .prompt-workspace { min-width: 0; overflow: hidden; }
@@ -908,6 +1137,7 @@ onBeforeUnmount(() => {
 :global(.dark .size-feedback.error) { color: rgb(248 113 113); }
 :global(.dark .size-feedback.experimental) { color: rgb(251 191 36); }
 :global(.dark .size-feedback.adjusted) { color: rgb(52 211 153); }
+:global(.dark .capabilities-error) { border-color: rgb(127 29 29); background: rgb(69 10 10 / .35); color: rgb(252 165 165); }
 :global(.dark .size-shape) { color: rgb(148 163 184); }
 :global(.dark .segmented-control) { border-color: rgb(71 85 105); background: rgb(15 23 42); }
 :global(.dark .segmented-control button) { border-color: rgb(71 85 105); color: rgb(148 163 184); }

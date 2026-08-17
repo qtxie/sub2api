@@ -347,6 +347,7 @@ func RegisterGatewayRoutes(
 	{
 		gemini.GET("/models", h.Gateway.GeminiV1BetaListModels)
 		gemini.GET("/models/:model", h.Gateway.GeminiV1BetaGetModel)
+		gemini.POST("/interactions", h.Gateway.GeminiV1BetaInteractions)
 		// Gin treats ":" as a param marker, but Gemini uses "{model}:{action}" in the same segment.
 		gemini.POST("/models/*modelAction", h.Gateway.GeminiV1BetaModels)
 	}
@@ -618,6 +619,16 @@ func compositeGeminiTargetPlatformMiddleware(resolver *service.CompositeRouteRes
 		apiKey, ok := middleware.GetAPIKeyFromContext(c)
 		if ok && apiKey != nil && apiKey.Group != nil && apiKey.Group.Platform == service.PlatformComposite {
 			model := compositeGeminiModelFromParams(c)
+			if model == "" && c.Request != nil && c.Request.Method == http.MethodPost && strings.HasSuffix(c.Request.URL.Path, "/interactions") {
+				body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": http.StatusBadRequest, "message": "Failed to read request body", "status": "INVALID_ARGUMENT"}})
+					c.Abort()
+					return
+				}
+				model = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+				resetRequestBody(c, body)
+			}
 			if model != "" {
 				decision, err := resolver.Resolve(c.Request.Context(), apiKey.Group.ID, model, service.CompositeRouteEndpointGemini)
 				if err != nil {

@@ -29,6 +29,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const geminiStickySessionTTL = time.Hour
@@ -1170,7 +1171,7 @@ func (s *GeminiMessagesCompatService) forwardNativeOnce(ctx context.Context, c *
 	}
 
 	switch action {
-	case "generateContent", "streamGenerateContent", "countTokens":
+	case "generateContent", "streamGenerateContent", "countTokens", "interactions":
 		// ok
 	default:
 		return nil, s.writeGoogleError(c, http.StatusNotFound, "Unsupported action: "+action)
@@ -1183,6 +1184,13 @@ func (s *GeminiMessagesCompatService) forwardNativeOnce(ctx context.Context, c *
 	mappedModel := originalModel
 	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
 		mappedModel = account.GetMappedModel(originalModel)
+	}
+	if action == "interactions" {
+		var err error
+		body, err = sjson.SetBytes(body, "model", mappedModel)
+		if err != nil {
+			return nil, s.writeGoogleError(c, http.StatusBadRequest, "Invalid interactions request body")
+		}
 	}
 
 	proxyURL := ""
@@ -1197,7 +1205,7 @@ func (s *GeminiMessagesCompatService) forwardNativeOnce(ctx context.Context, c *
 		useUpstreamStream = true
 		upstreamAction = "streamGenerateContent"
 	}
-	forceAIStudio := action == "countTokens"
+	forceAIStudio := action == "countTokens" || action == "interactions"
 
 	var requestIDHeader string
 	var buildReq func(ctx context.Context) (*http.Request, string, error)
@@ -1216,7 +1224,12 @@ func (s *GeminiMessagesCompatService) forwardNativeOnce(ctx context.Context, c *
 				return nil, "", err
 			}
 
-			fullURL, err := buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, upstreamAction, useUpstreamStream)
+			var fullURL string
+			if action == "interactions" {
+				fullURL, err = buildGeminiAIStudioInteractionsURL(normalizedBaseURL)
+			} else {
+				fullURL, err = buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, upstreamAction, useUpstreamStream)
+			}
 			if err != nil {
 				return nil, "", err
 			}
@@ -1284,7 +1297,12 @@ func (s *GeminiMessagesCompatService) forwardNativeOnce(ctx context.Context, c *
 					return nil, "", err
 				}
 
-				fullURL, err := buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, upstreamAction, useUpstreamStream)
+				var fullURL string
+				if action == "interactions" {
+					fullURL, err = buildGeminiAIStudioInteractionsURL(normalizedBaseURL)
+				} else {
+					fullURL, err = buildGeminiAIStudioModelActionURL(normalizedBaseURL, mappedModel, upstreamAction, useUpstreamStream)
+				}
 				if err != nil {
 					return nil, "", err
 				}
@@ -1301,6 +1319,9 @@ func (s *GeminiMessagesCompatService) forwardNativeOnce(ctx context.Context, c *
 		requestIDHeader = "x-request-id"
 
 	case AccountTypeServiceAccount:
+		if action == "interactions" {
+			return nil, s.writeGoogleError(c, http.StatusNotImplemented, "Gemini Interactions is not supported for Vertex service accounts")
+		}
 		buildReq = func(ctx context.Context) (*http.Request, string, error) {
 			if s.tokenProvider == nil {
 				return nil, "", errors.New("gemini token provider not configured")
@@ -2936,7 +2957,27 @@ func isValidBase64(data string) bool {
 func extractGeminiUsage(data []byte) *ClaudeUsage {
 	usage := gjson.GetBytes(data, "usageMetadata")
 	if !usage.Exists() {
-		return nil
+		interactionUsage := gjson.GetBytes(data, "usage")
+		if !interactionUsage.Exists() {
+			return nil
+		}
+		prompt := int(interactionUsage.Get("total_input_tokens").Int())
+		output := int(interactionUsage.Get("total_output_tokens").Int())
+		cached := int(interactionUsage.Get("total_cached_tokens").Int())
+		thoughts := int(interactionUsage.Get("total_thought_tokens").Int())
+		imageTokens := 0
+		interactionUsage.Get("output_tokens_by_modality").ForEach(func(_, detail gjson.Result) bool {
+			if strings.EqualFold(strings.TrimSpace(detail.Get("modality").String()), "image") {
+				imageTokens += int(detail.Get("tokens").Int())
+			}
+			return true
+		})
+		return &ClaudeUsage{
+			InputTokens:          max(prompt-cached, 0),
+			OutputTokens:         output + thoughts,
+			CacheReadInputTokens: cached,
+			ImageOutputTokens:    imageTokens,
+		}
 	}
 	prompt := int(usage.Get("promptTokenCount").Int())
 	cand := int(usage.Get("candidatesTokenCount").Int())
@@ -3695,6 +3736,7 @@ func (s *GeminiMessagesCompatService) extractImageInputSize(body []byte) string 
 				ImageSize string `json:"imageSize"`
 			} `json:"imageConfig"`
 		} `json:"generationConfig"`
+		ResponseFormat json.RawMessage `json:"response_format"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return ""
@@ -3702,6 +3744,16 @@ func (s *GeminiMessagesCompatService) extractImageInputSize(body []byte) string 
 
 	if req.GenerationConfig != nil && req.GenerationConfig.ImageConfig != nil {
 		return strings.TrimSpace(req.GenerationConfig.ImageConfig.ImageSize)
+	}
+	if len(req.ResponseFormat) > 0 {
+		if size := strings.TrimSpace(gjson.GetBytes(req.ResponseFormat, "image_size").String()); size != "" {
+			return size
+		}
+		for _, format := range gjson.ParseBytes(req.ResponseFormat).Array() {
+			if strings.EqualFold(strings.TrimSpace(format.Get("type").String()), "image") {
+				return strings.TrimSpace(format.Get("image_size").String())
+			}
+		}
 	}
 
 	return ""

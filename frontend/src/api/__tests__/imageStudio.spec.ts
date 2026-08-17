@@ -32,4 +32,22 @@ describe('parseImageStudioResponse', () => {
   it('surfaces structured stream errors', () => {
     expect(() => parseImageStudioResponse('event: error\ndata: {"type":"error","error":{"message":"blocked"}}\n\n')).toThrow('blocked')
   })
+
+  it('normalizes Gemini Interactions image content blocks and ignores text blocks', () => {
+    const response = parseImageStudioResponse({
+      created_at: 17,
+      steps: [{
+        type: 'model_output',
+        content: [
+          { type: 'text', text: 'A revised lighthouse prompt' },
+          { type: 'image', data: 'aGVsbG8=', mime_type: 'image/jpeg' }
+        ]
+      }]
+    })
+
+    expect(response).toEqual({
+      created: 17,
+      data: [{ b64_json: 'aGVsbG8=', mime_type: 'image/jpeg' }]
+    })
+  })
 })

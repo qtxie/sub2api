@@ -85,6 +85,7 @@ func RegisterUserRoutes(
 		imageStudio := authenticated.Group("/image-studio")
 		imageStudio.Use(panelRateLimiter.Heavy())
 		{
+			imageStudio.POST("/capabilities", h.ImageStudio.Capabilities)
 			imageStudio.POST("/pricing", h.ImageStudio.Pricing)
 			imageStudio.POST("/generations", h.ImageStudio.Generate)
 		}

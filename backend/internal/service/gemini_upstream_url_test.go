@@ -22,6 +22,15 @@ func TestBuildGeminiAIStudioModelActionURL(t *testing.T) {
 	require.Equal(t, base+"/v1beta/models/gemini-2.5-pro:countTokens", got)
 }
 
+func TestBuildGeminiAIStudioInteractionsURL(t *testing.T) {
+	got, err := buildGeminiAIStudioInteractionsURL("https://generativelanguage.googleapis.com/")
+	require.NoError(t, err)
+	require.Equal(t, "https://generativelanguage.googleapis.com/v1beta/interactions", got)
+
+	_, err = buildGeminiAIStudioInteractionsURL(" ")
+	require.Error(t, err)
+}
+
 // TestBuildGeminiAIStudioModelActionURLRejectsNonConformingModel 锁定不变式：
 // 模型名来自客户端（native 路由的 URL 片段 / compat 路由的请求体），
 // 只有合规的路径片段才允许拼进上游 URL。

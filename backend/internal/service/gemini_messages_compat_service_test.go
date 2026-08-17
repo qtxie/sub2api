@@ -42,6 +42,78 @@ func (s *geminiCompatHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL str
 	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
+func TestGeminiForwardNativeInteractions_APIKeyPreservesDocumentedImageRequestAndResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstreamBody := `{
+		"id":"interaction-1",
+		"object":"interaction",
+		"status":"completed",
+		"model":"gemini-3.1-flash-image",
+		"steps":[{"type":"model_output","content":[{"type":"image","mime_type":"image/jpeg","data":"aGVsbG8="}]}],
+		"usage":{"total_input_tokens":12,"total_output_tokens":7,"total_thought_tokens":3,"output_tokens_by_modality":[{"modality":"image","tokens":6}]}
+	}`
+	httpStub := &geminiCompatHTTPUpstreamStub{response: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: &config.Config{}}
+	account := &Account{
+		ID:       301,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "gemini-api-key",
+			"model_mapping": map[string]any{
+				"studio-image": "gemini-3.1-flash-image",
+			},
+		},
+		Concurrency: 1,
+	}
+	body := []byte(`{"model":"studio-image","input":"draw a cat","response_format":{"type":"image","aspect_ratio":"16:9","image_size":"2K"},"store":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/interactions", bytes.NewReader(body))
+
+	result, err := svc.ForwardNative(context.Background(), c, account, "studio-image", "interactions", false, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, upstreamBody, rec.Body.String())
+	require.Equal(t, "studio-image", result.Model)
+	require.Equal(t, "gemini-3.1-flash-image", result.UpstreamModel)
+	require.Equal(t, "gemini-3.1-flash-image", result.UpstreamResponseModel)
+	require.Equal(t, 12, result.Usage.InputTokens)
+	require.Equal(t, 10, result.Usage.OutputTokens)
+	require.Equal(t, 6, result.Usage.ImageOutputTokens)
+	require.Equal(t, 1, result.ImageCount)
+	require.Equal(t, "2K", result.ImageInputSize)
+	require.Equal(t, ImageBillingSize2K, result.ImageSize)
+
+	require.NotNil(t, httpStub.lastReq)
+	require.Equal(t, "https://generativelanguage.googleapis.com/v1beta/interactions", httpStub.lastReq.URL.String())
+	require.Equal(t, "gemini-api-key", httpStub.lastReq.Header.Get("x-goog-api-key"))
+	postedBody, err := io.ReadAll(httpStub.lastReq.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"model":"gemini-3.1-flash-image","input":"draw a cat","response_format":{"type":"image","aspect_ratio":"16:9","image_size":"2K"},"store":false}`, string(postedBody))
+}
+
+func TestGeminiForwardNativeInteractions_ServiceAccountReturnsClearUnsupportedError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &GeminiMessagesCompatService{cfg: &config.Config{}}
+	account := &Account{ID: 302, Platform: PlatformGemini, Type: AccountTypeServiceAccount}
+	body := []byte(`{"model":"gemini-3.1-flash-image","input":"draw a cat","response_format":{"type":"image"}}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/interactions", bytes.NewReader(body))
+
+	result, err := svc.ForwardNative(context.Background(), c, account, "gemini-3.1-flash-image", "interactions", false, body)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+	require.Contains(t, rec.Body.String(), "not supported for Vertex service accounts")
+}
+
 func TestGeminiForwardAsChatCompletions_OAuthRoutesToGeminiAndReturnsChatFormat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

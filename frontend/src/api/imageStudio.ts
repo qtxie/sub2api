@@ -6,15 +6,56 @@ const imageGenerationTimeoutMs = 10 * 60 * 1000
 export type ImageOutputFormat = 'png' | 'jpeg' | 'webp'
 export type ImageQuality = 'auto' | 'low' | 'medium' | 'high'
 export type ImageBackground = 'auto' | 'opaque'
+export type ImageStudioProvider = 'openai' | 'gemini' | 'grok'
 
-export interface ImageStudioGenerationRequest {
+interface ImageStudioGenerationRequestBase {
   api_key_id: number
   prompt: string
+  model: string
+}
+
+export interface OpenAIImageStudioGenerationRequest extends ImageStudioGenerationRequestBase {
   size: string
   quality: ImageQuality
   background: ImageBackground
   output_format: ImageOutputFormat
   n: number
+}
+
+export interface GeminiImageStudioGenerationRequest extends ImageStudioGenerationRequestBase {
+  aspect_ratio: string
+  image_size?: string
+}
+
+export interface GrokImageStudioGenerationRequest extends ImageStudioGenerationRequestBase {
+  aspect_ratio: string
+  resolution: string
+  quality: Extract<ImageQuality, 'low' | 'medium'>
+  n: number
+}
+
+export type ImageStudioGenerationRequest =
+  | OpenAIImageStudioGenerationRequest
+  | GeminiImageStudioGenerationRequest
+  | GrokImageStudioGenerationRequest
+
+export interface ImageStudioModelCapability {
+  id: string
+  label: string
+  aspect_ratios: string[]
+  image_sizes: string[]
+  resolutions: string[]
+  qualities: ImageQuality[]
+  backgrounds: ImageBackground[]
+  output_formats: ImageOutputFormat[]
+  max_images: number
+  supports_custom_size: boolean
+}
+
+export interface ImageStudioCapabilitiesResponse {
+  provider: ImageStudioProvider
+  default_model: string
+  models: ImageStudioModelCapability[]
 }
 
 export interface ImageStudioImage {
@@ -36,18 +77,40 @@ export interface ImageStudioResolutionPrice {
   billing_tier: string
   pricing_kind: ImagePricingKind
   unit_price: number | null
+  model?: string
+  aspect_ratio?: string
+  image_size?: string
+  resolution?: string
 }
 
 export interface ImageStudioPricingResponse {
   currency: string
   pricing_kind: ImagePricingKind
   prices: ImageStudioResolutionPrice[]
+  provider?: ImageStudioProvider
+  model?: string
 }
 
-export async function getImageStudioPricing(apiKeyId: number, signal?: AbortSignal): Promise<ImageStudioPricingResponse> {
+export async function getImageStudioCapabilities(
+  apiKeyId: number,
+  signal?: AbortSignal
+): Promise<ImageStudioCapabilitiesResponse> {
+  const { data } = await apiClient.post<unknown>(
+    '/image-studio/capabilities',
+    { api_key_id: apiKeyId },
+    { signal }
+  )
+  return normalizeCapabilities(data)
+}
+
+export async function getImageStudioPricing(
+  apiKeyId: number,
+  model?: string,
+  signal?: AbortSignal
+): Promise<ImageStudioPricingResponse> {
   const { data } = await apiClient.post<ImageStudioPricingResponse>(
     '/image-studio/pricing',
-    { api_key_id: apiKeyId },
+    { api_key_id: apiKeyId, ...(model ? { model } : {}) },
     { signal }
   )
   return data
@@ -148,6 +211,10 @@ function normalizeJSONResponse(value: unknown): ImageStudioGenerationResponse {
     if (data.length === 0) throw new Error('Image gateway returned no usable images')
     return { created: numericTimestamp(payload.created ?? payload.created_at), data }
   }
+  const geminiImages = normalizeGeminiResponse(value as Record<string, unknown>)
+  if (geminiImages.length > 0) {
+    return { created: numericTimestamp(payload.created ?? payload.created_at), data: geminiImages }
+  }
   if (payload.type === 'response.completed') return normalizeResponsesCompletion(payload.response)
   throw new Error('Image gateway returned an invalid response')
 }
@@ -167,17 +234,90 @@ function normalizeImageArray(values: unknown[]): ImageStudioImage[] {
 function normalizeImage(value: unknown): ImageStudioImage | null {
   if (!value || typeof value !== 'object') return null
   const image = value as Record<string, unknown>
-  const b64 = safeBase64Payload(stringValue(image.b64_json) || stringValue(image.result))
+  const inlineData = objectValue(image.inlineData) || objectValue(image.inline_data)
+  if (inlineData) {
+    const b64 = safeBase64Payload(stringValue(inlineData.data))
+    if (!b64) return null
+    const mimeType = normalizeMimeType(
+      stringValue(inlineData.mimeType) || stringValue(inlineData.mime_type),
+      ''
+    )
+    if (!mimeType) return null
+    return { b64_json: b64, ...(mimeType ? { mime_type: mimeType } : {}) }
+  }
+  const interactionData = image.type === 'image' ? stringValue(image.data) : ''
+  const b64 = safeBase64Payload(stringValue(image.b64_json) || stringValue(image.result) || interactionData)
   const rawURL = stringValue(image.url)
   const url = rawURL ? sanitizeImageStudioSource(rawURL) : ''
   if (!b64 && !url) return null
   const mimeType = normalizeMimeType(stringValue(image.mime_type), stringValue(image.output_format))
+  if (interactionData && !mimeType) return null
   const revisedPrompt = stringValue(image.revised_prompt)
   return {
     ...(b64 ? { b64_json: b64 } : {}),
     ...(url ? { url } : {}),
     ...(mimeType ? { mime_type: mimeType } : {}),
     ...(revisedPrompt ? { revised_prompt: revisedPrompt } : {})
+  }
+}
+
+function normalizeGeminiResponse(payload: Record<string, unknown>): ImageStudioImage[] {
+  const images: ImageStudioImage[] = []
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
+  for (const candidate of candidates) {
+    const content = objectValue(objectValue(candidate)?.content)
+    const parts = Array.isArray(content?.parts) ? content.parts : []
+    images.push(...normalizeImageArray(parts))
+  }
+
+  const outputs = Array.isArray(payload.outputs)
+    ? payload.outputs
+    : Array.isArray(payload.output)
+      ? payload.output
+      : []
+  images.push(...normalizeImageArray(outputs))
+
+  const steps = Array.isArray(payload.steps) ? payload.steps : []
+  for (const step of steps) {
+    const content = objectValue(step)?.content
+    if (Array.isArray(content)) images.push(...normalizeImageArray(content))
+  }
+  return images
+}
+
+function normalizeCapabilities(value: unknown): ImageStudioCapabilitiesResponse {
+  const payload = objectValue(value)
+  const provider = stringValue(payload?.provider)
+  if (!isImageStudioProvider(provider)) throw new Error('Image Studio returned an unsupported provider')
+
+  const rawModels = Array.isArray(payload?.models) ? payload.models : []
+  const models = rawModels
+    .map((raw): ImageStudioModelCapability | null => {
+      const model = objectValue(raw)
+      const id = stringValue(model?.id) || stringValue(model?.model)
+      if (!id) return null
+      const maxImages = positiveInteger(model?.max_images ?? model?.maxImages) || 1
+      return {
+        id,
+        label: stringValue(model?.label) || stringValue(model?.name) || id,
+        aspect_ratios: stringArray(model?.aspect_ratios ?? model?.aspectRatios),
+        image_sizes: stringArray(model?.image_sizes ?? model?.imageSizes),
+        resolutions: stringArray(model?.resolutions),
+        qualities: enumArray(model?.qualities, ['auto', 'low', 'medium', 'high'] as const),
+        backgrounds: enumArray(model?.backgrounds, ['auto', 'opaque'] as const),
+        output_formats: enumArray(model?.output_formats ?? model?.outputFormats, ['png', 'jpeg', 'webp'] as const),
+        max_images: maxImages,
+        supports_custom_size: model?.supports_custom_size === true || model?.supportsCustomSize === true
+      }
+    })
+    .filter((model): model is ImageStudioModelCapability => model !== null)
+  if (models.length === 0) throw new Error('Image Studio returned no supported image models')
+
+  const requestedDefault = stringValue(payload?.default_model ?? payload?.defaultModel)
+  return {
+    provider,
+    default_model: models.some((model) => model.id === requestedDefault) ? requestedDefault : models[0].id,
+    models
   }
 }
 
@@ -217,4 +357,26 @@ function numericTimestamp(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-export default { generateImage, getImageStudioPricing }
+function objectValue(value: unknown): Record<string, any> | null {
+  return value && typeof value === 'object' ? value as Record<string, any> : null
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.map(stringValue).filter(Boolean))]
+}
+
+function enumArray<T extends string>(value: unknown, allowed: readonly T[]): T[] {
+  const values = stringArray(value)
+  return values.filter((item): item is T => allowed.includes(item as T))
+}
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null
+}
+
+function isImageStudioProvider(value: string): value is ImageStudioProvider {
+  return value === 'openai' || value === 'gemini' || value === 'grok'
+}
+
+export default { generateImage, getImageStudioCapabilities, getImageStudioPricing }

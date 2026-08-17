@@ -59,6 +59,10 @@ type GrokMediaRequestInfo struct {
 	N               int
 	Size            string
 	SizeTier        string
+	ImageResolution string
+	AspectRatio     string
+	Quality         string
+	ResponseFormat  string
 	Resolution      string
 	DurationSeconds int
 	InputImageURLs  []string
@@ -126,7 +130,15 @@ func ParseGrokMediaRequest(contentType string, body []byte) GrokMediaRequestInfo
 	info.Model = strings.TrimSpace(info.Model)
 	info.Prompt = strings.TrimSpace(info.Prompt)
 	info.Size = strings.TrimSpace(info.Size)
-	info.SizeTier = NormalizeImageBillingTierOrDefault(info.Size)
+	info.ImageResolution = strings.TrimSpace(info.ImageResolution)
+	info.AspectRatio = strings.TrimSpace(info.AspectRatio)
+	info.Quality = strings.TrimSpace(info.Quality)
+	info.ResponseFormat = strings.TrimSpace(info.ResponseFormat)
+	imageSize := info.ImageResolution
+	if imageSize == "" {
+		imageSize = info.Size
+	}
+	info.SizeTier = NormalizeImageBillingTierOrDefault(imageSize)
 	info.Resolution = NormalizeVideoBillingResolutionOrDefault(info.Resolution)
 	info.DurationSeconds = NormalizeVideoBillingDurationSecondsOrDefault(info.DurationSeconds)
 	if info.N <= 0 {
@@ -142,7 +154,12 @@ func parseGrokMediaJSONRequest(body []byte, info *GrokMediaRequestInfo) {
 	info.Model = strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	info.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
 	info.Size = strings.TrimSpace(gjson.GetBytes(body, "size").String())
-	info.Resolution = strings.TrimSpace(gjson.GetBytes(body, "resolution").String())
+	resolution := strings.TrimSpace(gjson.GetBytes(body, "resolution").String())
+	info.ImageResolution = resolution
+	info.Resolution = resolution
+	info.AspectRatio = strings.TrimSpace(gjson.GetBytes(body, "aspect_ratio").String())
+	info.Quality = strings.TrimSpace(gjson.GetBytes(body, "quality").String())
+	info.ResponseFormat = strings.TrimSpace(gjson.GetBytes(body, "response_format").String())
 	if duration := gjson.GetBytes(body, "duration"); duration.Exists() && duration.Type == gjson.Number {
 		info.DurationSeconds = int(duration.Int())
 	}
@@ -256,7 +273,14 @@ func parseGrokMediaMultipartRequest(contentType string, body []byte, info *GrokM
 		case "size":
 			info.Size = value
 		case "resolution":
+			info.ImageResolution = value
 			info.Resolution = value
+		case "aspect_ratio":
+			info.AspectRatio = value
+		case "quality":
+			info.Quality = value
+		case "response_format":
+			info.ResponseFormat = value
 		case "duration":
 			if duration, err := strconv.Atoi(value); err == nil {
 				info.DurationSeconds = duration
@@ -1163,7 +1187,10 @@ func grokMediaUsageFromResponse(endpoint GrokMediaEndpoint, requestInfo GrokMedi
 	case GrokMediaEndpointImagesGenerations, GrokMediaEndpointImagesEdits:
 		meta.ImageCount = countOpenAIResponseImageOutputsFromJSONBytes(responseBody)
 		meta.ImageSize = requestInfo.SizeTier
-		meta.ImageInputSize = requestInfo.Size
+		meta.ImageInputSize = requestInfo.ImageResolution
+		if meta.ImageInputSize == "" {
+			meta.ImageInputSize = requestInfo.Size
+		}
 		meta.ImageOutputSizes = collectOpenAIResponseImageOutputSizesFromJSONBytes(responseBody)
 	case GrokMediaEndpointVideosGenerations, GrokMediaEndpointVideosEdits, GrokMediaEndpointVideosExtensions:
 		// Async video: capture request_id + create-time pricing params only.

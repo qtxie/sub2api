@@ -1,3 +1,5 @@
+import type { ImageStudioProvider } from '@/api/imageStudio'
+
 export interface ImageStudioGalleryItem {
   id: string
   userId: number
@@ -5,16 +7,20 @@ export interface ImageStudioGalleryItem {
   prompt: string
   revisedPrompt?: string
   apiKeyId: number
+  provider: ImageStudioProvider
   model: string
   size: string
-  quality: string
-  background: string
+  aspectRatio?: string
+  imageSize?: string
+  resolution?: string
+  quality?: string
+  background?: string
   outputFormat: string
   imageSrc: string
 }
 
 const databaseName = 'sub2api-image-studio'
-const databaseVersion = 2
+const databaseVersion = 3
 const storeName = 'gallery'
 const userIndexName = 'userId'
 const safeDataMimes = ['image/png', 'image/jpeg', 'image/webp']
@@ -82,12 +88,43 @@ export async function listImageStudioGallery(userId: number): Promise<ImageStudi
     const transaction = db.transaction(storeName, 'readonly')
     const items = await request(transaction.objectStore(storeName).index(userIndexName).getAll(IDBKeyRange.only(userId))) as ImageStudioGalleryItem[]
     return items
-      .map((item) => ({ ...item, imageSrc: sanitizeImageStudioSource(item.imageSrc) }))
+      .map(normalizeGalleryItem)
       .filter((item) => item.imageSrc)
       .sort((a, b) => b.createdAt - a.createdAt)
   } finally {
     db.close()
   }
+}
+
+function normalizeGalleryItem(item: ImageStudioGalleryItem): ImageStudioGalleryItem {
+  const provider = isImageStudioProvider(item.provider) ? item.provider : providerForLegacyModel(item.model)
+  const aspectRatio = item.aspectRatio || legacyAspectRatio(provider, item.size)
+  return {
+    ...item,
+    provider,
+    size: item.size || aspectRatio || '1:1',
+    ...(aspectRatio ? { aspectRatio } : {}),
+    outputFormat: item.outputFormat || 'jpeg',
+    imageSrc: sanitizeImageStudioSource(item.imageSrc)
+  }
+}
+
+function legacyAspectRatio(provider: ImageStudioProvider, size: string): string | undefined {
+  if (provider === 'openai') return undefined
+  if (size?.includes(':')) return size
+  if (size === '1536x1024') return '3:2'
+  if (size === '1024x1536') return '2:3'
+  return provider === 'gemini' ? '1:1' : undefined
+}
+
+function providerForLegacyModel(model: string): ImageStudioProvider {
+  if (model?.startsWith('gemini-')) return 'gemini'
+  if (model?.startsWith('grok-')) return 'grok'
+  return 'openai'
+}
+
+function isImageStudioProvider(value: unknown): value is ImageStudioProvider {
+  return value === 'openai' || value === 'gemini' || value === 'grok'
 }
 
 export async function saveImageStudioGalleryItem(item: ImageStudioGalleryItem): Promise<void> {

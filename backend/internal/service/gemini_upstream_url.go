@@ -44,6 +44,16 @@ func buildGeminiAIStudioModelActionURL(baseURL, model, action string, stream boo
 	return fullURL, nil
 }
 
+// buildGeminiAIStudioInteractionsURL returns the fixed Interactions endpoint.
+// Unlike model actions, the model is carried in the JSON request body.
+func buildGeminiAIStudioInteractionsURL(baseURL string) (string, error) {
+	trimmedBase := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if trimmedBase == "" {
+		return "", errors.New("gemini base url is required")
+	}
+	return trimmedBase + "/v1beta/interactions", nil
+}
+
 // IsSafeGeminiModelPathSegment 供 handler 层在解析出 URL 里的模型名后立刻校验，
 // 让客户端拿到明确的 400，而不是等到构造上游请求时才报错。
 func IsSafeGeminiModelPathSegment(model string) bool {

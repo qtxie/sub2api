@@ -174,6 +174,7 @@ func TestPromptSnapshotResponsesShapes(t *testing.T) {
 func TestPromptSnapshotGeminiBatchShapesAndMediaExclusion(t *testing.T) {
 	body := []byte(`{
 		"contents":{"role":"user","parts":[{"text":"root content"},{"inlineData":{"data":"ROOT_BASE64"}}]},
+		"input":"interaction prompt",
 		"instances":[{"prompt":"instance prompt"}],
 		"requests":[
 			{"contents":[{"role":"model","parts":[{"text":"ignore model"}]},{"role":"user","parts":[{"text":"nested user"}]}]},
@@ -183,7 +184,7 @@ func TestPromptSnapshotGeminiBatchShapesAndMediaExclusion(t *testing.T) {
 	snapshot, err := ExtractPromptSnapshot(Request{Protocol: "gemini", Body: body})
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(snapshot.ScanText, "nested instance"))
-	for _, expected := range []string{"root content", "instance prompt", "nested user", "nested instance"} {
+	for _, expected := range []string{"root content", "interaction prompt", "instance prompt", "nested user", "nested instance"} {
 		require.Contains(t, snapshot.ScanText, expected)
 	}
 	require.NotContains(t, snapshot.ScanText, "ROOT_BASE64")

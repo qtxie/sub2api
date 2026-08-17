@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,7 +25,11 @@ import (
 
 const (
 	imageStudioModel                = "gpt-image-2"
-	imageStudioMaxOutputCount       = 4
+	imageStudioDefaultGeminiModel   = "gemini-3.1-flash-image"
+	imageStudioDefaultGrokModel     = "grok-imagine-image-2.0"
+	imageStudioOpenAIMaxOutputCount = 4
+	imageStudioGrokMaxOutputCount   = 10
+	imageStudioMaxOutputCount       = imageStudioGrokMaxOutputCount
 	imageStudioPerImageResponseSize = int64(48 << 20)
 	imageStudioResponseOverhead     = int64(2 << 20)
 	imageStudioHeartbeatInterval    = 15 * time.Second
@@ -43,8 +48,8 @@ type imageStudioPricingQuoter interface {
 	QuoteImageUnitPrice(context.Context, *service.APIKey, int64, string, string) (*service.ImageUnitPriceQuote, error)
 }
 
-// ImageStudioHandler proxies panel requests through the local OpenAI gateway so
-// API key secrets never leave the backend.
+// ImageStudioHandler proxies panel requests through the matching local gateway
+// so API key secrets never leave the backend.
 type ImageStudioHandler struct {
 	apiKeys       imageStudioAPIKeyLoader
 	pricingQuoter imageStudioPricingQuoter
@@ -62,17 +67,46 @@ func NewImageStudioHandler(apiKeys *service.APIKeyService, openAI *service.OpenA
 }
 
 type imageStudioGenerationRequest struct {
-	APIKeyID     int64  `json:"api_key_id"`
-	Prompt       string `json:"prompt"`
-	Size         string `json:"size"`
-	Quality      string `json:"quality"`
-	Background   string `json:"background"`
-	OutputFormat string `json:"output_format"`
-	OutputCount  int    `json:"n"`
+	APIKeyID      int64  `json:"api_key_id"`
+	Model         string `json:"model"`
+	Prompt        string `json:"prompt"`
+	Size          string `json:"size"`
+	AspectRatio   string `json:"aspect_ratio"`
+	ImageSize     string `json:"image_size"`
+	Resolution    string `json:"resolution"`
+	Quality       string `json:"quality"`
+	Background    string `json:"background"`
+	OutputFormat  string `json:"output_format"`
+	OutputCount   int    `json:"n"`
+	presentFields map[string]bool
 }
 
 type imageStudioPricingRequest struct {
+	APIKeyID int64  `json:"api_key_id"`
+	Model    string `json:"model"`
+}
+
+type imageStudioCapabilitiesRequest struct {
 	APIKeyID int64 `json:"api_key_id"`
+}
+
+type imageStudioModelCapability struct {
+	ID                 string   `json:"id"`
+	Label              string   `json:"label"`
+	AspectRatios       []string `json:"aspect_ratios"`
+	ImageSizes         []string `json:"image_sizes"`
+	Resolutions        []string `json:"resolutions"`
+	Qualities          []string `json:"qualities"`
+	MaxImages          int      `json:"max_images"`
+	SupportsCustomSize bool     `json:"supports_custom_size"`
+	OutputFormats      []string `json:"output_formats"`
+	Backgrounds        []string `json:"backgrounds"`
+}
+
+type imageStudioCapabilitiesResponse struct {
+	Provider     string                       `json:"provider"`
+	DefaultModel string                       `json:"default_model"`
+	Models       []imageStudioModelCapability `json:"models"`
 }
 
 type imageStudioResolutionPrice struct {
@@ -80,12 +114,113 @@ type imageStudioResolutionPrice struct {
 	BillingTier  string   `json:"billing_tier"`
 	PricingKind  string   `json:"pricing_kind"`
 	UnitPriceUSD *float64 `json:"unit_price"`
+	Model        string   `json:"model,omitempty"`
+	ImageSize    string   `json:"image_size,omitempty"`
+	Resolution   string   `json:"resolution,omitempty"`
 }
 
 type imageStudioPricingResponse struct {
 	Currency    string                       `json:"currency"`
 	PricingKind string                       `json:"pricing_kind"`
 	Prices      []imageStudioResolutionPrice `json:"prices"`
+	Provider    string                       `json:"provider"`
+	Model       string                       `json:"model"`
+}
+
+var imageStudioCapabilities = map[string]imageStudioCapabilitiesResponse{
+	service.PlatformOpenAI: {
+		Provider: service.PlatformOpenAI, DefaultModel: imageStudioModel,
+		Models: []imageStudioModelCapability{{
+			ID: imageStudioModel, Label: "GPT Image 2",
+			AspectRatios: []string{}, ImageSizes: imageStudioPricingSizes, Resolutions: []string{},
+			Qualities: []string{"auto", "low", "medium", "high"}, MaxImages: imageStudioOpenAIMaxOutputCount,
+			SupportsCustomSize: true, OutputFormats: []string{"png", "jpeg", "webp"}, Backgrounds: []string{"auto", "opaque"},
+		}},
+	},
+	service.PlatformGemini: {
+		Provider: service.PlatformGemini, DefaultModel: imageStudioDefaultGeminiModel,
+		Models: []imageStudioModelCapability{
+			{
+				ID: imageStudioDefaultGeminiModel, Label: "Gemini 3.1 Flash Image",
+				AspectRatios: []string{"1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"},
+				ImageSizes:   []string{"1K", "2K", "4K"}, Resolutions: []string{}, Qualities: []string{}, MaxImages: 1,
+				SupportsCustomSize: false, OutputFormats: []string{}, Backgrounds: []string{},
+			},
+			{
+				ID: "gemini-3.1-flash-lite-image", Label: "Gemini 3.1 Flash Lite Image",
+				AspectRatios: imageStudioGeminiCommonAspectRatios(), ImageSizes: []string{"1K"}, Resolutions: []string{}, Qualities: []string{}, MaxImages: 1,
+				SupportsCustomSize: false, OutputFormats: []string{}, Backgrounds: []string{},
+			},
+			{
+				ID: "gemini-3-pro-image", Label: "Gemini 3 Pro Image",
+				AspectRatios: imageStudioGeminiCommonAspectRatios(), ImageSizes: []string{"1K", "2K", "4K"}, Resolutions: []string{}, Qualities: []string{}, MaxImages: 1,
+				SupportsCustomSize: false, OutputFormats: []string{}, Backgrounds: []string{},
+			},
+			{
+				ID: "gemini-2.5-flash-image", Label: "Gemini 2.5 Flash Image",
+				AspectRatios: imageStudioGeminiCommonAspectRatios(), ImageSizes: []string{}, Resolutions: []string{}, Qualities: []string{}, MaxImages: 1,
+				SupportsCustomSize: false, OutputFormats: []string{}, Backgrounds: []string{},
+			},
+		},
+	},
+	service.PlatformGrok: {
+		Provider: service.PlatformGrok, DefaultModel: imageStudioDefaultGrokModel,
+		Models: []imageStudioModelCapability{{
+			ID: imageStudioDefaultGrokModel, Label: "Grok Imagine Image 2.0",
+			AspectRatios: []string{"auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5", "20:9", "9:20"},
+			ImageSizes:   []string{}, Resolutions: []string{"1k", "2k"}, Qualities: []string{"medium", "low"}, MaxImages: imageStudioGrokMaxOutputCount,
+			SupportsCustomSize: false, OutputFormats: []string{}, Backgrounds: []string{},
+		}},
+	},
+}
+
+func (input *imageStudioGenerationRequest) UnmarshalJSON(data []byte) error {
+	type requestAlias imageStudioGenerationRequest
+	var decoded requestAlias
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawFields); err != nil {
+		return err
+	}
+	*input = imageStudioGenerationRequest(decoded)
+	input.presentFields = make(map[string]bool, len(rawFields))
+	for field := range rawFields {
+		input.presentFields[field] = true
+	}
+	return nil
+}
+
+func (h *ImageStudioHandler) Capabilities(c *gin.Context) {
+	subject, ok := servermiddleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if h == nil || h.apiKeys == nil {
+		response.InternalError(c, "Image Studio is not configured")
+		return
+	}
+
+	var input imageStudioCapabilitiesRequest
+	if err := c.ShouldBindJSON(&input); err != nil || input.APIKeyID <= 0 {
+		response.BadRequest(c, "API key is required")
+		return
+	}
+	apiKey, ok := h.loadEligibleAPIKey(c, input.APIKeyID, subject.UserID)
+	if !ok {
+		return
+	}
+	capabilities, ok := imageStudioCapabilitiesForProvider(apiKey.Group.Platform)
+	if !ok {
+		response.BadRequest(c, "Image Studio does not support this API key platform")
+		return
+	}
+	response.Success(c, capabilities)
 }
 
 func (h *ImageStudioHandler) Pricing(c *gin.Context) {
@@ -108,11 +243,26 @@ func (h *ImageStudioHandler) Pricing(c *gin.Context) {
 	if !ok {
 		return
 	}
+	providerCapabilities, ok := imageStudioCapabilitiesForProvider(apiKey.Group.Platform)
+	if !ok {
+		response.BadRequest(c, "Image Studio does not support this API key platform")
+		return
+	}
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		model = providerCapabilities.DefaultModel
+	}
+	modelCapability, ok := imageStudioCapabilityForModel(providerCapabilities, model)
+	if !ok {
+		response.BadRequest(c, "Unsupported image model")
+		return
+	}
 
-	prices := make([]imageStudioResolutionPrice, 0, len(imageStudioPricingSizes))
+	pricingOptions := imageStudioPricingOptions(apiKey.Group.Platform, modelCapability)
+	prices := make([]imageStudioResolutionPrice, 0, len(pricingOptions))
 	pricingKind := service.ImagePricingKindFixed
-	for _, size := range imageStudioPricingSizes {
-		quote, err := h.pricingQuoter.QuoteImageUnitPrice(c.Request.Context(), apiKey, subject.UserID, imageStudioModel, size)
+	for _, option := range pricingOptions {
+		quote, err := h.pricingQuoter.QuoteImageUnitPrice(c.Request.Context(), apiKey, subject.UserID, model, option.Size)
 		if err != nil {
 			response.InternalError(c, "Failed to calculate image pricing")
 			return
@@ -121,14 +271,20 @@ func (h *ImageStudioHandler) Pricing(c *gin.Context) {
 			pricingKind = service.ImagePricingKindUsageBased
 		}
 		prices = append(prices, imageStudioResolutionPrice{
-			Size:         size,
-			BillingTier:  service.NormalizeImageBillingTierOrDefault(size),
+			Size:         option.Size,
+			BillingTier:  service.NormalizeImageBillingTierOrDefault(option.Size),
 			PricingKind:  quote.PricingKind,
 			UnitPriceUSD: quote.UnitPrice,
+			Model:        model,
+			ImageSize:    option.ImageSize,
+			Resolution:   option.Resolution,
 		})
 	}
 
-	response.Success(c, imageStudioPricingResponse{Currency: "USD", PricingKind: pricingKind, Prices: prices})
+	response.Success(c, imageStudioPricingResponse{
+		Currency: "USD", PricingKind: pricingKind, Prices: prices,
+		Provider: apiKey.Group.Platform, Model: model,
+	})
 }
 
 func (h *ImageStudioHandler) Generate(c *gin.Context) {
@@ -147,8 +303,9 @@ func (h *ImageStudioHandler) Generate(c *gin.Context) {
 		response.BadRequest(c, "Invalid image generation request")
 		return
 	}
-	normalizeImageStudioInput(&input)
-	if message := validateImageStudioInput(input); message != "" {
+	input.Prompt = strings.TrimSpace(input.Prompt)
+	input.Model = strings.TrimSpace(input.Model)
+	if message := validateImageStudioBaseInput(input); message != "" {
 		response.BadRequest(c, message)
 		return
 	}
@@ -156,7 +313,279 @@ func (h *ImageStudioHandler) Generate(c *gin.Context) {
 	if !ok {
 		return
 	}
+	providerCapabilities, ok := imageStudioCapabilitiesForProvider(apiKey.Group.Platform)
+	if !ok {
+		response.BadRequest(c, "Image Studio does not support this API key platform")
+		return
+	}
+	if input.Model == "" {
+		input.Model = providerCapabilities.DefaultModel
+	}
+	modelCapability, ok := imageStudioCapabilityForModel(providerCapabilities, input.Model)
+	if !ok {
+		response.BadRequest(c, "Unsupported image model")
+		return
+	}
+	if message := validateImageStudioProviderFields(input, apiKey.Group.Platform); message != "" {
+		response.BadRequest(c, message)
+		return
+	}
+	normalizeImageStudioInput(&input, apiKey.Group.Platform, modelCapability)
+	if message := validateImageStudioInput(input, apiKey.Group.Platform, modelCapability); message != "" {
+		response.BadRequest(c, message)
+		return
+	}
 
+	switch apiKey.Group.Platform {
+	case service.PlatformOpenAI:
+		h.generateImageStudioOpenAI(c, apiKey, input)
+	case service.PlatformGemini:
+		h.generateImageStudioGemini(c, apiKey, input)
+	case service.PlatformGrok:
+		h.generateImageStudioGrok(c, apiKey, input)
+	default:
+		response.BadRequest(c, "Image Studio does not support this API key platform")
+	}
+}
+
+func (h *ImageStudioHandler) loadEligibleAPIKey(c *gin.Context, apiKeyID, userID int64) (*service.APIKey, bool) {
+	apiKey, err := h.apiKeys.GetByID(c.Request.Context(), apiKeyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return nil, false
+	}
+	if apiKey == nil || apiKey.UserID != userID {
+		response.NotFound(c, "API key not found")
+		return nil, false
+	}
+	if !apiKey.IsActive() {
+		response.BadRequest(c, "API key is not active")
+		return nil, false
+	}
+	if apiKey.Group == nil || !imageStudioPlatformSupported(apiKey.Group.Platform) {
+		response.BadRequest(c, "Image Studio requires an OpenAI, Gemini, or Grok API key")
+		return nil, false
+	}
+	if !service.GroupAllowsImageGeneration(apiKey.Group) {
+		response.Forbidden(c, service.ImageGenerationPermissionMessage())
+		return nil, false
+	}
+	return apiKey, true
+}
+
+func normalizeImageStudioInput(input *imageStudioGenerationRequest, provider string, capability imageStudioModelCapability) {
+	input.Model = strings.TrimSpace(input.Model)
+	input.Size = strings.ToLower(strings.TrimSpace(input.Size))
+	input.AspectRatio = strings.TrimSpace(input.AspectRatio)
+	input.ImageSize = strings.TrimSpace(input.ImageSize)
+	input.Resolution = strings.ToLower(strings.TrimSpace(input.Resolution))
+	input.Quality = strings.ToLower(strings.TrimSpace(input.Quality))
+	input.Background = strings.ToLower(strings.TrimSpace(input.Background))
+	input.OutputFormat = strings.ToLower(strings.TrimSpace(input.OutputFormat))
+	switch provider {
+	case service.PlatformOpenAI:
+		if input.Size == "" {
+			input.Size = "auto"
+		}
+		if input.Quality == "" {
+			input.Quality = "auto"
+		}
+		if input.Background == "" {
+			input.Background = "auto"
+		}
+		if input.OutputFormat == "" {
+			input.OutputFormat = "png"
+		}
+		if input.OutputCount == 0 {
+			input.OutputCount = 1
+		}
+	case service.PlatformGemini:
+		if input.AspectRatio == "" {
+			input.AspectRatio = "1:1"
+		}
+		if input.ImageSize == "" && len(capability.ImageSizes) > 0 {
+			input.ImageSize = capability.ImageSizes[0]
+		}
+		input.OutputCount = 1
+	case service.PlatformGrok:
+		if input.AspectRatio == "" {
+			input.AspectRatio = "auto"
+		}
+		if input.Resolution == "" {
+			input.Resolution = "1k"
+		}
+		if input.Quality == "" {
+			input.Quality = "medium"
+		}
+		if input.OutputCount == 0 {
+			input.OutputCount = 1
+		}
+	}
+}
+
+func validateImageStudioBaseInput(input imageStudioGenerationRequest) string {
+	if input.APIKeyID <= 0 {
+		return "API key is required"
+	}
+	if input.Prompt == "" {
+		return "Prompt is required"
+	}
+	return ""
+}
+
+func validateImageStudioInput(input imageStudioGenerationRequest, provider string, capability imageStudioModelCapability) string {
+	switch provider {
+	case service.PlatformOpenAI:
+		if input.OutputCount < 1 || input.OutputCount > imageStudioOpenAIMaxOutputCount {
+			return "Image count must be between 1 and 4"
+		}
+		if !validGPTImage2Size(input.Size) {
+			return "Unsupported image size"
+		}
+		if !imageStudioOptionAllowed(input.Quality, capability.Qualities...) {
+			return "Unsupported image quality"
+		}
+		if !imageStudioOptionAllowed(input.Background, capability.Backgrounds...) {
+			return "Unsupported image background"
+		}
+		if !imageStudioOptionAllowed(input.OutputFormat, capability.OutputFormats...) {
+			return "Unsupported image output format"
+		}
+	case service.PlatformGemini:
+		if !imageStudioOptionAllowed(input.AspectRatio, capability.AspectRatios...) {
+			return "Unsupported image aspect ratio"
+		}
+		if len(capability.ImageSizes) == 0 {
+			if input.ImageSize != "" || input.fieldWasProvided("image_size") {
+				return "Image size is not supported by this Gemini model"
+			}
+		} else if !imageStudioOptionAllowed(input.ImageSize, capability.ImageSizes...) {
+			return "Unsupported image size"
+		}
+	case service.PlatformGrok:
+		if input.OutputCount < 1 || input.OutputCount > imageStudioGrokMaxOutputCount {
+			return "Image count must be between 1 and 10"
+		}
+		if !imageStudioOptionAllowed(input.AspectRatio, capability.AspectRatios...) {
+			return "Unsupported image aspect ratio"
+		}
+		if !imageStudioOptionAllowed(input.Resolution, capability.Resolutions...) {
+			return "Unsupported image resolution"
+		}
+		if !imageStudioOptionAllowed(input.Quality, capability.Qualities...) {
+			return "Unsupported image quality"
+		}
+	default:
+		return "Unsupported image provider"
+	}
+	return ""
+}
+
+func validateImageStudioProviderFields(input imageStudioGenerationRequest, provider string) string {
+	var unsupported []string
+	switch provider {
+	case service.PlatformOpenAI:
+		unsupported = []string{"aspect_ratio", "image_size", "resolution"}
+	case service.PlatformGemini:
+		unsupported = []string{"size", "quality", "background", "output_format", "n", "resolution"}
+	case service.PlatformGrok:
+		unsupported = []string{"size", "image_size", "background", "output_format"}
+	default:
+		return "Unsupported image provider"
+	}
+	for _, field := range unsupported {
+		if input.fieldWasProvided(field) {
+			return fmt.Sprintf("Field %q is not supported for %s image generation", field, provider)
+		}
+	}
+	return ""
+}
+
+func (input imageStudioGenerationRequest) fieldWasProvided(field string) bool {
+	if input.presentFields != nil {
+		return input.presentFields[field]
+	}
+	switch field {
+	case "size":
+		return input.Size != ""
+	case "aspect_ratio":
+		return input.AspectRatio != ""
+	case "image_size":
+		return input.ImageSize != ""
+	case "resolution":
+		return input.Resolution != ""
+	case "quality":
+		return input.Quality != ""
+	case "background":
+		return input.Background != ""
+	case "output_format":
+		return input.OutputFormat != ""
+	case "n":
+		return input.OutputCount != 0
+	default:
+		return false
+	}
+}
+
+func imageStudioPlatformSupported(platform string) bool {
+	_, ok := imageStudioCapabilities[platform]
+	return ok
+}
+
+func imageStudioCapabilitiesForProvider(provider string) (imageStudioCapabilitiesResponse, bool) {
+	capabilities, ok := imageStudioCapabilities[provider]
+	return capabilities, ok
+}
+
+func imageStudioCapabilityForModel(capabilities imageStudioCapabilitiesResponse, model string) (imageStudioModelCapability, bool) {
+	for _, capability := range capabilities.Models {
+		if capability.ID == model {
+			return capability, true
+		}
+	}
+	return imageStudioModelCapability{}, false
+}
+
+func imageStudioGeminiCommonAspectRatios() []string {
+	return []string{"1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"}
+}
+
+type imageStudioPricingOption struct {
+	Size       string
+	ImageSize  string
+	Resolution string
+}
+
+func imageStudioPricingOptions(provider string, capability imageStudioModelCapability) []imageStudioPricingOption {
+	switch provider {
+	case service.PlatformOpenAI:
+		options := make([]imageStudioPricingOption, 0, len(imageStudioPricingSizes))
+		for _, size := range imageStudioPricingSizes {
+			options = append(options, imageStudioPricingOption{Size: size})
+		}
+		return options
+	case service.PlatformGemini:
+		imageSizes := capability.ImageSizes
+		if len(imageSizes) == 0 {
+			imageSizes = []string{"1K"}
+		}
+		options := make([]imageStudioPricingOption, 0, len(imageSizes))
+		for _, imageSize := range imageSizes {
+			options = append(options, imageStudioPricingOption{Size: imageSize, ImageSize: imageSize})
+		}
+		return options
+	case service.PlatformGrok:
+		options := make([]imageStudioPricingOption, 0, len(capability.Resolutions))
+		for _, resolution := range capability.Resolutions {
+			options = append(options, imageStudioPricingOption{Size: strings.ToUpper(resolution), Resolution: resolution})
+		}
+		return options
+	default:
+		return nil
+	}
+}
+
+func (h *ImageStudioHandler) generateImageStudioOpenAI(c *gin.Context, apiKey *service.APIKey, input imageStudioGenerationRequest) {
 	body, err := json.Marshal(map[string]any{
 		"model":           imageStudioModel,
 		"prompt":          input.Prompt,
@@ -172,30 +601,99 @@ func (h *ImageStudioHandler) Generate(c *gin.Context) {
 		response.InternalError(c, "Failed to build image generation request")
 		return
 	}
-	gatewayURL, err := imageStudioLocalGatewayURL(h.cfg, "/v1/images/generations")
+	request, ok := h.newImageStudioGatewayRequest(c, "/v1/images/generations", body)
+	if !ok {
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	request.Header.Set("Accept", "text/event-stream, application/json")
+	h.forwardImageStudioRequest(c, request, input.OutputCount, true, nil)
+}
+
+func (h *ImageStudioHandler) generateImageStudioGrok(c *gin.Context, apiKey *service.APIKey, input imageStudioGenerationRequest) {
+	body, err := json.Marshal(map[string]any{
+		"model":           input.Model,
+		"prompt":          input.Prompt,
+		"n":               input.OutputCount,
+		"aspect_ratio":    input.AspectRatio,
+		"resolution":      input.Resolution,
+		"quality":         input.Quality,
+		"response_format": "b64_json",
+	})
+	if err != nil {
+		response.InternalError(c, "Failed to build image generation request")
+		return
+	}
+	request, ok := h.newImageStudioGatewayRequest(c, "/v1/images/generations", body)
+	if !ok {
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	request.Header.Set("Accept", "application/json")
+	h.forwardImageStudioRequest(c, request, input.OutputCount, false, nil)
+}
+
+func (h *ImageStudioHandler) generateImageStudioGemini(c *gin.Context, apiKey *service.APIKey, input imageStudioGenerationRequest) {
+	responseFormat := map[string]any{
+		"type":         "image",
+		"aspect_ratio": input.AspectRatio,
+	}
+	if input.ImageSize != "" {
+		responseFormat["image_size"] = input.ImageSize
+	}
+	body, err := json.Marshal(map[string]any{
+		"model":           input.Model,
+		"input":           input.Prompt,
+		"response_format": responseFormat,
+		"store":           false,
+	})
+	if err != nil {
+		response.InternalError(c, "Failed to build image generation request")
+		return
+	}
+	request, ok := h.newImageStudioGatewayRequest(c, "/v1beta/interactions", body)
+	if !ok {
+		return
+	}
+	request.Header.Set("x-goog-api-key", apiKey.Key)
+	request.Header.Set("Accept", "application/json")
+	h.forwardImageStudioRequest(c, request, 1, false, normalizeImageStudioGeminiInteractionResponse)
+}
+
+func (h *ImageStudioHandler) newImageStudioGatewayRequest(c *gin.Context, path string, body []byte) (*http.Request, bool) {
+	gatewayURL, err := imageStudioLocalGatewayURL(h.cfg, path)
 	if err != nil {
 		response.InternalError(c, "Image gateway is not configured")
-		return
+		return nil, false
 	}
-	upstreamReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, gatewayURL, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, gatewayURL, bytes.NewReader(body))
 	if err != nil {
 		response.InternalError(c, "Failed to create image generation request")
-		return
+		return nil, false
 	}
-	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey.Key)
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Accept", "text/event-stream, application/json")
-	copyImageStudioRequestHeader(c, upstreamReq, "Accept-Language")
-	copyImageStudioRequestHeader(c, upstreamReq, "User-Agent")
+	request.Header.Set("Content-Type", "application/json")
+	copyImageStudioRequestHeader(c, request, "Accept-Language")
+	copyImageStudioRequestHeader(c, request, "User-Agent")
+	return request, true
+}
 
-	upstreamResp, err := h.httpClient.Do(upstreamReq)
+type imageStudioResponseNormalizer func([]byte) (any, error)
+
+func (h *ImageStudioHandler) forwardImageStudioRequest(
+	c *gin.Context,
+	request *http.Request,
+	outputCount int,
+	allowStream bool,
+	normalize imageStudioResponseNormalizer,
+) {
+	upstreamResp, err := h.httpClient.Do(request)
 	if err != nil {
 		response.InternalError(c, "Image gateway request failed")
 		return
 	}
 	defer upstreamResp.Body.Close()
-	maxBytes := imageStudioMaxResponseBytes(input.OutputCount)
-	if upstreamResp.StatusCode < http.StatusBadRequest && isImageStudioEventStream(upstreamResp.Header.Get("Content-Type")) {
+	maxBytes := imageStudioMaxResponseBytes(outputCount)
+	if allowStream && upstreamResp.StatusCode < http.StatusBadRequest && isImageStudioEventStream(upstreamResp.Header.Get("Content-Type")) {
 		if err := relayImageStudioStream(c, upstreamResp.Body, upstreamResp.StatusCode, maxBytes); err != nil && !c.Writer.Written() {
 			response.InternalError(c, "Failed to relay image gateway stream")
 		}
@@ -219,82 +717,166 @@ func (h *ImageStudioHandler) Generate(c *gin.Context) {
 		response.Error(c, upstreamResp.StatusCode, message)
 		return
 	}
+
 	var output any
-	if err := json.Unmarshal(upstreamBody, &output); err != nil {
-		response.Error(c, http.StatusBadGateway, "Image gateway returned an invalid response")
+	if normalize != nil {
+		output, err = normalize(upstreamBody)
+	} else {
+		err = json.Unmarshal(upstreamBody, &output)
+	}
+	if err != nil {
+		response.Error(c, http.StatusBadGateway, err.Error())
 		return
 	}
 	response.Success(c, output)
 }
 
-func (h *ImageStudioHandler) loadEligibleAPIKey(c *gin.Context, apiKeyID, userID int64) (*service.APIKey, bool) {
-	apiKey, err := h.apiKeys.GetByID(c.Request.Context(), apiKeyID)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return nil, false
-	}
-	if apiKey == nil || apiKey.UserID != userID {
-		response.NotFound(c, "API key not found")
-		return nil, false
-	}
-	if !apiKey.IsActive() {
-		response.BadRequest(c, "API key is not active")
-		return nil, false
-	}
-	if apiKey.Group == nil || apiKey.Group.Platform != service.PlatformOpenAI {
-		response.BadRequest(c, "Image Studio requires an OpenAI API key")
-		return nil, false
-	}
-	if !service.GroupAllowsImageGeneration(apiKey.Group) {
-		response.Forbidden(c, service.ImageGenerationPermissionMessage())
-		return nil, false
-	}
-	return apiKey, true
+type imageStudioImage struct {
+	B64JSON       string `json:"b64_json,omitempty"`
+	URL           string `json:"url,omitempty"`
+	MIMEType      string `json:"mime_type,omitempty"`
+	RevisedPrompt string `json:"revised_prompt,omitempty"`
 }
 
-func normalizeImageStudioInput(input *imageStudioGenerationRequest) {
-	input.Prompt = strings.TrimSpace(input.Prompt)
-	input.Size = strings.ToLower(strings.TrimSpace(input.Size))
-	input.Quality = strings.ToLower(strings.TrimSpace(input.Quality))
-	input.Background = strings.ToLower(strings.TrimSpace(input.Background))
-	input.OutputFormat = strings.ToLower(strings.TrimSpace(input.OutputFormat))
-	if input.Size == "" {
-		input.Size = "auto"
+func normalizeImageStudioGeminiInteractionResponse(body []byte) (any, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, errors.New("Image gateway returned an invalid response")
 	}
-	if input.Quality == "" {
-		input.Quality = "auto"
+	if wrapped, ok := payload["response"].(map[string]any); ok {
+		payload = wrapped
 	}
-	if input.Background == "" {
-		input.Background = "auto"
+
+	images := make([]imageStudioImage, 0, 1)
+	steps, _ := payload["steps"].([]any)
+	for _, rawStep := range steps {
+		step, _ := rawStep.(map[string]any)
+		stepType, _ := step["type"].(string)
+		if !strings.EqualFold(strings.TrimSpace(stepType), "model_output") {
+			continue
+		}
+		content, _ := step["content"].([]any)
+		images = append(images, imageStudioInteractionImages(content)...)
 	}
-	if input.OutputFormat == "" {
-		input.OutputFormat = "png"
+	if len(images) == 0 {
+		if output, ok := payload["output"].([]any); ok {
+			images = append(images, imageStudioInteractionImages(output)...)
+		}
+	}
+	if len(images) == 0 {
+		if outputImage, ok := payload["output_image"].(map[string]any); ok {
+			if image, ok := imageStudioInteractionImage(outputImage, ""); ok {
+				images = append(images, image)
+			}
+		}
+	}
+	if len(images) == 0 {
+		return nil, errors.New("Image gateway returned no usable images")
+	}
+
+	output := map[string]any{"data": images}
+	if created, ok := payload["created_at"].(float64); ok {
+		output["created"] = created
+	}
+	return output, nil
+}
+
+func imageStudioInteractionImages(content []any) []imageStudioImage {
+	texts := make([]string, 0, 1)
+	for _, rawBlock := range content {
+		block, _ := rawBlock.(map[string]any)
+		if text, _ := block["text"].(string); strings.TrimSpace(text) != "" {
+			texts = append(texts, strings.TrimSpace(text))
+		}
+	}
+	revisedPrompt := strings.Join(texts, "\n")
+	images := make([]imageStudioImage, 0, 1)
+	for _, rawBlock := range content {
+		block, _ := rawBlock.(map[string]any)
+		if image, ok := imageStudioInteractionImage(block, revisedPrompt); ok {
+			images = append(images, image)
+		}
+	}
+	return images
+}
+
+func imageStudioInteractionImage(block map[string]any, revisedPrompt string) (imageStudioImage, bool) {
+	if block == nil {
+		return imageStudioImage{}, false
+	}
+	blockType, _ := block["type"].(string)
+	blockType = strings.ToLower(strings.TrimSpace(blockType))
+	data, _ := block["data"].(string)
+	mimeType, _ := block["mime_type"].(string)
+	hasInlineData := false
+	if inline, ok := block["inlineData"].(map[string]any); ok {
+		hasInlineData = true
+		data, _ = inline["data"].(string)
+		mimeType, _ = inline["mimeType"].(string)
+	}
+	if inline, ok := block["inline_data"].(map[string]any); ok {
+		hasInlineData = true
+		data, _ = inline["data"].(string)
+		mimeType, _ = inline["mime_type"].(string)
+	}
+	if strings.TrimSpace(data) != "" {
+		if blockType != "image" && !hasInlineData {
+			return imageStudioImage{}, false
+		}
+		mimeType = imageStudioNormalizeMIMEType(mimeType)
+		if !imageStudioIsRasterMIMEType(mimeType) || !imageStudioValidBase64(data) {
+			return imageStudioImage{}, false
+		}
+		return imageStudioImage{B64JSON: strings.TrimSpace(data), MIMEType: mimeType, RevisedPrompt: revisedPrompt}, true
+	}
+	if blockType != "image" {
+		return imageStudioImage{}, false
+	}
+	uri, _ := block["uri"].(string)
+	if strings.TrimSpace(uri) == "" {
+		uri, _ = block["url"].(string)
+	}
+	if strings.TrimSpace(uri) == "" {
+		return imageStudioImage{}, false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(uri))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil {
+		return imageStudioImage{}, false
+	}
+	return imageStudioImage{URL: parsed.String(), MIMEType: imageStudioNormalizeMIMEType(mimeType), RevisedPrompt: revisedPrompt}, true
+}
+
+func imageStudioNormalizeMIMEType(value string) string {
+	value = strings.TrimSpace(value)
+	if mediaType, _, err := mime.ParseMediaType(value); err == nil {
+		value = mediaType
+	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "image/jpg" {
+		return "image/jpeg"
+	}
+	return value
+}
+
+func imageStudioIsRasterMIMEType(value string) bool {
+	switch value {
+	case "image/png", "image/jpeg", "image/webp":
+		return true
+	default:
+		return false
 	}
 }
 
-func validateImageStudioInput(input imageStudioGenerationRequest) string {
-	if input.APIKeyID <= 0 {
-		return "API key is required"
+func imageStudioValidBase64(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
 	}
-	if input.Prompt == "" {
-		return "Prompt is required"
+	if _, err := base64.StdEncoding.DecodeString(value); err == nil {
+		return true
 	}
-	if input.OutputCount < 1 || input.OutputCount > imageStudioMaxOutputCount {
-		return "Image count must be between 1 and 4"
-	}
-	if !validGPTImage2Size(input.Size) {
-		return "Unsupported image size"
-	}
-	if !imageStudioOptionAllowed(input.Quality, "auto", "low", "medium", "high") {
-		return "Unsupported image quality"
-	}
-	if !imageStudioOptionAllowed(input.Background, "auto", "opaque") {
-		return "Unsupported image background"
-	}
-	if !imageStudioOptionAllowed(input.OutputFormat, "png", "jpeg", "webp") {
-		return "Unsupported image output format"
-	}
-	return ""
+	_, err := base64.RawStdEncoding.DecodeString(value)
+	return err == nil
 }
 
 func validGPTImage2Size(size string) bool {
