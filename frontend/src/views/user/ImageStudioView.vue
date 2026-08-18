@@ -23,7 +23,7 @@
                 id="image-studio-key"
                 v-model.number="form.apiKeyId"
                 class="studio-select"
-                :disabled="loadingKeys || imageKeys.length === 0 || generating"
+                :disabled="loadingKeys || imageKeys.length === 0"
               >
                 <option :value="0" disabled>{{ t('imageStudio.selectApiKey') }}</option>
                 <option v-for="key in imageKeys" :key="key.id" :value="key.id">{{ key.name }}</option>
@@ -40,7 +40,7 @@
                 id="image-studio-model"
                 v-model="form.model"
                 class="studio-select"
-                :disabled="generating || loadingCapabilities"
+                :disabled="loadingCapabilities"
               >
                 <option v-for="model in capabilities.models" :key="model.id" :value="model.id">
                   {{ model.label }}
@@ -56,7 +56,6 @@
                   id="image-studio-size"
                   v-model="sizeMode"
                   class="studio-select size-select"
-                  :disabled="generating"
                   @change="applySizeMode"
                 >
                   <option value="auto">{{ t('imageStudio.sizeAuto') }}</option>
@@ -79,7 +78,6 @@
                       step="16"
                       inputmode="numeric"
                       :aria-invalid="!sizeValidation.valid"
-                      :disabled="generating"
                       @input="syncCustomSize"
                       @blur="normalizeCustomDimension('width')"
                     />
@@ -90,7 +88,6 @@
                   type="button"
                   class="swap-size-button"
                   :title="t('imageStudio.swapDimensions')"
-                  :disabled="generating"
                   @click="swapCustomSize"
                 >
                   <Icon name="swap" size="sm" />
@@ -107,7 +104,6 @@
                       step="16"
                       inputmode="numeric"
                       :aria-invalid="!sizeValidation.valid"
-                      :disabled="generating"
                       @input="syncCustomSize"
                       @blur="normalizeCustomDimension('height')"
                     />
@@ -134,7 +130,6 @@
                   id="image-studio-aspect-ratio"
                   v-model="form.aspectRatio"
                   class="studio-select size-select"
-                  :disabled="generating"
                 >
                   <option v-for="ratio in aspectRatioOptions" :key="ratio" :value="ratio">
                     {{ ratio === 'auto' ? t('imageStudio.aspectRatioAuto') : ratio }}
@@ -145,14 +140,14 @@
 
             <div v-if="provider === 'gemini' && imageSizeOptions.length" class="control-group">
               <label for="image-studio-image-size" class="control-label">{{ t('imageStudio.imageSize') }}</label>
-              <select id="image-studio-image-size" v-model="form.imageSize" class="studio-select" :disabled="generating">
+              <select id="image-studio-image-size" v-model="form.imageSize" class="studio-select">
                 <option v-for="size in imageSizeOptions" :key="size" :value="size">{{ size }}</option>
               </select>
             </div>
 
             <div v-if="provider === 'grok' && resolutionOptions.length" class="control-group">
               <label for="image-studio-resolution" class="control-label">{{ t('imageStudio.resolution') }}</label>
-              <select id="image-studio-resolution" v-model="form.resolution" class="studio-select" :disabled="generating">
+              <select id="image-studio-resolution" v-model="form.resolution" class="studio-select">
                 <option v-for="resolution in resolutionOptions" :key="resolution" :value="resolution">
                   {{ resolution.toUpperCase() }}
                 </option>
@@ -168,7 +163,6 @@
                   type="button"
                   :class="{ active: form.quality === option.value }"
                   :aria-pressed="form.quality === option.value"
-                  :disabled="generating"
                   @click="form.quality = option.value"
                 >{{ option.label }}</button>
               </div>
@@ -183,7 +177,6 @@
                   type="button"
                   :class="{ active: form.background === option.value }"
                   :aria-pressed="form.background === option.value"
-                  :disabled="generating"
                   @click="form.background = option.value"
                 >{{ option.label }}</button>
               </div>
@@ -198,7 +191,6 @@
                   type="button"
                   :class="{ active: form.outputFormat === format }"
                   :aria-pressed="form.outputFormat === format"
-                  :disabled="generating"
                   @click="form.outputFormat = format"
                 >{{ format.toUpperCase() }}</button>
               </div>
@@ -207,9 +199,9 @@
             <div v-if="maxImageCount > 1" class="control-group count-control">
               <span class="control-label">{{ t('imageStudio.count') }}</span>
               <div class="stepper">
-                <button type="button" :title="t('imageStudio.decreaseCount')" :disabled="generating || form.count <= 1" @click="form.count--">-</button>
+                <button type="button" :title="t('imageStudio.decreaseCount')" :disabled="form.count <= 1" @click="form.count--">-</button>
                 <output>{{ form.count }}</output>
-                <button type="button" :title="t('imageStudio.increaseCount')" :disabled="generating || form.count >= maxImageCount" @click="form.count++">+</button>
+                <button type="button" :title="t('imageStudio.increaseCount')" :disabled="form.count >= maxImageCount" @click="form.count++">+</button>
               </div>
             </div>
           </div>
@@ -237,17 +229,18 @@
               class="studio-prompt"
               :placeholder="t('imageStudio.promptPlaceholder')"
               rows="10"
-              :disabled="generating"
             ></textarea>
             <div class="prompt-submit-area">
-              <span class="prompt-selection">{{ selectionSummary }}</span>
-              <button v-if="!generating" type="submit" class="generate-button" :disabled="!canGenerate">
+              <div class="prompt-request-summary">
+                <span class="prompt-selection">{{ selectionSummary }}</span>
+                <span v-if="activeGenerationCount > 0" class="active-generation-count" role="status">
+                  <span class="loading-ring tiny"></span>
+                  {{ t('imageStudio.activeGenerations', { count: activeGenerationCount }) }}
+                </span>
+              </div>
+              <button type="submit" class="generate-button" :disabled="!canGenerate">
                 <Icon name="sparkles" size="sm" />
                 <span>{{ t('imageStudio.generate') }}</span>
-              </button>
-              <button v-else type="button" class="cancel-button" @click="cancelGeneration">
-                <Icon name="x" size="sm" />
-                <span>{{ t('imageStudio.cancel') }}</span>
               </button>
             </div>
           </section>
@@ -279,12 +272,12 @@
               </router-link>
             </div>
 
-            <div v-else-if="loadingGallery" class="gallery-empty">
+            <div v-else-if="loadingGallery && gallery.length === 0 && generationJobs.length === 0" class="gallery-empty">
               <span class="loading-ring"></span>
               <p>{{ t('common.loading') }}</p>
             </div>
 
-            <div v-else-if="gallery.length === 0 && placeholders.length === 0" class="gallery-empty">
+            <div v-else-if="gallery.length === 0 && generationJobs.length === 0" class="gallery-empty">
               <span class="empty-icon"><Icon name="sparkles" size="lg" /></span>
               <h3>{{ t('imageStudio.emptyTitle') }}</h3>
               <p>{{ t('imageStudio.emptyGallery') }}</p>
@@ -292,22 +285,59 @@
 
             <div v-else class="gallery-grid">
               <article
-                v-for="placeholder in placeholders"
-                :key="placeholder.id"
+                v-for="job in generationJobs"
+                :key="job.id"
                 class="generation-placeholder"
-                :style="aspectRatioStyle(currentAspectToken)"
+                :style="aspectRatioStyle(job.snapshot.aspectToken)"
+                :data-job-id="job.id"
                 data-testid="generation-placeholder"
               >
-                <template v-if="placeholder.status === 'generating'">
+                <template v-if="job.status === 'generating'">
                   <span class="loading-ring"></span>
-                  <strong>{{ t('imageStudio.generating') }}</strong>
-                  <small>{{ t('imageStudio.elapsed', { seconds: elapsedSeconds }) }}</small>
+                  <strong>
+                    {{ job.snapshot.expectedCount > 1
+                      ? t('imageStudio.generatingCount', { count: job.snapshot.expectedCount })
+                      : t('imageStudio.generating') }}
+                  </strong>
+                  <small :id="`generation-prompt-${job.id}`" class="placeholder-prompt">{{ job.snapshot.prompt }}</small>
+                  <small>{{ t('imageStudio.elapsed', { seconds: elapsedForJob(job) }) }}</small>
+                  <button
+                    type="button"
+                    class="placeholder-icon-button"
+                    :title="t('imageStudio.cancel')"
+                    :aria-label="t('imageStudio.cancel')"
+                    :aria-describedby="`generation-prompt-${job.id}`"
+                    @click="cancelGeneration(job.id)"
+                  >
+                    <Icon name="x" size="sm" />
+                  </button>
                 </template>
                 <template v-else>
                   <Icon name="exclamationCircle" size="lg" />
                   <strong>{{ t('imageStudio.generationFailed') }}</strong>
-                  <small>{{ placeholder.error }}</small>
-                  <button type="button" class="retry-button" @click="generate">{{ t('imageStudio.retry') }}</button>
+                  <small :id="`generation-prompt-${job.id}`" class="placeholder-prompt">{{ job.snapshot.prompt }}</small>
+                  <small>{{ job.error }}</small>
+                  <div class="placeholder-actions">
+                    <button
+                      type="button"
+                      class="retry-button"
+                      :aria-describedby="`generation-prompt-${job.id}`"
+                      @click="retryGeneration(job.id)"
+                    >
+                      <Icon name="refresh" size="sm" />
+                      <span>{{ t('imageStudio.retry') }}</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="placeholder-icon-button"
+                      :title="t('imageStudio.dismissFailed')"
+                      :aria-label="t('imageStudio.dismissFailed')"
+                      :aria-describedby="`generation-prompt-${job.id}`"
+                      @click="dismissGeneration(job.id)"
+                    >
+                      <Icon name="x" size="sm" />
+                    </button>
+                  </div>
                 </template>
               </article>
 
@@ -401,6 +431,36 @@ import {
   validateGPTImage2Size
 } from '@/utils/gptImage2'
 
+interface ImageGenerationSettings {
+  userId: number
+  apiKeyId: number
+  provider: ImageStudioProvider
+  model: string
+  prompt: string
+  size: string
+  aspectRatio: string
+  imageSize: string
+  resolution: string
+  quality: ImageQuality
+  background: ImageBackground
+  outputFormat: ImageOutputFormat
+  count: number
+  expectedCount: number
+  aspectToken: string
+}
+
+interface ImageGenerationSnapshot extends ImageGenerationSettings {
+  payload: ImageStudioGenerationRequest
+}
+
+interface ImageGenerationJob {
+  id: string
+  status: 'generating' | 'error'
+  error: string
+  startedAt: number
+  snapshot: ImageGenerationSnapshot
+}
+
 const { t, locale } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
@@ -416,15 +476,14 @@ const capabilitiesError = ref('')
 const loadingPricing = ref(false)
 const pricing = ref<ImageStudioPricingResponse | null>(null)
 const pricingError = ref('')
-const generating = ref(false)
-const elapsedSeconds = ref(0)
 const previewItem = ref<ImageStudioGalleryItem | null>(null)
-const placeholders = ref<Array<{ id: string; status: 'generating' | 'error'; error: string }>>([])
-let generationController: AbortController | null = null
+const generationJobs = ref<ImageGenerationJob[]>([])
+const generationNow = ref(Date.now())
+const generationControllers = new Map<string, AbortController>()
 let capabilitiesController: AbortController | null = null
 let pricingController: AbortController | null = null
 let generationTimer: number | null = null
-let placeholderSequence = 0
+let generationSequence = 0
 
 const form = reactive({
   apiKeyId: 0,
@@ -477,7 +536,6 @@ const selectedSizeOption = computed(() => sizeOptions.value.find((option) => opt
 const sizeValidation = computed(() => validateGPTImage2Size(form.size))
 const customWidthBounds = computed(() => gptImage2DimensionBounds(Number(customSize.height)))
 const customHeightBounds = computed(() => gptImage2DimensionBounds(Number(customSize.width)))
-const currentAspectToken = computed(() => provider.value === 'openai' ? form.size : form.aspectRatio)
 const selectedSizeShape = computed(() => {
   if (provider.value !== 'openai') return shapeForAspectRatio(form.aspectRatio)
   if (sizeMode.value === 'auto') return 'auto'
@@ -502,7 +560,7 @@ const sizeErrorMessage = computed(() => {
   return t(messages[sizeValidation.value.error || 'format'])
 })
 const canGenerate = computed(() => {
-  if (generating.value || loadingCapabilities.value || !capabilities.value || !selectedModelCapability.value) return false
+  if (loadingCapabilities.value || !capabilities.value || !selectedModelCapability.value) return false
   if (form.apiKeyId <= 0 || !form.prompt.trim()) return false
   if (provider.value === 'openai') {
     return sizeValidation.value.valid
@@ -543,6 +601,7 @@ const selectedPrice = computed(() => {
 })
 const selectedUnitPrice = computed(() => selectedPrice.value?.unit_price ?? null)
 const pricedImageCount = computed(() => provider.value === 'gemini' ? 1 : form.count)
+const activeGenerationCount = computed(() => generationJobs.value.filter((job) => job.status === 'generating').length)
 const formattedEstimate = computed(() => {
   if (loadingPricing.value) return '...'
   if (selectedUnitPrice.value != null) return formatPrice(selectedUnitPrice.value * pricedImageCount.value)
@@ -772,7 +831,8 @@ async function loadPricing() {
 async function loadGallery() {
   loadingGallery.value = true
   try {
-    gallery.value = await listImageStudioGallery(userId.value)
+    const restored = await listImageStudioGallery(userId.value)
+    gallery.value = mergeGalleryItems(gallery.value, restored)
   } catch (error) {
     appStore.showError(extractApiErrorMessage(error, t('imageStudio.galleryLoadFailed')))
   } finally {
@@ -780,17 +840,24 @@ async function loadGallery() {
   }
 }
 
-function startPlaceholders() {
-  elapsedSeconds.value = 0
-  placeholders.value = Array.from({ length: pricedImageCount.value }, () => ({
-    id: `image-generation-${Date.now()}-${placeholderSequence++}`,
-    status: 'generating' as const,
-    error: ''
-  }))
-  const startedAt = Date.now()
-  generationTimer = window.setInterval(() => {
-    elapsedSeconds.value = Math.floor((Date.now() - startedAt) / 1000)
-  }, 1000)
+function mergeGalleryItems(
+  current: ImageStudioGalleryItem[],
+  restored: ImageStudioGalleryItem[]
+): ImageStudioGalleryItem[] {
+  const items = new Map(restored.map((item) => [item.id, item]))
+  for (const item of current) items.set(item.id, item)
+  return [...items.values()].sort((a, b) => b.createdAt - a.createdAt)
+}
+
+function syncGenerationTimer() {
+  if (activeGenerationCount.value > 0 && generationTimer === null) {
+    generationNow.value = Date.now()
+    generationTimer = window.setInterval(() => {
+      generationNow.value = Date.now()
+    }, 1000)
+    return
+  }
+  if (activeGenerationCount.value === 0) stopGenerationTimer()
 }
 
 function stopGenerationTimer() {
@@ -798,107 +865,190 @@ function stopGenerationTimer() {
   generationTimer = null
 }
 
-function resultSource(result: ImageStudioImage): string {
+function elapsedForJob(job: ImageGenerationJob): number {
+  return Math.max(0, Math.floor((generationNow.value - job.startedAt) / 1000))
+}
+
+function resultSource(result: ImageStudioImage, snapshot: ImageGenerationSnapshot): string {
   if (result.b64_json) {
-    const fallbackMime = provider.value === 'openai' ? `image/${form.outputFormat}` : 'image/jpeg'
+    const fallbackMime = snapshot.provider === 'openai' ? `image/${snapshot.outputFormat}` : 'image/jpeg'
     const mime = ['image/png', 'image/jpeg', 'image/webp'].includes(result.mime_type || '') ? result.mime_type! : fallbackMime
     return sanitizeImageStudioSource(`data:${mime};base64,${result.b64_json}`)
   }
   return sanitizeImageStudioSource(result.url)
 }
 
-function resultFormat(result: ImageStudioImage): ImageOutputFormat {
+function resultFormat(result: ImageStudioImage, snapshot: ImageGenerationSnapshot): ImageOutputFormat {
   if (result.mime_type === 'image/jpeg') return 'jpeg'
   if (result.mime_type === 'image/webp') return 'webp'
   if (result.mime_type === 'image/png') return 'png'
-  return provider.value === 'openai' ? form.outputFormat : 'jpeg'
+  return snapshot.provider === 'openai' ? snapshot.outputFormat : 'jpeg'
 }
 
-function generationPayload(prompt: string): ImageStudioGenerationRequest {
-  const base = { api_key_id: form.apiKeyId, prompt, model: form.model }
-  if (provider.value === 'gemini') {
+function generationPayload(settings: ImageGenerationSettings): ImageStudioGenerationRequest {
+  const base = { api_key_id: settings.apiKeyId, prompt: settings.prompt, model: settings.model }
+  if (settings.provider === 'gemini') {
     return {
       ...base,
-      aspect_ratio: form.aspectRatio,
-      ...(form.imageSize ? { image_size: form.imageSize } : {})
+      aspect_ratio: settings.aspectRatio,
+      ...(settings.imageSize ? { image_size: settings.imageSize } : {})
     }
   }
-  if (provider.value === 'grok') {
+  if (settings.provider === 'grok') {
     return {
       ...base,
-      aspect_ratio: form.aspectRatio,
-      resolution: form.resolution,
-      quality: form.quality as 'low' | 'medium',
-      n: form.count
+      aspect_ratio: settings.aspectRatio,
+      resolution: settings.resolution,
+      quality: settings.quality as 'low' | 'medium',
+      n: settings.count
     }
   }
   return {
     ...base,
-    size: form.size,
-    quality: form.quality,
-    background: form.background,
-    output_format: form.outputFormat,
-    n: form.count
+    size: settings.size,
+    quality: settings.quality,
+    background: settings.background,
+    output_format: settings.outputFormat,
+    n: settings.count
   }
 }
 
-async function generate() {
-  if (!canGenerate.value || !provider.value) return
-  const prompt = form.prompt.trim()
-  const generatedProvider = provider.value
-  generating.value = true
-  generationController = new AbortController()
-  startPlaceholders()
+function captureGenerationSnapshot(): ImageGenerationSnapshot | null {
+  if (!provider.value) return null
+  const settings: ImageGenerationSettings = {
+    userId: userId.value,
+    apiKeyId: form.apiKeyId,
+    provider: provider.value,
+    model: form.model,
+    prompt: form.prompt.trim(),
+    size: form.size,
+    aspectRatio: form.aspectRatio,
+    imageSize: form.imageSize,
+    resolution: form.resolution,
+    quality: form.quality,
+    background: form.background,
+    outputFormat: form.outputFormat,
+    count: provider.value === 'gemini' ? 1 : form.count,
+    expectedCount: provider.value === 'gemini' ? 1 : form.count,
+    aspectToken: provider.value === 'openai' ? form.size : form.aspectRatio
+  }
+  return Object.freeze({
+    ...settings,
+    payload: Object.freeze(generationPayload(settings))
+  })
+}
+
+function createGenerationJob(snapshot: ImageGenerationSnapshot): ImageGenerationJob {
+  return {
+    id: `image-generation-${Date.now()}-${generationSequence++}`,
+    status: 'generating',
+    error: '',
+    startedAt: Date.now(),
+    snapshot
+  }
+}
+
+function replaceGenerationJob(job: ImageGenerationJob) {
+  generationJobs.value = generationJobs.value.map((candidate) => candidate.id === job.id ? job : candidate)
+}
+
+function removeGenerationJob(jobId: string) {
+  generationJobs.value = generationJobs.value.filter((job) => job.id !== jobId)
+}
+
+function galleryItemsForResults(
+  results: ImageStudioImage[],
+  snapshot: ImageGenerationSnapshot
+): ImageStudioGalleryItem[] {
+  const createdAt = Date.now()
+  return results.map((result, index): ImageStudioGalleryItem | null => {
+    const imageSrc = resultSource(result, snapshot)
+    if (!imageSrc) return null
+    const size = snapshot.provider === 'openai' ? snapshot.size : snapshot.aspectRatio
+    return {
+      id: globalThis.crypto?.randomUUID?.() || `${createdAt}-${index}-${Math.random()}`,
+      userId: snapshot.userId,
+      createdAt,
+      prompt: snapshot.prompt,
+      revisedPrompt: result.revised_prompt,
+      apiKeyId: snapshot.apiKeyId,
+      provider: snapshot.provider,
+      model: snapshot.model,
+      size,
+      ...(snapshot.provider !== 'openai' ? { aspectRatio: snapshot.aspectRatio } : {}),
+      ...(snapshot.provider === 'gemini' && snapshot.imageSize ? { imageSize: snapshot.imageSize } : {}),
+      ...(snapshot.provider === 'grok' ? { resolution: snapshot.resolution } : {}),
+      ...(snapshot.provider !== 'gemini' ? { quality: snapshot.quality } : {}),
+      ...(snapshot.provider === 'openai' ? { background: snapshot.background } : {}),
+      outputFormat: resultFormat(result, snapshot),
+      imageSrc
+    }
+  }).filter((item): item is ImageStudioGalleryItem => item !== null)
+}
+
+async function executeGeneration(jobId: string) {
+  const job = generationJobs.value.find((candidate) => candidate.id === jobId)
+  if (!job || generationControllers.has(jobId)) return
+  const controller = new AbortController()
+  generationControllers.set(jobId, controller)
+  syncGenerationTimer()
   try {
-    const response = await generateImage(generationPayload(prompt), generationController.signal)
-    const createdAt = Date.now()
-    const items = response.data.map((result, index): ImageStudioGalleryItem | null => {
-      const imageSrc = resultSource(result)
-      if (!imageSrc) return null
-      const size = generatedProvider === 'openai' ? form.size : form.aspectRatio
-      return {
-        id: globalThis.crypto?.randomUUID?.() || `${createdAt}-${index}-${Math.random()}`,
-        userId: userId.value,
-        createdAt,
-        prompt,
-        revisedPrompt: result.revised_prompt,
-        apiKeyId: form.apiKeyId,
-        provider: generatedProvider,
-        model: form.model,
-        size,
-        ...(generatedProvider !== 'openai' ? { aspectRatio: form.aspectRatio } : {}),
-        ...(generatedProvider === 'gemini' && form.imageSize ? { imageSize: form.imageSize } : {}),
-        ...(generatedProvider === 'grok' ? { resolution: form.resolution } : {}),
-        ...(generatedProvider !== 'gemini' ? { quality: form.quality } : {}),
-        ...(generatedProvider === 'openai' ? { background: form.background } : {}),
-        outputFormat: resultFormat(result),
-        imageSrc
-      }
-    }).filter((item): item is ImageStudioGalleryItem => item !== null)
+    const response = await generateImage(job.snapshot.payload, controller.signal)
+    if (generationControllers.get(jobId) !== controller || !generationJobs.value.some((candidate) => candidate.id === jobId)) return
+    const items = galleryItemsForResults(response.data, job.snapshot)
     if (items.length === 0) throw new Error(response.data.length ? t('imageStudio.invalidImageReturned') : t('imageStudio.noImagesReturned'))
     gallery.value = [...items, ...gallery.value]
-    placeholders.value = []
+    removeGenerationJob(jobId)
+    syncGenerationTimer()
     const saves = await Promise.allSettled(items.map(saveImageStudioGalleryItem))
+    if (generationControllers.get(jobId) !== controller) return
     if (saves.some((result) => result.status === 'rejected')) appStore.showWarning(t('imageStudio.gallerySaveFailed'))
     appStore.showSuccess(t('imageStudio.generated', { count: items.length }))
   } catch (error: any) {
-    const canceled = error?.code === 'ERR_CANCELED' || error?.name === 'AbortError'
+    if (generationControllers.get(jobId) !== controller || !generationJobs.value.some((candidate) => candidate.id === jobId)) return
+    const canceled = controller.signal.aborted || error?.code === 'ERR_CANCELED' || error?.name === 'AbortError'
     if (canceled) {
-      placeholders.value = []
+      removeGenerationJob(jobId)
     } else {
       const message = extractApiErrorMessage(error, t('imageStudio.generationFailed'))
-      placeholders.value = placeholders.value.map((item) => ({ ...item, status: 'error', error: message }))
+      replaceGenerationJob({ ...job, status: 'error', error: message })
       appStore.showError(message)
     }
   } finally {
-    generating.value = false
-    generationController = null
-    stopGenerationTimer()
+    if (generationControllers.get(jobId) === controller) generationControllers.delete(jobId)
+    syncGenerationTimer()
   }
 }
 
-function cancelGeneration() {
-  generationController?.abort()
+function generate() {
+  if (!canGenerate.value) return
+  const snapshot = captureGenerationSnapshot()
+  if (!snapshot) return
+  const job = createGenerationJob(snapshot)
+  generationJobs.value = [job, ...generationJobs.value]
+  void executeGeneration(job.id)
+}
+
+function cancelGeneration(jobId: string) {
+  const controller = generationControllers.get(jobId)
+  generationControllers.delete(jobId)
+  removeGenerationJob(jobId)
+  controller?.abort()
+  syncGenerationTimer()
+}
+
+function retryGeneration(jobId: string) {
+  const job = generationJobs.value.find((candidate) => candidate.id === jobId)
+  if (!job || job.status !== 'error') return
+  const retry = { ...job, status: 'generating' as const, error: '', startedAt: Date.now() }
+  replaceGenerationJob(retry)
+  void executeGeneration(jobId)
+}
+
+function dismissGeneration(jobId: string) {
+  if (generationJobs.value.some((job) => job.id === jobId && job.status === 'error')) {
+    removeGenerationJob(jobId)
+  }
 }
 
 function reuseItem(item: ImageStudioGalleryItem) {
@@ -916,13 +1066,12 @@ function reuseItem(item: ImageStudioGalleryItem) {
 }
 
 async function deleteItem(item: ImageStudioGalleryItem) {
-  const previous = gallery.value
   gallery.value = gallery.value.filter((entry) => entry.id !== item.id)
   if (previewItem.value?.id === item.id) previewItem.value = null
   try {
     await deleteImageStudioGalleryItem(userId.value, item.id)
   } catch (error) {
-    gallery.value = previous
+    gallery.value = mergeGalleryItems(gallery.value, [item])
     appStore.showError(extractApiErrorMessage(error, t('imageStudio.galleryDeleteFailed')))
   }
 }
@@ -935,7 +1084,7 @@ async function clearGallery() {
   try {
     await clearImageStudioGallery(userId.value)
   } catch (error) {
-    gallery.value = previous
+    gallery.value = mergeGalleryItems(gallery.value, previous)
     appStore.showError(extractApiErrorMessage(error, t('imageStudio.galleryClearFailed')))
   }
 }
@@ -1014,7 +1163,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  generationController?.abort()
+  for (const controller of generationControllers.values()) controller.abort()
+  generationControllers.clear()
   capabilitiesController?.abort()
   pricingController?.abort()
   stopGenerationTimer()
@@ -1082,14 +1232,14 @@ onBeforeUnmount(() => {
 .studio-price-area { display: flex; min-height: 3.75rem; margin-top: auto; align-items: center; justify-content: space-between; gap: .75rem; border-top: 1px solid rgb(229 231 235); background: rgb(249 250 251 / .72); padding: .75rem 1.25rem; }
 .studio-price-area > strong { flex: 0 0 auto; color: rgb(5 150 105); font-size: .875rem; }
 .price-detail { min-width: 0; color: rgb(107 114 128); font-size: .6875rem; }
-.prompt-submit-area { display: flex; min-height: 4.5rem; align-items: center; justify-content: flex-end; gap: 1rem; padding: .75rem 1.25rem; }
+.prompt-submit-area { display: flex; min-height: 4.5rem; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 1.25rem; }
+.prompt-request-summary { display: flex; min-width: 0; flex-direction: column; gap: .3rem; }
 .prompt-selection { min-width: 0; overflow: hidden; color: rgb(107 114 128); font-size: .6875rem; text-overflow: ellipsis; white-space: nowrap; }
-.generate-button, .cancel-button { display: flex; height: 2.875rem; min-width: 9.5rem; flex: 0 0 auto; align-items: center; justify-content: center; gap: .5rem; border-radius: 6px; padding: 0 1.25rem; color: white; font-size: .875rem; font-weight: 700; transition: background-color .15s, opacity .15s; }
+.active-generation-count { display: inline-flex; min-width: 0; align-items: center; gap: .4rem; color: rgb(13 148 136); font-size: .6875rem; font-weight: 600; }
+.generate-button { display: flex; height: 2.875rem; min-width: 9.5rem; flex: 0 0 auto; align-items: center; justify-content: center; gap: .5rem; border-radius: 6px; padding: 0 1.25rem; color: white; font-size: .875rem; font-weight: 700; transition: background-color .15s, opacity .15s; }
 .generate-button { background: rgb(13 148 136); }
 .generate-button:hover:not(:disabled) { background: rgb(15 118 110); }
 .generate-button:disabled { cursor: not-allowed; opacity: .45; }
-.cancel-button { background: rgb(55 65 81); }
-.cancel-button:hover { background: rgb(31 41 55); }
 .studio-gallery { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; border-top: 1px solid rgb(229 231 235); padding: 1rem 1.25rem 1.25rem; }
 .gallery-header { display: flex; min-height: 3.25rem; align-items: flex-start; justify-content: space-between; gap: 1rem; }
 .gallery-header h2 { color: rgb(17 24 39); font-size: .9375rem; font-weight: 750; }
@@ -1113,8 +1263,14 @@ onBeforeUnmount(() => {
 .generation-placeholder { display: flex; min-height: 14rem; align-items: center; justify-content: center; flex-direction: column; gap: .5rem; border: 1px dashed rgb(167 243 208); border-radius: 8px; background: rgb(249 250 251); color: rgb(13 148 136); }
 .generation-placeholder strong { color: rgb(55 65 81); font-size: .8125rem; }
 .generation-placeholder small { max-width: 80%; overflow: hidden; color: rgb(107 114 128); font-size: .6875rem; text-align: center; text-overflow: ellipsis; }
+.generation-placeholder .placeholder-prompt { display: -webkit-box; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .loading-ring { height: 1.5rem; width: 1.5rem; border: 2px solid rgb(209 250 229); border-top-color: rgb(13 148 136); border-radius: 9999px; animation: studio-spin .8s linear infinite; }
-.retry-button { margin-top: .25rem; border: 1px solid rgb(209 213 219); border-radius: 6px; background: white; padding: .35rem .75rem; color: rgb(55 65 81); font-size: .75rem; }
+.loading-ring.tiny { height: .75rem; width: .75rem; border-width: 1.5px; }
+.placeholder-actions { display: flex; align-items: center; justify-content: center; gap: .4rem; margin-top: .25rem; }
+.retry-button, .placeholder-icon-button { display: inline-flex; min-height: 2rem; align-items: center; justify-content: center; border: 1px solid rgb(209 213 219); border-radius: 6px; background: white; color: rgb(55 65 81); font-size: .75rem; }
+.retry-button { gap: .35rem; padding: .35rem .75rem; }
+.placeholder-icon-button { width: 2rem; padding: 0; }
+.retry-button:hover, .placeholder-icon-button:hover { border-color: rgb(153 246 228); color: rgb(13 148 136); }
 .preview-backdrop { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; background: rgb(0 0 0 / .78); padding: 1rem; }
 .preview-dialog { position: relative; display: flex; max-height: calc(100vh - 2rem); max-width: min(72rem, calc(100vw - 2rem)); flex-direction: column; overflow: hidden; border-radius: 8px; background: rgb(17 24 39); box-shadow: 0 24px 60px rgb(0 0 0 / .35); }
 .preview-dialog > img { min-height: 0; max-height: calc(100vh - 8rem); max-width: 100%; object-fit: contain; }
@@ -1148,7 +1304,9 @@ onBeforeUnmount(() => {
 :global(.dark .studio-price-area), :global(.dark .studio-gallery), :global(.dark .gallery-item-meta) { border-color: rgb(51 65 85); }
 :global(.dark .studio-price-area) { background: rgb(15 23 42 / .5); }
 :global(.dark .prompt-header > span), :global(.dark .price-detail), :global(.dark .prompt-selection) { color: rgb(148 163 184); }
+:global(.dark .active-generation-count) { color: rgb(94 234 212); }
 :global(.dark .toolbar-icon-button) { border-color: rgb(51 65 85); background: rgb(30 41 59); color: rgb(148 163 184); }
+:global(.dark .retry-button), :global(.dark .placeholder-icon-button) { border-color: rgb(71 85 105); background: rgb(30 41 59); color: rgb(203 213 225); }
 :global(.dark .gallery-empty h3) { color: rgb(226 232 240); }
 :global(.dark .gallery-empty .empty-icon) { border-color: rgb(6 78 59); background: rgb(6 78 59 / .35); color: rgb(94 234 212); }
 :global(.dark .gallery-image-button), :global(.dark .generation-placeholder) { background: rgb(15 23 42); }
@@ -1168,7 +1326,7 @@ onBeforeUnmount(() => {
   .prompt-header { padding-inline: 1rem; }
   .studio-prompt { min-height: 12.5rem; width: calc(100% - 2rem); margin-inline: 1rem; }
   .prompt-submit-area { align-items: stretch; flex-direction: column; gap: .625rem; padding: .75rem 1rem 1rem; }
-  .generate-button, .cancel-button { width: 100%; }
+  .generate-button { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   .loading-ring { animation-duration: 1.8s; }

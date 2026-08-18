@@ -7,6 +7,12 @@ const getPricing = vi.hoisted(() => vi.fn())
 const getCapabilities = vi.hoisted(() => vi.fn())
 const generateImage = vi.hoisted(() => vi.fn())
 const listGallery = vi.hoisted(() => vi.fn())
+const saveGallery = vi.hoisted(() => vi.fn())
+const deleteGallery = vi.hoisted(() => vi.fn())
+const clearGallery = vi.hoisted(() => vi.fn())
+const showSuccess = vi.hoisted(() => vi.fn())
+const showWarning = vi.hoisted(() => vi.fn())
+const showError = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/keys', () => ({ keysAPI: { list: listKeys } }))
 vi.mock('@/api/imageStudio', () => ({
@@ -19,13 +25,13 @@ vi.mock('@/utils/imageStudioGallery', async (importOriginal) => {
   return {
     ...actual,
     listImageStudioGallery: listGallery,
-    saveImageStudioGalleryItem: vi.fn(),
-    deleteImageStudioGalleryItem: vi.fn(),
-    clearImageStudioGallery: vi.fn()
+    saveImageStudioGalleryItem: saveGallery,
+    deleteImageStudioGalleryItem: deleteGallery,
+    clearImageStudioGallery: clearGallery
   }
 })
 vi.mock('@/stores/app', () => ({
-  useAppStore: () => ({ showSuccess: vi.fn(), showWarning: vi.fn(), showError: vi.fn() })
+  useAppStore: () => ({ showSuccess, showWarning, showError })
 }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: { id: 42 } }) }))
 vi.mock('vue-i18n', async (importOriginal) => {
@@ -45,10 +51,30 @@ function mountView() {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function generatedImage(base64: string) {
+  return { data: [{ b64_json: base64, mime_type: 'image/png' }] }
+}
+
 describe('ImageStudioView', () => {
   beforeEach(() => {
     localStorage.clear()
     listGallery.mockReset().mockResolvedValue([])
+    saveGallery.mockReset().mockResolvedValue(undefined)
+    deleteGallery.mockReset().mockResolvedValue(undefined)
+    clearGallery.mockReset().mockResolvedValue(undefined)
+    showSuccess.mockReset()
+    showWarning.mockReset()
+    showError.mockReset()
     generateImage.mockReset().mockResolvedValue({ data: [{ b64_json: 'aGVsbG8=', mime_type: 'image/png' }] })
     getCapabilities.mockReset().mockImplementation(async (apiKeyId: number) => {
       if (apiKeyId === 8) {
@@ -261,5 +287,227 @@ describe('ImageStudioView', () => {
       quality: 'low',
       n: 1
     }, expect.any(AbortSignal))
+  })
+
+  it('keeps the composer editable and snapshots concurrent submissions', async () => {
+    const first = deferred<ReturnType<typeof generatedImage>>()
+    const second = deferred<ReturnType<typeof generatedImage>>()
+    generateImage.mockReset()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-size').setValue('1024x1024')
+    await wrapper.get('#image-studio-prompt').setValue('first prompt')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('#image-studio-prompt').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('.generate-button').attributes('disabled')).toBeUndefined()
+
+    await wrapper.get('#image-studio-size').setValue('1536x1024')
+    await wrapper.get('#image-studio-prompt').setValue('second prompt')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenCalledTimes(2)
+    expect(generateImage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      prompt: 'first prompt', size: '1024x1024'
+    }), expect.any(AbortSignal))
+    expect(generateImage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      prompt: 'second prompt', size: '1536x1024'
+    }), expect.any(AbortSignal))
+    const firstSignal = generateImage.mock.calls[0][1] as AbortSignal
+    const secondSignal = generateImage.mock.calls[1][1] as AbortSignal
+    expect(firstSignal).not.toBe(secondSignal)
+    expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(2)
+
+    second.resolve(generatedImage('c2Vjb25k'))
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(1)
+    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text())).toEqual(['second prompt'])
+
+    first.resolve(generatedImage('Zmlyc3Q='))
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(0)
+    expect(saveGallery.mock.calls.map(([item]) => ({ prompt: item.prompt, size: item.size })))
+      .toEqual(expect.arrayContaining([
+        { prompt: 'first prompt', size: '1024x1024' },
+        { prompt: 'second prompt', size: '1536x1024' }
+      ]))
+  })
+
+  it('keeps provider-specific metadata and format fallbacks with each request', async () => {
+    const openAIRequest = deferred<{ data: Array<{ b64_json: string; mime_type?: string }> }>()
+    const grokRequest = deferred<{ data: Array<{ b64_json: string; mime_type?: string }> }>()
+    generateImage.mockReset()
+      .mockReturnValueOnce(openAIRequest.promise)
+      .mockReturnValueOnce(grokRequest.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('OpenAI prompt')
+    await wrapper.findAll('.segmented-control.compact button')[2].trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('#image-studio-key').setValue('10')
+    await flushPromises()
+    await wrapper.get('#image-studio-prompt').setValue('Grok prompt')
+    await wrapper.get('#image-studio-aspect-ratio').setValue('20:9')
+    await wrapper.get('#image-studio-resolution').setValue('2k')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    grokRequest.resolve({ data: [{ b64_json: 'Z3Jvaw==', mime_type: 'image/jpeg' }] })
+    openAIRequest.resolve({ data: [{ b64_json: 'b3BlbmFp' }] })
+    await flushPromises()
+
+    const savedByPrompt = Object.fromEntries(saveGallery.mock.calls.map(([item]) => [item.prompt, item]))
+    expect(savedByPrompt['OpenAI prompt']).toEqual(expect.objectContaining({
+      apiKeyId: 7,
+      provider: 'openai',
+      model: 'gpt-image-2',
+      outputFormat: 'webp',
+      imageSrc: 'data:image/webp;base64,b3BlbmFp'
+    }))
+    expect(savedByPrompt['Grok prompt']).toEqual(expect.objectContaining({
+      apiKeyId: 10,
+      provider: 'grok',
+      model: 'grok-imagine-image-2.0',
+      aspectRatio: '20:9',
+      resolution: '2k',
+      outputFormat: 'jpeg',
+      imageSrc: 'data:image/jpeg;base64,Z3Jvaw=='
+    }))
+  })
+
+  it('isolates failure, cancellation, and retry to their original jobs', async () => {
+    const failed = deferred<ReturnType<typeof generatedImage>>()
+    const active = deferred<ReturnType<typeof generatedImage>>()
+    const retry = deferred<ReturnType<typeof generatedImage>>()
+    generateImage.mockReset()
+      .mockReturnValueOnce(failed.promise)
+      .mockReturnValueOnce(active.promise)
+      .mockReturnValueOnce(retry.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('failed prompt')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('#image-studio-prompt').setValue('active prompt')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    failed.reject(new Error('request failed'))
+    await flushPromises()
+    const failedCard = wrapper.findAll('[data-testid="generation-placeholder"]')
+      .find((card) => card.text().includes('failed prompt'))!
+    const activeCard = wrapper.findAll('[data-testid="generation-placeholder"]')
+      .find((card) => card.text().includes('active prompt'))!
+    expect(failedCard.text()).toContain('imageStudio.generationFailed')
+    expect(activeCard.text()).toContain('imageStudio.generating')
+
+    await activeCard.get('.placeholder-icon-button').trigger('click')
+    expect((generateImage.mock.calls[1][1] as AbortSignal).aborted).toBe(true)
+    expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(1)
+    active.resolve(generatedImage('Y2FuY2VsZWQ='))
+    await flushPromises()
+
+    await failedCard.get('.retry-button').trigger('click')
+    await flushPromises()
+    expect(generateImage).toHaveBeenNthCalledWith(3, expect.objectContaining({ prompt: 'failed prompt' }), expect.any(AbortSignal))
+    retry.resolve(generatedImage('cmV0cnk='))
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(0)
+    expect(saveGallery.mock.calls[saveGallery.mock.calls.length - 1]?.[0].prompt).toBe('failed prompt')
+  })
+
+  it('aborts every active generation when the view unmounts', async () => {
+    const first = deferred<ReturnType<typeof generatedImage>>()
+    const second = deferred<ReturnType<typeof generatedImage>>()
+    generateImage.mockReset()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('first prompt')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('#image-studio-prompt').setValue('second prompt')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const signals = generateImage.mock.calls.map((call) => call[1] as AbortSignal)
+
+    wrapper.unmount()
+    expect(signals).toHaveLength(2)
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    first.resolve(generatedImage('Zmlyc3Q='))
+    second.resolve(generatedImage('c2Vjb25k'))
+    await flushPromises()
+  })
+
+  it('does not notify after unmounting during gallery persistence', async () => {
+    const persistence = deferred<void>()
+    saveGallery.mockReset().mockReturnValueOnce(persistence.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('persisting prompt')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(saveGallery).toHaveBeenCalledTimes(1)
+    expect(showSuccess).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+    persistence.resolve()
+    await flushPromises()
+    expect(showSuccess).not.toHaveBeenCalled()
+    expect(showWarning).not.toHaveBeenCalled()
+  })
+
+  it('merges a late local gallery load with newly generated results', async () => {
+    const galleryLoad = deferred<any[]>()
+    listGallery.mockReset().mockReturnValueOnce(galleryLoad.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('new prompt')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.findAll('.gallery-item')).toHaveLength(1)
+
+    galleryLoad.resolve([{
+      id: 'stored-image', userId: 42, createdAt: 1, prompt: 'stored prompt', apiKeyId: 7,
+      provider: 'openai', model: 'gpt-image-2', size: '1024x1024', outputFormat: 'png',
+      imageSrc: 'data:image/png;base64,c3RvcmVk'
+    }])
+    await flushPromises()
+
+    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text()))
+      .toEqual(['new prompt', 'stored prompt'])
+  })
+
+  it('preserves newly generated results when clearing the gallery fails', async () => {
+    const clearing = deferred<void>()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    listGallery.mockResolvedValueOnce([{
+      id: 'stored-image', userId: 42, createdAt: 1, prompt: 'stored prompt', apiKeyId: 7,
+      provider: 'openai', model: 'gpt-image-2', size: '1024x1024', outputFormat: 'png',
+      imageSrc: 'data:image/png;base64,c3RvcmVk'
+    }])
+    clearGallery.mockReturnValueOnce(clearing.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('.toolbar-icon-button').trigger('click')
+    await wrapper.get('#image-studio-prompt').setValue('new prompt')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    clearing.reject(new Error('clear failed'))
+    await flushPromises()
+
+    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text()))
+      .toEqual(['new prompt', 'stored prompt'])
+    confirm.mockRestore()
   })
 })
