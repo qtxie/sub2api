@@ -657,6 +657,15 @@ func ProvideImageTaskService(store ImageTaskStore, settings *ImageStorageSetting
 	return NewImageTaskServiceWithResolver(store, settings.Resolver(), defaultImageTaskTTL, defaultImageTaskExecutionTimeout)
 }
 
+// ProvideVideoStudioTracker starts reconciliation for accepted deferred Grok
+// video jobs. Polling goes back through the local gateway so its existing
+// account binding and one-shot settlement remain authoritative.
+func ProvideVideoStudioTracker(store VideoStudioTaskStore, apiKeys *APIKeyService, cfg *config.Config) *VideoStudioTracker {
+	tracker := NewVideoStudioTracker(store, NewVideoStudioGatewayPoller(apiKeys, cfg), VideoStudioTrackerOptions{})
+	tracker.Start()
+	return tracker
+}
+
 // ProvideBackupService creates and starts BackupService
 func ProvideBackupService(
 	settingRepo SettingRepository,
@@ -816,6 +825,7 @@ var ProviderSet = wire.NewSet(
 	NewOpenAIGatewayService,
 	ProvideImageStorageSettingService,
 	ProvideImageTaskService,
+	ProvideVideoStudioTracker,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
 	NewBatchImageDownloadService,

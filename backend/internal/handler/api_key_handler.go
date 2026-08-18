@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,18 @@ import (
 
 // APIKeyHandler handles API key-related requests
 type APIKeyHandler struct {
-	apiKeyService *service.APIKeyService
+	apiKeyService           *service.APIKeyService
+	videoStudioPendingGuard interface {
+		HasPendingForAPIKey(context.Context, int64, int64) (bool, error)
+	}
+}
+
+func (h *APIKeyHandler) SetVideoStudioPendingGuard(guard interface {
+	HasPendingForAPIKey(context.Context, int64, int64) (bool, error)
+}) {
+	if h != nil {
+		h.videoStudioPendingGuard = guard
+	}
 }
 
 // NewAPIKeyHandler creates a new APIKeyHandler
@@ -250,6 +262,9 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: numeric limits must be finite and non-negative")
 		return
 	}
+	if videoStudioAPIKeyUpdateCanDisruptPendingTask(req) && !h.ensureNoPendingVideoTask(c, subject.UserID, keyID) {
+		return
+	}
 
 	svcReq := service.UpdateAPIKeyRequest{
 		IPWhitelist:         req.IPWhitelist,
@@ -307,6 +322,9 @@ func (h *APIKeyHandler) Delete(c *gin.Context) {
 		response.BadRequest(c, "Invalid key ID")
 		return
 	}
+	if !h.ensureNoPendingVideoTask(c, subject.UserID, keyID) {
+		return
+	}
 
 	err = h.apiKeyService.Delete(c.Request.Context(), keyID, subject.UserID)
 	if err != nil {
@@ -315,6 +333,28 @@ func (h *APIKeyHandler) Delete(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{"message": "API key deleted successfully"})
+}
+
+func videoStudioAPIKeyUpdateCanDisruptPendingTask(req UpdateAPIKeyRequest) bool {
+	return req.GroupID != nil || req.Status != "" || req.IPWhitelist != nil || req.IPBlacklist != nil ||
+		req.Quota != nil || req.ExpiresAt != nil || req.ResetQuota != nil || req.RateLimit5h != nil ||
+		req.RateLimit1d != nil || req.RateLimit7d != nil || req.ResetRateLimitUsage != nil
+}
+
+func (h *APIKeyHandler) ensureNoPendingVideoTask(c *gin.Context, userID, apiKeyID int64) bool {
+	if h == nil || h.videoStudioPendingGuard == nil {
+		return true
+	}
+	pending, err := h.videoStudioPendingGuard.HasPendingForAPIKey(c.Request.Context(), userID, apiKeyID)
+	if err != nil {
+		response.InternalError(c, "Failed to check pending video tasks")
+		return false
+	}
+	if pending {
+		response.Error(c, http.StatusConflict, "API key has a pending video generation task")
+		return false
+	}
+	return true
 }
 
 // GetAvailableGroups 获取用户可以绑定的分组列表

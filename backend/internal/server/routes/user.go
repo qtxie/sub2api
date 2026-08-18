@@ -90,6 +90,15 @@ func RegisterUserRoutes(
 			imageStudio.POST("/generations", h.ImageStudio.Generate)
 		}
 
+		videoStudio := authenticated.Group("/video-studio")
+		{
+			videoStudio.POST("/capabilities", panelRateLimiter.Heavy(), h.VideoStudio.Capabilities)
+			videoStudio.POST("/pricing", panelRateLimiter.Heavy(), h.VideoStudio.Pricing)
+			videoStudio.POST("/generations", panelRateLimiter.Heavy(), h.VideoStudio.Generate)
+			videoStudio.GET("/videos/:request_id", h.VideoStudio.Status)
+			videoStudio.GET("/videos/:request_id/content", h.VideoStudio.Content)
+		}
+
 		// 用户可用分组（非管理员接口）
 		groups := authenticated.Group("/groups")
 		{

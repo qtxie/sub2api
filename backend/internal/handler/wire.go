@@ -196,9 +196,12 @@ func ProvideHandlers(
 	asyncImageHandler *AsyncImageHandler,
 	batchImageHandler *BatchImageHandler,
 	imageStudioHandler *ImageStudioHandler,
+	videoStudioHandler *VideoStudioHandler,
+	videoStudioTracker *service.VideoStudioTracker,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 ) *Handlers {
+	apiKeyHandler.SetVideoStudioPendingGuard(videoStudioTracker)
 	return &Handlers{
 		Auth:             authHandler,
 		User:             userHandler,
@@ -222,6 +225,7 @@ func ProvideHandlers(
 		AsyncImage:       asyncImageHandler,
 		BatchImage:       batchImageHandler,
 		ImageStudio:      imageStudioHandler,
+		VideoStudio:      videoStudioHandler,
 	}
 }
 
@@ -249,6 +253,7 @@ var ProviderSet = wire.NewSet(
 	NewAsyncImageHandler,
 	ProvideBatchImageHandler,
 	NewImageStudioHandler,
+	NewVideoStudioHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

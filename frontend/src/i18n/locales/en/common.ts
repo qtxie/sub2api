@@ -161,6 +161,7 @@ export default {
     announcements: 'Announcements',
     apiKeys: 'API Keys',
     imageStudio: 'Image Studio',
+    videoStudio: 'Video Studio',
     batchImage: 'Batch Images',
     usage: 'Usage',
     redeem: 'Redeem',

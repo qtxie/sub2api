@@ -161,6 +161,7 @@ export default {
     announcements: '公告',
     apiKeys: 'API 密钥',
     imageStudio: '图像工作室',
+    videoStudio: '视频工作室',
     batchImage: '批量生图',
     usage: '使用记录',
     redeem: '兑换',
