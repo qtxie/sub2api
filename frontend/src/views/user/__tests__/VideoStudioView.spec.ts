@@ -25,6 +25,11 @@ const polling = vi.hoisted(() => ({
   stopAll: vi.fn(),
   isTracking: vi.fn(() => false)
 }))
+const app = vi.hoisted(() => ({
+  showSuccess: vi.fn(),
+  showWarning: vi.fn(),
+  showError: vi.fn()
+}))
 
 vi.mock('@/api/keys', () => ({ keysAPI: { list: api.listKeys } }))
 vi.mock('@/api/videoStudio', async (importOriginal) => ({
@@ -49,7 +54,7 @@ vi.mock('@/composables/useVideoStudioPolling', () => ({
   }
 }))
 vi.mock('@/stores/app', () => ({
-  useAppStore: () => ({ showSuccess: vi.fn(), showWarning: vi.fn(), showError: vi.fn() })
+  useAppStore: () => app
 }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: { id: 42 } }) }))
 vi.mock('vue-i18n', async (importOriginal) => ({
@@ -103,7 +108,9 @@ describe('VideoStudioView', () => {
       max_duration: 15,
       default_duration: 8,
       aspect_ratios: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'],
-      resolutions: ['480p', '720p', '1080p']
+      resolutions: ['480p', '720p', '1080p'],
+      max_input_images: 1,
+      input_image_mime_types: ['image/png', 'image/jpeg', 'image/webp']
     })
     api.pricing.mockResolvedValue({
       currency: 'USD', pricing_kind: 'fixed', duration: 8,
@@ -186,5 +193,65 @@ describe('VideoStudioView', () => {
     expect(second.text()).toContain('videoStudio.expired')
     expect(second.text()).not.toContain('binding missing')
     second.unmount()
+  })
+
+  it('uploads one starting frame, submits image-only generation, and does not persist its base64 data', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const source = new File([
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    ], 'first-frame.png', { type: 'image/png' })
+    const input = wrapper.get('[data-testid="video-source-image-input"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [source] })
+    await input.trigger('change')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('first-frame.png'))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('videoStudio.imageToVideo')
+    await vi.waitFor(() => expect(api.pricing).toHaveBeenLastCalledWith(
+      7,
+      8,
+      true,
+      expect.any(AbortSignal)
+    ))
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.generate).toHaveBeenCalledWith({
+      api_key_id: 7,
+      duration: 8,
+      aspect_ratio: '16:9',
+      resolution: '480p',
+      source_image: {
+        mime_type: 'image/png',
+        data: 'iVBORw0KGgo='
+      }
+    }, expect.any(AbortSignal))
+    const persistedTask = galleryStore.save.mock.calls.find(([item]) => item.requestId === 'task-new')?.[0]
+    expect(persistedTask).toBeTruthy()
+    expect(persistedTask).toMatchObject({ prompt: '', hasSourceImage: true })
+    expect(persistedTask).not.toHaveProperty('source_image')
+    expect(persistedTask).not.toHaveProperty('sourceImage')
+
+    await wrapper.get('[title="videoStudio.removeSourceImage"]').trigger('click')
+    expect(wrapper.text()).not.toContain('first-frame.png')
+  })
+
+  it('rejects unsupported and oversized starting frames before reading them', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const input = wrapper.get('[data-testid="video-source-image-input"]')
+
+    const gif = new File(['gif'], 'frame.gif', { type: 'image/gif' })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [gif] })
+    await input.trigger('change')
+    expect(app.showError).toHaveBeenCalledWith('videoStudio.sourceImageFormatUnsupported')
+
+    const oversized = new File([new Uint8Array(6 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' })
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [oversized] })
+    await input.trigger('change')
+    expect(app.showError).toHaveBeenCalledWith('videoStudio.sourceImageTooLarge')
+    expect(wrapper.text()).not.toContain('large.png')
   })
 })

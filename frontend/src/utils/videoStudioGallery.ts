@@ -17,6 +17,7 @@ export interface VideoStudioGalleryItem {
   createdAt: number
   updatedAt: number
   prompt: string
+  hasSourceImage?: boolean
   model: typeof VIDEO_STUDIO_MODEL
   duration: number
   aspectRatio: VideoStudioAspectRatio
@@ -124,11 +125,12 @@ export function normalizeVideoStudioGalleryItem(value: unknown): VideoStudioGall
   const createdAt = positiveNumber(item.createdAt)
   const updatedAt = positiveNumber(item.updatedAt) || createdAt
   const prompt = stringValue(item.prompt)
+  const hasSourceImage = item.hasSourceImage === true
   const duration = boundedInteger(item.duration, 1, 15)
   const aspectRatio = enumValue(item.aspectRatio, VIDEO_STUDIO_ASPECT_RATIOS)
   const resolution = enumValue(item.resolution, VIDEO_STUDIO_RESOLUTIONS)
   const status = normalizeStatus(item.status)
-  if (!requestId || !userId || !apiKeyId || !createdAt || !prompt || !duration || !aspectRatio || !resolution || !status) {
+  if (!requestId || !userId || !apiKeyId || !createdAt || (!prompt && !hasSourceImage) || !duration || !aspectRatio || !resolution || !status) {
     return null
   }
   const blob = typeof Blob !== 'undefined' && item.videoBlob instanceof Blob && item.videoBlob.type === 'video/mp4'
@@ -144,6 +146,7 @@ export function normalizeVideoStudioGalleryItem(value: unknown): VideoStudioGall
     createdAt,
     updatedAt: updatedAt || createdAt,
     prompt,
+    ...(hasSourceImage ? { hasSourceImage: true } : {}),
     model: VIDEO_STUDIO_MODEL,
     duration,
     aspectRatio,

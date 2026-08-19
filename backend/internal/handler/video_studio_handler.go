@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -22,14 +23,17 @@ import (
 )
 
 const (
-	videoStudioModel             = "grok-imagine-video-1.5"
-	videoStudioProvider          = service.PlatformGrok
-	videoStudioJSONResponseLimit = int64(4 << 20)
+	videoStudioModel               = "grok-imagine-video-1.5"
+	videoStudioProvider            = service.PlatformGrok
+	videoStudioJSONResponseLimit   = int64(4 << 20)
+	videoStudioMaxSourceImageBytes = 6 << 20
+	videoStudioMaxRequestBytes     = int64(10 << 20)
 )
 
 var (
-	videoStudioAspectRatios = []string{"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
-	videoStudioResolutions  = []string{"480p", "720p", "1080p"}
+	videoStudioAspectRatios        = []string{"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
+	videoStudioResolutions         = []string{"480p", "720p", "1080p"}
+	videoStudioInputImageMIMETypes = []string{"image/png", "image/jpeg", "image/webp"}
 )
 
 type videoStudioAPIKeyLoader interface {
@@ -37,7 +41,7 @@ type videoStudioAPIKeyLoader interface {
 }
 
 type videoStudioPricingQuoter interface {
-	QuoteVideoPrice(context.Context, *service.APIKey, int64, string, string, int) (*service.VideoPriceQuote, error)
+	QuoteVideoPrice(context.Context, *service.APIKey, int64, string, string, int, bool) (*service.VideoPriceQuote, error)
 }
 
 type videoStudioTaskTracker interface {
@@ -74,27 +78,36 @@ type videoStudioCapabilitiesRequest struct {
 }
 
 type videoStudioPricingRequest struct {
-	APIKeyID int64 `json:"api_key_id"`
-	Duration int   `json:"duration"`
+	APIKeyID       int64 `json:"api_key_id"`
+	Duration       int   `json:"duration"`
+	HasSourceImage bool  `json:"has_source_image"`
 }
 
 type videoStudioGenerationRequest struct {
-	APIKeyID    int64  `json:"api_key_id"`
-	Prompt      string `json:"prompt"`
-	Duration    int    `json:"duration"`
-	AspectRatio string `json:"aspect_ratio"`
-	Resolution  string `json:"resolution"`
+	APIKeyID    int64                   `json:"api_key_id"`
+	Prompt      string                  `json:"prompt"`
+	Duration    int                     `json:"duration"`
+	AspectRatio string                  `json:"aspect_ratio"`
+	Resolution  string                  `json:"resolution"`
+	SourceImage *videoStudioSourceImage `json:"source_image"`
+}
+
+type videoStudioSourceImage struct {
+	MIMEType string `json:"mime_type"`
+	Data     string `json:"data"`
 }
 
 type videoStudioCapabilitiesResponse struct {
-	Provider        string   `json:"provider"`
-	Model           string   `json:"model"`
-	Label           string   `json:"label"`
-	MinDuration     int      `json:"min_duration"`
-	MaxDuration     int      `json:"max_duration"`
-	DefaultDuration int      `json:"default_duration"`
-	AspectRatios    []string `json:"aspect_ratios"`
-	Resolutions     []string `json:"resolutions"`
+	Provider            string   `json:"provider"`
+	Model               string   `json:"model"`
+	Label               string   `json:"label"`
+	MinDuration         int      `json:"min_duration"`
+	MaxDuration         int      `json:"max_duration"`
+	DefaultDuration     int      `json:"default_duration"`
+	AspectRatios        []string `json:"aspect_ratios"`
+	Resolutions         []string `json:"resolutions"`
+	MaxInputImages      int      `json:"max_input_images"`
+	InputImageMIMETypes []string `json:"input_image_mime_types"`
 }
 
 type videoStudioResolutionPrice struct {
@@ -152,14 +165,16 @@ func (h *VideoStudioHandler) Capabilities(c *gin.Context) {
 	}
 
 	response.Success(c, videoStudioCapabilitiesResponse{
-		Provider:        videoStudioProvider,
-		Model:           videoStudioModel,
-		Label:           "Grok Imagine Video 1.5",
-		MinDuration:     service.VideoBillingMinDurationSeconds,
-		MaxDuration:     service.VideoBillingMaxDurationSeconds,
-		DefaultDuration: service.VideoBillingDefaultDurationSeconds,
-		AspectRatios:    append([]string(nil), videoStudioAspectRatios...),
-		Resolutions:     append([]string(nil), videoStudioResolutions...),
+		Provider:            videoStudioProvider,
+		Model:               videoStudioModel,
+		Label:               "Grok Imagine Video 1.5",
+		MinDuration:         service.VideoBillingMinDurationSeconds,
+		MaxDuration:         service.VideoBillingMaxDurationSeconds,
+		DefaultDuration:     service.VideoBillingDefaultDurationSeconds,
+		AspectRatios:        append([]string(nil), videoStudioAspectRatios...),
+		Resolutions:         append([]string(nil), videoStudioResolutions...),
+		MaxInputImages:      1,
+		InputImageMIMETypes: append([]string(nil), videoStudioInputImageMIMETypes...),
 	})
 }
 
@@ -195,7 +210,7 @@ func (h *VideoStudioHandler) Pricing(c *gin.Context) {
 	pricingKind := service.VideoPricingKindFixed
 	for _, resolution := range videoStudioResolutions {
 		quote, err := h.pricingQuoter.QuoteVideoPrice(
-			c.Request.Context(), apiKey, subject.UserID, videoStudioModel, resolution, input.Duration,
+			c.Request.Context(), apiKey, subject.UserID, videoStudioModel, resolution, input.Duration, input.HasSourceImage,
 		)
 		if err != nil {
 			response.InternalError(c, "Failed to calculate video pricing")
@@ -231,14 +246,23 @@ func (h *VideoStudioHandler) Generate(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, videoStudioMaxRequestBytes)
 	var input videoStudioGenerationRequest
 	if err := decodeVideoStudioJSON(c, &input); err != nil {
+		if _, ok := extractMaxBytesError(err); ok {
+			response.Error(c, http.StatusRequestEntityTooLarge, "Video Studio request is too large")
+			return
+		}
 		response.BadRequest(c, "Invalid video generation request")
 		return
 	}
 	input.Prompt = strings.TrimSpace(input.Prompt)
 	input.AspectRatio = strings.TrimSpace(input.AspectRatio)
 	input.Resolution = strings.ToLower(strings.TrimSpace(input.Resolution))
+	if input.SourceImage != nil {
+		input.SourceImage.MIMEType = strings.ToLower(strings.TrimSpace(input.SourceImage.MIMEType))
+		input.SourceImage.Data = strings.TrimSpace(input.SourceImage.Data)
+	}
 	if message := validateVideoStudioGeneration(input); message != "" {
 		response.BadRequest(c, message)
 		return
@@ -248,13 +272,21 @@ func (h *VideoStudioHandler) Generate(c *gin.Context) {
 		return
 	}
 
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":        videoStudioModel,
-		"prompt":       input.Prompt,
 		"duration":     input.Duration,
 		"aspect_ratio": input.AspectRatio,
 		"resolution":   input.Resolution,
-	})
+	}
+	if input.Prompt != "" {
+		payload["prompt"] = input.Prompt
+	}
+	if input.SourceImage != nil {
+		payload["image"] = map[string]string{
+			"url": videoStudioSourceImageDataURL(*input.SourceImage),
+		}
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		response.InternalError(c, "Failed to build video generation request")
 		return
@@ -271,12 +303,12 @@ func (h *VideoStudioHandler) Generate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	payload, err := decodeVideoStudioJSONObject(upstreamBody)
+	responsePayload, err := decodeVideoStudioJSONObject(upstreamBody)
 	if err != nil {
 		response.Error(c, http.StatusBadGateway, "Video gateway returned an invalid response")
 		return
 	}
-	requestID := videoStudioRequestID(payload)
+	requestID := videoStudioRequestID(responsePayload)
 	if !service.IsValidVideoStudioRequestID(requestID) {
 		response.Error(c, http.StatusBadGateway, "Video gateway returned no request ID")
 		return
@@ -489,7 +521,7 @@ func validateVideoStudioGeneration(input videoStudioGenerationRequest) string {
 	if input.APIKeyID <= 0 {
 		return "API key is required"
 	}
-	if input.Prompt == "" {
+	if input.Prompt == "" && input.SourceImage == nil {
 		return "Prompt is required"
 	}
 	if !videoStudioDurationAllowed(input.Duration) {
@@ -501,7 +533,56 @@ func validateVideoStudioGeneration(input videoStudioGenerationRequest) string {
 	if !videoStudioOptionAllowed(input.Resolution, videoStudioResolutions) {
 		return "Unsupported video resolution"
 	}
+	if message := validateVideoStudioSourceImage(input.SourceImage); message != "" {
+		return message
+	}
 	return ""
+}
+
+func validateVideoStudioSourceImage(image *videoStudioSourceImage) string {
+	if image == nil {
+		return ""
+	}
+	if !videoStudioOptionAllowed(image.MIMEType, videoStudioInputImageMIMETypes) {
+		return "Source image must use image/png, image/jpeg, or image/webp"
+	}
+	if image.Data == "" {
+		return "Source image data is required"
+	}
+	if strings.HasPrefix(strings.ToLower(image.Data), "data:") {
+		return "Source image must contain base64 data without a data URL prefix"
+	}
+	if base64.StdEncoding.DecodedLen(len(image.Data)) > videoStudioMaxSourceImageBytes+2 {
+		return "Source image exceeds the 6 MB limit"
+	}
+	decoded, err := base64.StdEncoding.Strict().DecodeString(image.Data)
+	if err != nil || len(decoded) == 0 {
+		return "Source image must contain valid base64 data"
+	}
+	if len(decoded) > videoStudioMaxSourceImageBytes {
+		return "Source image exceeds the 6 MB limit"
+	}
+	if !videoStudioSourceContentMatchesMIMEType(decoded, image.MIMEType) {
+		return "Source image content does not match its MIME type"
+	}
+	return ""
+}
+
+func videoStudioSourceContentMatchesMIMEType(data []byte, mimeType string) bool {
+	switch mimeType {
+	case "image/png":
+		return len(data) >= 8 && bytes.Equal(data[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	case "image/jpeg":
+		return len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff
+	case "image/webp":
+		return len(data) >= 12 && bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP"))
+	default:
+		return false
+	}
+}
+
+func videoStudioSourceImageDataURL(image videoStudioSourceImage) string {
+	return "data:" + image.MIMEType + ";base64," + image.Data
 }
 
 func videoStudioDurationAllowed(duration int) bool {

@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -28,9 +29,10 @@ func (s videoStudioKeyLoaderStub) GetByID(context.Context, int64) (*service.APIK
 }
 
 type videoStudioQuoteCall struct {
-	model      string
-	resolution string
-	duration   int
+	model          string
+	resolution     string
+	duration       int
+	hasSourceImage bool
 }
 
 type videoStudioQuoterStub struct {
@@ -56,8 +58,11 @@ func (s *videoStudioQuoterStub) QuoteVideoPrice(
 	model string,
 	resolution string,
 	duration int,
+	hasSourceImage bool,
 ) (*service.VideoPriceQuote, error) {
-	s.calls = append(s.calls, videoStudioQuoteCall{model: model, resolution: resolution, duration: duration})
+	s.calls = append(s.calls, videoStudioQuoteCall{
+		model: model, resolution: resolution, duration: duration, hasSourceImage: hasSourceImage,
+	})
 	unit := map[string]float64{"480p": 0.08, "720p": 0.14, "1080p": 0.25}[resolution]
 	total := unit * float64(duration)
 	return &service.VideoPriceQuote{
@@ -109,6 +114,14 @@ func newVideoStudioHandlerForTest(key *service.APIKey, roundTripper http.RoundTr
 	return handler
 }
 
+func videoStudioTestPNGSourceImage() videoStudioSourceImage {
+	data := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0x00}
+	return videoStudioSourceImage{
+		MIMEType: "image/png",
+		Data:     base64.StdEncoding.EncodeToString(data),
+	}
+}
+
 func TestVideoStudioGenerateInjectsFixedModelAndForwardsExactFields(t *testing.T) {
 	var forwarded map[string]any
 	tracker := &videoStudioTrackerStub{}
@@ -152,7 +165,79 @@ func TestVideoStudioGenerateInjectsFixedModelAndForwardsExactFields(t *testing.T
 	}, tracker.task)
 }
 
+func TestVideoStudioGenerateForwardsSourceImageUsingOfficialURLField(t *testing.T) {
+	source := videoStudioTestPNGSourceImage()
+	var forwarded map[string]any
+	handler := newVideoStudioHandlerForTest(eligibleVideoStudioKey(42), videoStudioRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		require.Equal(t, "http://127.0.0.1:8080/v1/videos/generations", request.URL.String())
+		require.NoError(t, json.NewDecoder(request.Body).Decode(&forwarded))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"request_id":"image-video-task"}`)),
+		}, nil
+	}))
+
+	body, err := json.Marshal(map[string]any{
+		"api_key_id":   7,
+		"prompt":       " animate this ",
+		"duration":     8,
+		"aspect_ratio": "16:9",
+		"resolution":   "720p",
+		"source_image": map[string]any{
+			"mime_type": " IMAGE/PNG ",
+			"data":      " " + source.Data + " ",
+		},
+	})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	videoStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, map[string]any{
+		"model":        videoStudioModel,
+		"prompt":       "animate this",
+		"duration":     float64(8),
+		"aspect_ratio": "16:9",
+		"resolution":   "720p",
+		"image": map[string]any{
+			"url": "data:image/png;base64," + source.Data,
+		},
+	}, forwarded)
+	require.NotContains(t, forwarded, "source_image")
+}
+
+func TestVideoStudioGenerateAllowsImageOnlyAndOmitsEmptyPrompt(t *testing.T) {
+	source := videoStudioTestPNGSourceImage()
+	var forwarded map[string]any
+	handler := newVideoStudioHandlerForTest(eligibleVideoStudioKey(42), videoStudioRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		require.NoError(t, json.NewDecoder(request.Body).Decode(&forwarded))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"request_id":"image-only-video-task"}`)),
+		}, nil
+	}))
+
+	body, err := json.Marshal(map[string]any{
+		"api_key_id": 7, "duration": 8, "aspect_ratio": "16:9", "resolution": "720p",
+		"source_image": source,
+	})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	videoStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.NotContains(t, forwarded, "prompt")
+	require.Equal(t, map[string]any{"url": "data:image/png;base64," + source.Data}, forwarded["image"])
+}
+
 func TestVideoStudioGenerateRejectsUnsupportedOrUnknownFields(t *testing.T) {
+	validSourceData := videoStudioTestPNGSourceImage().Data
 	tests := []struct {
 		name string
 		body string
@@ -165,6 +250,7 @@ func TestVideoStudioGenerateRejectsUnsupportedOrUnknownFields(t *testing.T) {
 		{name: "unsupported resolution", body: `{"api_key_id":7,"prompt":"waves","duration":8,"aspect_ratio":"16:9","resolution":"4k"}`},
 		{name: "blank prompt", body: `{"api_key_id":7,"prompt":"  ","duration":8,"aspect_ratio":"16:9","resolution":"720p"}`},
 		{name: "two objects", body: `{"api_key_id":7,"prompt":"waves","duration":8,"aspect_ratio":"16:9","resolution":"720p"}{}`},
+		{name: "unknown source image field", body: `{"api_key_id":7,"prompt":"waves","duration":8,"aspect_ratio":"16:9","resolution":"720p","source_image":{"mime_type":"image/png","data":"` + validSourceData + `","url":"https://example.com/source.png"}}`},
 	}
 
 	for _, test := range tests {
@@ -180,6 +266,99 @@ func TestVideoStudioGenerateRejectsUnsupportedOrUnknownFields(t *testing.T) {
 			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
 		})
 	}
+}
+
+func TestVideoStudioGenerateRejectsInvalidSourceImages(t *testing.T) {
+	png := videoStudioTestPNGSourceImage()
+	oversizedData := make([]byte, videoStudioMaxSourceImageBytes+1)
+	copy(oversizedData, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+
+	tests := []struct {
+		name   string
+		source videoStudioSourceImage
+		want   string
+	}{
+		{
+			name:   "unsupported MIME type",
+			source: videoStudioSourceImage{MIMEType: "image/gif", Data: png.Data},
+			want:   "must use image/png, image/jpeg, or image/webp",
+		},
+		{
+			name:   "missing data",
+			source: videoStudioSourceImage{MIMEType: "image/png"},
+			want:   "data is required",
+		},
+		{
+			name:   "data URL prefix",
+			source: videoStudioSourceImage{MIMEType: "image/png", Data: "data:image/png;base64," + png.Data},
+			want:   "without a data URL prefix",
+		},
+		{
+			name:   "invalid base64",
+			source: videoStudioSourceImage{MIMEType: "image/png", Data: "not-base64"},
+			want:   "valid base64 data",
+		},
+		{
+			name:   "MIME mismatch",
+			source: videoStudioSourceImage{MIMEType: "image/jpeg", Data: png.Data},
+			want:   "does not match its MIME type",
+		},
+		{
+			name: "too large",
+			source: videoStudioSourceImage{
+				MIMEType: "image/png",
+				Data:     base64.StdEncoding.EncodeToString(oversizedData),
+			},
+			want: "exceeds the 6 MB limit",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newVideoStudioHandlerForTest(eligibleVideoStudioKey(42), videoStudioRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				t.Fatal("invalid source image reached the gateway")
+				return nil, nil
+			}))
+			body, err := json.Marshal(map[string]any{
+				"api_key_id": 7, "prompt": "waves", "duration": 8,
+				"aspect_ratio": "16:9", "resolution": "720p", "source_image": test.source,
+			})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			videoStudioTestRouter(handler).ServeHTTP(recorder, request)
+			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
+			require.Contains(t, recorder.Body.String(), test.want)
+		})
+	}
+}
+
+func TestValidateVideoStudioSourceImageAcceptsSupportedFormats(t *testing.T) {
+	tests := []videoStudioSourceImage{
+		videoStudioTestPNGSourceImage(),
+		{MIMEType: "image/jpeg", Data: base64.StdEncoding.EncodeToString([]byte{0xff, 0xd8, 0xff, 0x00})},
+		{MIMEType: "image/webp", Data: base64.StdEncoding.EncodeToString([]byte("RIFF\x00\x00\x00\x00WEBP"))},
+	}
+	for _, source := range tests {
+		require.Empty(t, validateVideoStudioSourceImage(&source), source.MIMEType)
+	}
+}
+
+func TestVideoStudioGenerateRejectsOversizedRequestBody(t *testing.T) {
+	handler := newVideoStudioHandlerForTest(eligibleVideoStudioKey(42), videoStudioRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("oversized request reached the gateway")
+		return nil, nil
+	}))
+	body := `{"api_key_id":7,"prompt":"waves","duration":8,"aspect_ratio":"16:9","resolution":"720p","source_image":{"mime_type":"image/png","data":"` +
+		strings.Repeat("A", int(videoStudioMaxRequestBytes)) + `"}}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	videoStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, recorder.Code, recorder.Body.String())
+	require.Contains(t, recorder.Body.String(), "Video Studio request is too large")
 }
 
 func TestVideoStudioRequiresOwnedActivePermittedGrokKey(t *testing.T) {
@@ -231,6 +410,8 @@ func TestVideoStudioCapabilitiesExposeOnlySupportedOptions(t *testing.T) {
 	require.Equal(t, 8, envelope.Data.DefaultDuration)
 	require.Equal(t, videoStudioAspectRatios, envelope.Data.AspectRatios)
 	require.Equal(t, videoStudioResolutions, envelope.Data.Resolutions)
+	require.Equal(t, 1, envelope.Data.MaxInputImages)
+	require.Equal(t, videoStudioInputImageMIMETypes, envelope.Data.InputImageMIMETypes)
 }
 
 func TestVideoStudioPricingQuotesEverySupportedResolution(t *testing.T) {
@@ -238,15 +419,15 @@ func TestVideoStudioPricingQuotesEverySupportedResolution(t *testing.T) {
 	handler := newVideoStudioHandlerForTest(eligibleVideoStudioKey(42), nil)
 	handler.pricingQuoter = quoter
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/pricing", strings.NewReader(`{"api_key_id":7,"duration":10}`))
+	request := httptest.NewRequest(http.MethodPost, "/pricing", strings.NewReader(`{"api_key_id":7,"duration":10,"has_source_image":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	videoStudioTestRouter(handler).ServeHTTP(recorder, request)
 
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.Equal(t, []videoStudioQuoteCall{
-		{model: videoStudioModel, resolution: "480p", duration: 10},
-		{model: videoStudioModel, resolution: "720p", duration: 10},
-		{model: videoStudioModel, resolution: "1080p", duration: 10},
+		{model: videoStudioModel, resolution: "480p", duration: 10, hasSourceImage: true},
+		{model: videoStudioModel, resolution: "720p", duration: 10, hasSourceImage: true},
+		{model: videoStudioModel, resolution: "1080p", duration: 10, hasSourceImage: true},
 	}, quoter.calls)
 	var envelope struct {
 		Data videoStudioPricingResponse `json:"data"`

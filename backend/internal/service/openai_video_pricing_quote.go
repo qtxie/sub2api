@@ -36,6 +36,7 @@ func (s *OpenAIGatewayService) QuoteVideoPrice(
 	model string,
 	resolution string,
 	durationSeconds int,
+	hasInputImage bool,
 ) (*VideoPriceQuote, error) {
 	if s == nil || s.billingService == nil || apiKey == nil || apiKey.Group == nil {
 		return nil, ErrVideoPricingUnavailable
@@ -68,9 +69,14 @@ func (s *OpenAIGatewayService) QuoteVideoPrice(
 		baseMultiplier = s.ResolveUserGroupRateMultiplier(ctx, userID, groupID, group.RateMultiplier)
 	}
 
+	videoInputImageCount := 0
+	if hasInputImage && CanonicalGrokImagineVideoPriceFamily(model) == VideoPriceFamilyGrokImagineVideo15 {
+		videoInputImageCount = 1
+	}
 	cost := s.calculateOpenAIVideoCost(ctx, model, apiKey, &OpenAIForwardResult{
 		VideoCount:           1,
 		VideoResolution:      normalizedResolution,
+		VideoInputImageCount: videoInputImageCount,
 		VideoDurationSeconds: durationSeconds,
 	}, resolveVideoRateMultiplier(apiKey, baseMultiplier))
 	if cost == nil {

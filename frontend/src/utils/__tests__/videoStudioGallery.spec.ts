@@ -34,6 +34,18 @@ describe('Video Studio gallery normalization', () => {
     expect(normalizeVideoStudioGalleryItem(task({ duration: 16 }))).toBeNull()
   })
 
+  it('allows an image-only task without retaining the source image data', () => {
+    const result = normalizeVideoStudioGalleryItem(task({
+      prompt: '',
+      hasSourceImage: true,
+      sourceImage: { mime_type: 'image/png', data: 'raw-base64' }
+    }))
+
+    expect(result).toMatchObject({ prompt: '', hasSourceImage: true })
+    expect(result).not.toHaveProperty('sourceImage')
+    expect(normalizeVideoStudioGalleryItem(task({ prompt: '' }))).toBeNull()
+  })
+
   it('clamps progress and expires pending tasks past the 24-hour binding', () => {
     expect(normalizeVideoStudioGalleryItem(task({ progress: -5 }))?.progress).toBe(0)
     expect(normalizeVideoStudioGalleryItem(task({ progress: 130 }))?.progress).toBe(100)

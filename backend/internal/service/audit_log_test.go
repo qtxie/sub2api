@@ -76,6 +76,25 @@ func TestRedactAuditBody_BareSessionKeyRedacted(t *testing.T) {
 	}
 }
 
+func TestRedactAuditBody_VideoStudioSourceImageRedacted(t *testing.T) {
+	raw := []byte(`{
+		"api_key_id": 7,
+		"prompt": "animate this frame",
+		"source_image": {"mime_type": "image/png", "data": "private-image-base64"}
+	}`)
+	out := RedactAuditBody(raw, "application/json")
+
+	if strings.Contains(out, "private-image-base64") {
+		t.Fatalf("redacted body still contains the source image: %s", out)
+	}
+	if !strings.Contains(out, `"source_image":"***"`) {
+		t.Fatalf("source_image should be replaced as a unit: %s", out)
+	}
+	if !strings.Contains(out, "animate this frame") {
+		t.Fatalf("prompt should be preserved for accountability: %s", out)
+	}
+}
+
 // TestRedactAuditBody_AuthoritativeTablesSynced 覆盖曾经漏网的凭证字段：
 // 账号 credentials 敏感子键、支付渠道无分隔符密钥、字符串值内嵌凭证的 proxy_key / custom_key，
 // 以及 camelCase 等命名变体（归一化比对）。

@@ -111,9 +111,56 @@
               rows="10"
               :disabled="submitting"
             ></textarea>
+            <div v-if="supportsSourceImage" class="source-image-control">
+              <div class="source-image-header">
+                <div>
+                  <span class="control-label">{{ t('videoStudio.sourceImage') }}</span>
+                  <small>{{ t('videoStudio.sourceImageHint') }}</small>
+                </div>
+                <label
+                  class="source-image-upload-button"
+                  :class="{ disabled: readingSourceImage || submitting }"
+                >
+                  <Icon name="upload" size="sm" />
+                  <span>{{ sourceImage ? t('videoStudio.replaceSourceImage') : t('videoStudio.addSourceImage') }}</span>
+                  <input
+                    data-testid="video-source-image-input"
+                    type="file"
+                    :accept="acceptedSourceImageTypes"
+                    class="sr-only"
+                    :aria-label="t('videoStudio.addSourceImage')"
+                    :disabled="readingSourceImage || submitting"
+                    @change="handleSourceImageFile"
+                  />
+                </label>
+              </div>
+              <article v-if="sourceImage" class="source-image-item">
+                <button
+                  type="button"
+                  class="source-image-preview-button"
+                  :title="t('videoStudio.previewSourceImage')"
+                  @click="previewSourceImage = true"
+                >
+                  <img :src="sourceImageURL(sourceImage)" :alt="sourceImage.name" />
+                </button>
+                <div class="source-image-meta">
+                  <strong :title="sourceImage.name">{{ sourceImage.name }}</strong>
+                  <span>{{ formatFileSize(sourceImage.size) }}</span>
+                </div>
+                <button
+                  type="button"
+                  class="source-image-remove-button"
+                  :title="t('videoStudio.removeSourceImage')"
+                  :aria-label="t('videoStudio.removeSourceImage')"
+                  @click="removeSourceImage"
+                >
+                  <Icon name="x" size="sm" />
+                </button>
+              </article>
+            </div>
             <div class="prompt-submit-area">
               <span class="prompt-selection">
-                {{ form.aspectRatio }} · {{ form.resolution.toUpperCase() }} · {{ t('videoStudio.seconds', { count: form.duration }) }}
+                <template v-if="sourceImage">{{ t('videoStudio.imageToVideo') }} · </template>{{ form.aspectRatio }} · {{ form.resolution.toUpperCase() }} · {{ t('videoStudio.seconds', { count: form.duration }) }}
               </span>
               <button type="submit" class="generate-button" :disabled="!canGenerate">
                 <span v-if="submitting" class="loading-ring small"></span>
@@ -169,7 +216,7 @@
                     :src="videoURLs[item.id]"
                     controls
                     preload="metadata"
-                    :aria-label="item.prompt"
+                    :aria-label="item.prompt || t('videoStudio.imageToVideo')"
                   ></video>
                   <div v-else class="video-state" :class="`state-${displayStatus(item)}`">
                     <template v-if="item.status === 'pending' && !item.trackingPaused">
@@ -212,7 +259,7 @@
 
                 <div class="video-item-meta">
                   <div class="video-copy">
-                    <p>{{ item.prompt }}</p>
+                    <p>{{ item.prompt || t('videoStudio.imageToVideo') }}</p>
                     <span>{{ formatCreatedAt(item.createdAt) }} · {{ item.aspectRatio }} · {{ item.resolution.toUpperCase() }} · {{ t('videoStudio.seconds', { count: item.completedDuration || item.duration }) }}</span>
                   </div>
                   <div class="video-actions">
@@ -252,6 +299,30 @@
         </div>
       </form>
     </div>
+
+    <div
+      v-if="previewSourceImage && sourceImage"
+      class="preview-backdrop"
+      role="dialog"
+      aria-modal="true"
+      @click.self="previewSourceImage = false"
+    >
+      <div class="preview-dialog">
+        <button
+          type="button"
+          class="preview-close"
+          :title="t('videoStudio.closePreview')"
+          @click="previewSourceImage = false"
+        >
+          <Icon name="x" size="md" />
+        </button>
+        <img :src="sourceImageURL(sourceImage)" :alt="sourceImage.name" />
+        <div class="preview-caption">
+          <p>{{ sourceImage.name }}</p>
+          <span>{{ sourceImage.mime_type.replace('image/', '').toUpperCase() }} · {{ formatFileSize(sourceImage.size) }}</span>
+        </div>
+      </div>
+    </div>
   </AppLayout>
 </template>
 
@@ -275,6 +346,8 @@ import {
   type VideoStudioCapabilities,
   type VideoStudioPricingResponse,
   type VideoStudioResolution,
+  type VideoStudioSourceImage,
+  type VideoStudioSourceImageMimeType,
   type VideoStudioStatusResponse
 } from '@/api/videoStudio'
 import type { ApiKey } from '@/types'
@@ -307,8 +380,11 @@ const loadingGallery = ref(true)
 const loadingCapabilities = ref(false)
 const loadingPricing = ref(false)
 const submitting = ref(false)
+const readingSourceImage = ref(false)
 const capabilitiesError = ref('')
 const pricingError = ref('')
+const sourceImage = ref<VideoStudioSourceImageDraft | null>(null)
+const previewSourceImage = ref(false)
 const now = ref(Date.now())
 const videoURLs = reactive<Record<string, string>>({})
 const contentLoadingIds = ref(new Set<string>())
@@ -316,7 +392,15 @@ const contentControllers = new Map<string, AbortController>()
 let capabilitiesController: AbortController | null = null
 let pricingController: AbortController | null = null
 let generationController: AbortController | null = null
+let sourceImageReadVersion = 0
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
+
+interface VideoStudioSourceImageDraft extends VideoStudioSourceImage {
+  name: string
+  size: number
+}
+
+const maxSourceImageBytes = 6 * 1024 * 1024
 
 const form = reactive({
   apiKeyId: 0,
@@ -331,6 +415,12 @@ const minDuration = computed(() => capabilities.value?.min_duration || VIDEO_STU
 const maxDuration = computed(() => capabilities.value?.max_duration || VIDEO_STUDIO_DURATIONS.max)
 const aspectRatios = computed(() => capabilities.value?.aspect_ratios || [...VIDEO_STUDIO_ASPECT_RATIOS])
 const resolutions = computed(() => capabilities.value?.resolutions || [...VIDEO_STUDIO_RESOLUTIONS])
+const supportedSourceImageTypes = computed<VideoStudioSourceImageMimeType[]>(() => {
+  if (!capabilities.value?.max_input_images) return []
+  return capabilities.value.input_image_mime_types
+})
+const supportsSourceImage = computed(() => supportedSourceImageTypes.value.length > 0)
+const acceptedSourceImageTypes = computed(() => supportedSourceImageTypes.value.join(','))
 const selectedPrice = computed(() => pricing.value?.prices.find((price) => price.resolution === form.resolution))
 const selectedUnitPrice = computed(() => selectedPrice.value?.unit_price ?? null)
 const selectedTotalPrice = computed(() => selectedPrice.value?.total_price
@@ -343,10 +433,11 @@ const formattedEstimate = computed(() => {
 })
 const canGenerate = computed(() => {
   return !submitting.value
+    && !readingSourceImage.value
     && !loadingCapabilities.value
     && Boolean(capabilities.value)
     && form.apiKeyId > 0
-    && form.prompt.trim().length > 0
+    && (form.prompt.trim().length > 0 || Boolean(sourceImage.value))
     && Number.isInteger(form.duration)
     && form.duration >= minDuration.value
     && form.duration <= maxDuration.value
@@ -394,6 +485,7 @@ async function loadKeys() {
 }
 
 async function loadCapabilities() {
+  invalidateSourceImageRead()
   capabilitiesController?.abort()
   capabilities.value = null
   capabilitiesError.value = ''
@@ -411,6 +503,11 @@ async function loadCapabilities() {
     form.duration = clampDuration(form.duration)
     if (!result.aspect_ratios.includes(form.aspectRatio)) form.aspectRatio = result.aspect_ratios[0]
     if (!result.resolutions.includes(form.resolution)) form.resolution = result.resolutions[0]
+    if (sourceImage.value && (
+      result.max_input_images < 1 || !result.input_image_mime_types.includes(sourceImage.value.mime_type)
+    )) {
+      removeSourceImage()
+    }
     await loadPricing()
   } catch (error: any) {
     if (capabilitiesController === controller && !isCanceled(error)) {
@@ -431,12 +528,21 @@ async function loadPricing() {
   if (!form.apiKeyId || !capabilities.value) return
   const requestedKeyId = form.apiKeyId
   const requestedDuration = form.duration
+  const requestedHasSourceImage = Boolean(sourceImage.value)
   const controller = new AbortController()
   pricingController = controller
   loadingPricing.value = true
   try {
-    const result = await getVideoStudioPricing(requestedKeyId, requestedDuration, controller.signal)
-    if (pricingController === controller && form.apiKeyId === requestedKeyId && form.duration === requestedDuration) {
+    const result = await getVideoStudioPricing(
+      requestedKeyId,
+      requestedDuration,
+      requestedHasSourceImage,
+      controller.signal
+    )
+    if (pricingController === controller
+      && form.apiKeyId === requestedKeyId
+      && form.duration === requestedDuration
+      && Boolean(sourceImage.value) === requestedHasSourceImage) {
       pricing.value = result
     }
   } catch (error: any) {
@@ -488,30 +594,42 @@ async function pauseTasksWithoutKeys() {
 
 async function generate() {
   if (!canGenerate.value) return
-  const prompt = form.prompt.trim()
+  const snapshot = {
+    userId: userId.value,
+    apiKeyId: form.apiKeyId,
+    prompt: form.prompt.trim(),
+    duration: form.duration,
+    aspectRatio: form.aspectRatio,
+    resolution: form.resolution,
+    sourceImage: sourceImage.value
+      ? { mime_type: sourceImage.value.mime_type, data: sourceImage.value.data }
+      : undefined
+  }
   submitting.value = true
   generationController = new AbortController()
   try {
     const result = await generateVideo({
-      api_key_id: form.apiKeyId,
-      prompt,
-      duration: form.duration,
-      aspect_ratio: form.aspectRatio,
-      resolution: form.resolution
+      api_key_id: snapshot.apiKeyId,
+      ...(snapshot.prompt ? { prompt: snapshot.prompt } : {}),
+      duration: snapshot.duration,
+      aspect_ratio: snapshot.aspectRatio,
+      resolution: snapshot.resolution,
+      ...(snapshot.sourceImage ? { source_image: snapshot.sourceImage } : {})
     }, generationController.signal)
     const createdAt = Date.now()
     const item: VideoStudioGalleryItem = {
-      id: videoStudioTaskID(userId.value, result.request_id),
+      id: videoStudioTaskID(snapshot.userId, result.request_id),
       requestId: result.request_id,
-      userId: userId.value,
-      apiKeyId: form.apiKeyId,
+      userId: snapshot.userId,
+      apiKeyId: snapshot.apiKeyId,
       createdAt,
       updatedAt: createdAt,
-      prompt,
+      prompt: snapshot.prompt,
+      ...(snapshot.sourceImage ? { hasSourceImage: true } : {}),
       model: VIDEO_STUDIO_MODEL,
-      duration: form.duration,
-      aspectRatio: form.aspectRatio,
-      resolution: form.resolution,
+      duration: snapshot.duration,
+      aspectRatio: snapshot.aspectRatio,
+      resolution: snapshot.resolution,
       status: result.status,
       trackingPaused: false
     }
@@ -529,6 +647,83 @@ async function generate() {
     submitting.value = false
     generationController = null
   }
+}
+
+function isSourceImageMimeType(value: string): value is VideoStudioSourceImageMimeType {
+  return supportedSourceImageTypes.value.includes(value as VideoStudioSourceImageMimeType)
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error || new Error('Failed to read source image'))
+    reader.onload = () => {
+      const result = String(reader.result || '')
+      const separator = result.indexOf(',')
+      if (separator < 0 || !result.slice(separator + 1)) {
+        reject(new Error('Source image did not contain image data'))
+        return
+      }
+      resolve(result.slice(separator + 1))
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+async function handleSourceImageFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || readingSourceImage.value) return
+  if (!isSourceImageMimeType(file.type)) {
+    appStore.showError(t('videoStudio.sourceImageFormatUnsupported'))
+    return
+  }
+  if (file.size <= 0 || file.size > maxSourceImageBytes) {
+    appStore.showError(t('videoStudio.sourceImageTooLarge'))
+    return
+  }
+
+  const readVersion = ++sourceImageReadVersion
+  readingSourceImage.value = true
+  try {
+    const data = await readFileAsBase64(file)
+    if (readVersion !== sourceImageReadVersion) return
+    sourceImage.value = {
+      name: file.name,
+      size: file.size,
+      mime_type: file.type,
+      data
+    }
+    previewSourceImage.value = false
+  } catch {
+    if (readVersion === sourceImageReadVersion) {
+      appStore.showError(t('videoStudio.sourceImageReadFailed'))
+    }
+  } finally {
+    if (readVersion === sourceImageReadVersion) readingSourceImage.value = false
+  }
+}
+
+function sourceImageURL(image: VideoStudioSourceImage): string {
+  return `data:${image.mime_type};base64,${image.data}`
+}
+
+function removeSourceImage() {
+  invalidateSourceImageRead()
+  sourceImage.value = null
+  previewSourceImage.value = false
+}
+
+function invalidateSourceImageRead() {
+  sourceImageReadVersion += 1
+  readingSourceImage.value = false
+}
+
+function formatFileSize(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`
 }
 
 async function handlePollResult(target: VideoStudioPollingTarget, result: VideoStudioStatusResponse) {
@@ -783,6 +978,9 @@ watch(() => form.duration, (duration, previousDuration) => {
   }
   if (duration !== previousDuration && capabilities.value) void loadPricing()
 })
+watch(() => Boolean(sourceImage.value), (hasSourceImage, previousHasSourceImage) => {
+  if (hasSourceImage !== previousHasSourceImage && capabilities.value) void loadPricing()
+})
 
 onMounted(async () => {
   elapsedTimer = setInterval(() => { now.value = Date.now() }, 1000)
@@ -792,6 +990,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  invalidateSourceImageRead()
   capabilitiesController?.abort()
   pricingController?.abort()
   generationController?.abort()
@@ -845,6 +1044,22 @@ onBeforeUnmount(() => {
 .prompt-header { display: flex; min-height: 3rem; align-items: center; justify-content: space-between; padding: 0 1.25rem; }
 .prompt-header > span { color: rgb(156 163 175); font-size: .6875rem; font-variant-numeric: tabular-nums; }
 .studio-prompt { display: block; min-height: 16rem; max-height: 40rem; width: calc(100% - 2.5rem); margin: 0 1.25rem; resize: vertical; padding: .875rem; line-height: 1.65; }
+.source-image-control { display: flex; margin: .875rem 1.25rem 0; flex-direction: column; gap: .625rem; border: 1px solid rgb(229 231 235); border-radius: 6px; background: rgb(249 250 251 / .72); padding: .75rem; }
+.source-image-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .75rem; }
+.source-image-header > div { display: flex; min-width: 0; flex-direction: column; gap: .15rem; }
+.source-image-header small { color: rgb(107 114 128); font-size: .6875rem; }
+.source-image-upload-button { display: inline-flex; min-height: 2.25rem; flex: 0 0 auto; cursor: pointer; align-items: center; justify-content: center; gap: .4rem; border: 1px solid rgb(209 213 219); border-radius: 6px; background: white; padding: .375rem .75rem; color: rgb(55 65 81); font-size: .75rem; font-weight: 650; }
+.source-image-upload-button:hover:not(.disabled) { border-color: rgb(153 246 228); color: rgb(13 148 136); }
+.source-image-upload-button.disabled { cursor: not-allowed; opacity: .45; }
+.source-image-item { display: grid; min-width: 0; grid-template-columns: 3.5rem minmax(0, 1fr) 2rem; align-items: center; gap: .625rem; }
+.source-image-preview-button { width: 3.5rem; height: 3.5rem; overflow: hidden; border: 1px solid rgb(209 213 219); border-radius: 6px; background: white; }
+.source-image-preview-button:hover { border-color: rgb(94 234 212); }
+.source-image-preview-button img { width: 100%; height: 100%; object-fit: cover; }
+.source-image-meta { display: flex; min-width: 0; flex-direction: column; gap: .2rem; }
+.source-image-meta strong { overflow: hidden; color: rgb(55 65 81); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
+.source-image-meta span { color: rgb(107 114 128); font-size: .6875rem; }
+.source-image-remove-button { display: inline-flex; width: 2rem; height: 2rem; align-items: center; justify-content: center; border-radius: 5px; color: rgb(107 114 128); }
+.source-image-remove-button:hover { background: rgb(254 242 242); color: rgb(220 38 38); }
 .prompt-submit-area { display: flex; min-height: 4.25rem; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 1.25rem 1rem; }
 .prompt-selection { min-width: 0; overflow: hidden; color: rgb(107 114 128); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
 .generate-button { display: inline-flex; min-height: 2.625rem; flex: 0 0 auto; align-items: center; justify-content: center; gap: .5rem; border-radius: 6px; background: rgb(15 118 110); padding: .625rem 1rem; color: white; font-size: .8125rem; font-weight: 700; }
@@ -884,6 +1099,13 @@ onBeforeUnmount(() => {
 .video-actions button:disabled { cursor: not-allowed; opacity: .35; }
 .loading-ring { width: 1.45rem; height: 1.45rem; border: 2px solid rgb(156 163 175 / .35); border-top-color: rgb(20 184 166); border-radius: 50%; animation: spin .8s linear infinite; }
 .loading-ring.small { width: 1rem; height: 1rem; border-color: rgb(255 255 255 / .4); border-top-color: white; }
+.preview-backdrop { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; background: rgb(0 0 0 / .78); padding: 1rem; }
+.preview-dialog { position: relative; display: flex; max-height: calc(100vh - 2rem); max-width: min(72rem, calc(100vw - 2rem)); flex-direction: column; overflow: hidden; border-radius: 8px; background: rgb(17 24 39); box-shadow: 0 24px 60px rgb(0 0 0 / .35); }
+.preview-dialog > img { min-height: 0; max-height: calc(100vh - 8rem); max-width: 100%; object-fit: contain; }
+.preview-close { position: absolute; right: .75rem; top: .75rem; z-index: 1; display: inline-flex; width: 2.25rem; height: 2.25rem; align-items: center; justify-content: center; border: 1px solid rgb(255 255 255 / .25); border-radius: 6px; background: rgb(17 24 39 / .72); color: white; }
+.preview-caption { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .875rem 1rem; color: white; }
+.preview-caption p { min-width: 0; overflow: hidden; font-size: .8125rem; text-overflow: ellipsis; white-space: nowrap; }
+.preview-caption span { flex: 0 0 auto; color: rgb(156 163 175); font-size: .6875rem; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 900px) {
@@ -900,6 +1122,8 @@ onBeforeUnmount(() => {
   .studio-grid { gap: .75rem; }
   .studio-control-scroll, .gallery-grid { padding-inline: .875rem; }
   .studio-prompt { width: calc(100% - 1.75rem); margin-inline: .875rem; }
+  .source-image-control { margin-inline: .875rem; }
+  .source-image-header { align-items: flex-start; flex-direction: column; }
   .prompt-header, .prompt-submit-area, .gallery-header { padding-inline: .875rem; }
   .prompt-submit-area { align-items: stretch; flex-direction: column; }
   .generate-button { width: 100%; }
@@ -912,6 +1136,10 @@ onBeforeUnmount(() => {
 :global(.dark .studio-controls), :global(.dark .studio-workspace), :global(.dark .video-item) { border-color: rgb(51 65 85); background: rgb(15 23 42 / .94); }
 :global(.dark .control-label), :global(.dark .stepper output), :global(.dark .video-copy p) { color: rgb(203 213 225); }
 :global(.dark .studio-select), :global(.dark .studio-prompt) { border-color: rgb(71 85 105); background: rgb(15 23 42); color: rgb(226 232 240); }
+:global(.dark .source-image-control) { border-color: rgb(51 65 85); background: rgb(15 23 42 / .5); }
+:global(.dark .source-image-upload-button), :global(.dark .source-image-preview-button) { border-color: rgb(71 85 105); background: rgb(30 41 59); color: rgb(203 213 225); }
+:global(.dark .source-image-header small), :global(.dark .source-image-meta span) { color: rgb(148 163 184); }
+:global(.dark .source-image-meta strong) { color: rgb(203 213 225); }
 :global(.dark .stepper), :global(.dark .segmented-control), :global(.dark .studio-price-area), :global(.dark .studio-gallery), :global(.dark .toolbar-icon-button) { border-color: rgb(51 65 85); }
 :global(.dark .stepper button:first-child), :global(.dark .stepper button:last-child), :global(.dark .segmented-control button) { border-color: rgb(51 65 85); }
 :global(.dark .segmented-control) { background: rgb(15 23 42); }

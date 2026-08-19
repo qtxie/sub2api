@@ -446,6 +446,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 				BillingModel:         firstNonEmptyString(result.BillingModel, requestModel),
 				UpstreamModel:        result.UpstreamModel,
 				VideoResolution:      result.VideoResolution,
+				VideoInputImageCount: result.VideoInputImageCount,
 				VideoDurationSeconds: result.VideoDurationSeconds,
 				OriginalModel:        clientRequestedModel(c, requestModel),
 				// Wall-clock start for usage duration_ms: create accepted → first done discovery.
@@ -615,6 +616,9 @@ func prepareGrokVideoCompletionBilling(
 		// Official status omits resolution — always prefer create request.
 		if strings.TrimSpace(pending.VideoResolution) != "" {
 			merged.VideoResolution = pending.VideoResolution
+		}
+		if pending.VideoInputImageCount > 0 {
+			merged.VideoInputImageCount = pending.VideoInputImageCount
 		}
 		if merged.VideoDurationSeconds <= 0 {
 			merged.VideoDurationSeconds = pending.VideoDurationSeconds

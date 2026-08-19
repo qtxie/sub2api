@@ -357,6 +357,7 @@ type GrokVideoPendingBilling struct {
 	BillingModel         string `json:"billing_model,omitempty"`
 	UpstreamModel        string `json:"upstream_model,omitempty"`
 	VideoResolution      string `json:"video_resolution,omitempty"`
+	VideoInputImageCount int    `json:"video_input_image_count,omitempty"`
 	VideoDurationSeconds int    `json:"video_duration_seconds,omitempty"`
 	OriginalModel        string `json:"original_model,omitempty"`
 	// CreatedAt is when the gateway accepted the async create (RFC3339Nano UTC).
@@ -558,6 +559,7 @@ func ExtractGrokVideoBillingFromStatusBody(statusBody []byte, pending *GrokVideo
 	if !IsGrokVideoStatusBillable(statusBody) {
 		return nil
 	}
+	usage, _ := extractOpenAIUsageFromJSONBytes(statusBody)
 	model := ""
 	billingModel := ""
 	upstreamModel := ""
@@ -610,13 +612,28 @@ func ExtractGrokVideoBillingFromStatusBody(statusBody []byte, pending *GrokVideo
 	if responseID == "" {
 		responseID = strings.TrimSpace(requestID)
 	}
+	videoInputImageCount := 0
+	if pending != nil {
+		videoInputImageCount = pending.VideoInputImageCount
+	}
+	// A missing or pre-upgrade pending snapshot cannot provide the request's
+	// image count. Official status usage still tells us whether image input was
+	// consumed; Video Studio supports exactly one source image, so one is the
+	// conservative recoverable count. A persisted count greater than one (for
+	// reference-to-video) remains authoritative.
+	if videoInputImageCount == 0 && usage.ImageInputTokens > 0 &&
+		CanonicalGrokImagineVideoPriceFamily(firstNonEmpty(billingModel, model)) == VideoPriceFamilyGrokImagineVideo15 {
+		videoInputImageCount = 1
+	}
 	return &OpenAIForwardResult{
 		ResponseID:           responseID,
+		Usage:                usage,
 		Model:                model,
 		BillingModel:         billingModel,
 		UpstreamModel:        upstreamModel,
 		VideoCount:           1,
 		VideoResolution:      resolution,
+		VideoInputImageCount: videoInputImageCount,
 		VideoDurationSeconds: durationSeconds,
 	}
 }
@@ -769,6 +786,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		ImageOutputSizes:     usage.ImageOutputSizes,
 		VideoCount:           usage.VideoCount,
 		VideoResolution:      usage.VideoResolution,
+		VideoInputImageCount: usage.VideoInputImageCount,
 		VideoDurationSeconds: usage.VideoDurationSeconds,
 	}, nil
 }
@@ -895,11 +913,13 @@ func (s *OpenAIGatewayService) forwardGrokMediaVideoContent(
 	}
 	if billed := ExtractGrokVideoBillingFromStatusBody(statusBody, nil, requestID); billed != nil {
 		result.ResponseID = firstNonEmpty(billed.ResponseID, strings.TrimSpace(requestID))
+		result.Usage = billed.Usage
 		result.Model = billed.Model
 		result.BillingModel = billed.BillingModel
 		result.UpstreamModel = billed.UpstreamModel
 		result.VideoCount = billed.VideoCount
 		result.VideoResolution = billed.VideoResolution
+		result.VideoInputImageCount = billed.VideoInputImageCount
 		result.VideoDurationSeconds = billed.VideoDurationSeconds
 	}
 	return result, nil
@@ -1144,7 +1164,11 @@ func sanitizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, conte
 }
 
 func (r GrokMediaRequestInfo) HasInputImage() bool {
-	return len(r.InputImageURLs) > 0 || len(r.Uploads) > 0
+	return r.InputImageCount() > 0
+}
+
+func (r GrokMediaRequestInfo) InputImageCount() int {
+	return len(r.InputImageURLs) + len(r.Uploads)
 }
 
 // NormalizeGrokMediaModelForEndpoint resolves the built-in upstream model alias
@@ -1177,6 +1201,7 @@ type grokMediaUsageMetadata struct {
 	ImageOutputSizes     []string
 	VideoCount           int
 	VideoResolution      string
+	VideoInputImageCount int
 	VideoDurationSeconds int
 }
 
@@ -1197,6 +1222,9 @@ func grokMediaUsageFromResponse(endpoint GrokMediaEndpoint, requestInfo GrokMedi
 		// Billable VideoCount is set later when status polling observes video.url.
 		meta.ResponseID = extractGrokMediaVideoRequestID(responseBody)
 		meta.VideoResolution = requestInfo.Resolution
+		if CanonicalGrokImagineVideoPriceFamily(requestInfo.Model) == VideoPriceFamilyGrokImagineVideo15 {
+			meta.VideoInputImageCount = requestInfo.InputImageCount()
+		}
 		meta.VideoDurationSeconds = requestInfo.DurationSeconds
 	case GrokMediaEndpointVideoStatus:
 		// Prefer status-body URL success + upstream duration/resolution when present.
@@ -1208,6 +1236,7 @@ func grokMediaUsageFromResponse(endpoint GrokMediaEndpoint, requestInfo GrokMedi
 				meta.BillingModel = billed.BillingModel
 				meta.VideoCount = billed.VideoCount
 				meta.VideoResolution = billed.VideoResolution
+				meta.VideoInputImageCount = billed.VideoInputImageCount
 				meta.VideoDurationSeconds = billed.VideoDurationSeconds
 			}
 		}

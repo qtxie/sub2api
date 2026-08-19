@@ -220,6 +220,36 @@ func TestForwardGrokMediaContentFetchesValidatedSignedURLWithoutCredentials(t *t
 	require.True(t, HTTPUpstreamRedirectsDisabled(upstream.requests[1].Context()))
 }
 
+func TestForwardGrokMediaContentReturnsRecoveredImageBillingUsage(t *testing.T) {
+	upstream := &grokMediaContentUpstreamStub{
+		responses: []*http.Response{
+			grokMediaContentStatusResponse(`{
+				"status":"done",
+				"model":"grok-imagine-video-1.5",
+				"video":{"url":"https://vidgen.x.ai/signed-token/xai-video-task-1.mp4","duration":8},
+				"usage":{"input_tokens":120,"input_tokens_details":{"image_tokens":100,"text_tokens":20}}
+			}`),
+			{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"video/mp4"}},
+				Body:       io.NopCloser(strings.NewReader("video-payload")),
+			},
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	c, _ := grokMediaContentTestContext(http.MethodGet, "https://api.example/v1/videos/task-1/content", nil)
+
+	result, err := svc.ForwardGrokMedia(
+		context.Background(), c, grokMediaContentTestAccount(),
+		GrokMediaEndpointVideoContent, "task-1", nil, "",
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, result.VideoInputImageCount)
+	require.Equal(t, 100, result.Usage.ImageInputTokens)
+}
+
 func TestForwardGrokMediaContentFollowsAuthenticatedSub2APIRelay(t *testing.T) {
 	for _, statusURL := range []string{
 		`/v1/videos/task-1/content`,

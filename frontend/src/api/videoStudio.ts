@@ -8,6 +8,12 @@ export const VIDEO_STUDIO_RESOLUTIONS = ['480p', '720p', '1080p'] as const
 export type VideoStudioAspectRatio = typeof VIDEO_STUDIO_ASPECT_RATIOS[number]
 export type VideoStudioResolution = typeof VIDEO_STUDIO_RESOLUTIONS[number]
 export type VideoStudioStatus = 'pending' | 'done' | 'failed' | 'expired'
+export type VideoStudioSourceImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp'
+
+export interface VideoStudioSourceImage {
+  mime_type: VideoStudioSourceImageMimeType
+  data: string
+}
 
 export interface VideoStudioCapabilities {
   model: typeof VIDEO_STUDIO_MODEL
@@ -17,6 +23,8 @@ export interface VideoStudioCapabilities {
   default_duration: number
   aspect_ratios: VideoStudioAspectRatio[]
   resolutions: VideoStudioResolution[]
+  max_input_images: number
+  input_image_mime_types: VideoStudioSourceImageMimeType[]
 }
 
 export interface VideoStudioResolutionPrice {
@@ -34,10 +42,11 @@ export interface VideoStudioPricingResponse {
 
 export interface VideoStudioGenerationRequest {
   api_key_id: number
-  prompt: string
+  prompt?: string
   duration: number
   aspect_ratio: VideoStudioAspectRatio
   resolution: VideoStudioResolution
+  source_image?: VideoStudioSourceImage
 }
 
 export interface VideoStudioGenerationResponse {
@@ -58,6 +67,7 @@ export interface VideoStudioStatusResponse {
   error?: string
 }
 
+const videoGenerationTimeoutMs = 10 * 60 * 1000
 const videoContentTimeoutMs = 10 * 60 * 1000
 
 export async function getVideoStudioCapabilities(
@@ -75,11 +85,12 @@ export async function getVideoStudioCapabilities(
 export async function getVideoStudioPricing(
   apiKeyId: number,
   duration: number,
+  hasSourceImage = false,
   signal?: AbortSignal
 ): Promise<VideoStudioPricingResponse> {
   const { data } = await apiClient.post<unknown>(
     '/video-studio/pricing',
-    { api_key_id: apiKeyId, duration },
+    { api_key_id: apiKeyId, duration, ...(hasSourceImage ? { has_source_image: true } : {}) },
     { signal }
   )
   return normalizePricing(data, duration)
@@ -89,7 +100,11 @@ export async function generateVideo(
   payload: VideoStudioGenerationRequest,
   signal?: AbortSignal
 ): Promise<VideoStudioGenerationResponse> {
-  const { data } = await apiClient.post<unknown>('/video-studio/generations', payload, { signal })
+  const { data } = await apiClient.post<unknown>(
+    '/video-studio/generations',
+    payload,
+    { signal, timeout: videoGenerationTimeoutMs }
+  )
   return normalizeGeneration(data)
 }
 
@@ -146,6 +161,11 @@ function normalizeCapabilities(value: unknown): VideoStudioCapabilities {
   ) || VIDEO_STUDIO_DURATIONS.default
   const aspectRatios = enumArray(payload?.aspect_ratios, VIDEO_STUDIO_ASPECT_RATIOS)
   const resolutions = enumArray(payload?.resolutions, VIDEO_STUDIO_RESOLUTIONS)
+  const maxInputImages = boundedInteger(payload?.max_input_images, 0, 1) ?? 0
+  const inputImageMimeTypes = enumArray(
+    payload?.input_image_mime_types,
+    ['image/png', 'image/jpeg', 'image/webp'] as const
+  )
   if (aspectRatios.length === 0 || resolutions.length === 0) {
     throw new Error('Video Studio returned no supported video options')
   }
@@ -156,7 +176,9 @@ function normalizeCapabilities(value: unknown): VideoStudioCapabilities {
     max_duration: maxDuration,
     default_duration: defaultDuration,
     aspect_ratios: aspectRatios,
-    resolutions
+    resolutions,
+    max_input_images: maxInputImages,
+    input_image_mime_types: maxInputImages > 0 ? inputImageMimeTypes : []
   }
 }
 

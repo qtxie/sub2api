@@ -742,18 +742,20 @@ func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
 			RateMultiplier: multiplier, Resolver: s.resolver, Resolved: resolved,
 		})
 		if err == nil {
-			return cost
+			return addGrokVideoInputImageCost(cost, result.VideoInputImageCount, multiplier)
 		}
 	}
 	groupConfig := videoPriceConfigFromAPIKey(apiKey)
 	if apiKeyHasConfiguredVideoPrice(apiKey, billingModel, resolution) {
-		return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+		cost := s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+		return addGrokVideoInputImageCost(cost, result.VideoInputImageCount, multiplier)
 	}
 	if refreshed := s.apiKeyWithFreshGroupMediaPricing(ctx, apiKey); refreshed != apiKey {
 		apiKey = refreshed
 		groupConfig = videoPriceConfigFromAPIKey(apiKey)
 		if apiKeyHasConfiguredVideoPrice(apiKey, billingModel, resolution) {
-			return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+			cost := s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+			return addGrokVideoInputImageCost(cost, result.VideoInputImageCount, multiplier)
 		}
 	}
 	if resolved != nil && resolved.Source == PricingSourceChannel &&
@@ -778,12 +780,29 @@ func (s *OpenAIGatewayService) calculateOpenAIVideoCost(
 		})
 		if err == nil {
 			cost.BillingMode = string(BillingModeVideo)
-			return cost
+			return addGrokVideoInputImageCost(cost, result.VideoInputImageCount, multiplier)
 		}
 		logger.LegacyPrintf("service.openai_gateway", "Calculate video channel cost failed: %v", err)
 	}
 
-	return s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+	cost := s.billingService.CalculateVideoCost(billingModel, resolution, videoCount, durationSeconds, groupConfig, multiplier)
+	return addGrokVideoInputImageCost(cost, result.VideoInputImageCount, multiplier)
+}
+
+const grokImagineVideo15InputImagePrice = 0.01
+
+func addGrokVideoInputImageCost(cost *CostBreakdown, imageCount int, multiplier float64) *CostBreakdown {
+	if cost == nil || imageCount <= 0 {
+		return cost
+	}
+	if multiplier < 0 {
+		multiplier = 0
+	}
+	inputImageCost := grokImagineVideo15InputImagePrice * float64(imageCount)
+	cost.ImageInputCost += inputImageCost
+	cost.TotalCost += inputImageCost
+	cost.ActualCost += inputImageCost * multiplier
+	return cost
 }
 
 func (s *OpenAIGatewayService) apiKeyWithFreshGroupMediaPricing(ctx context.Context, apiKey *APIKey) *APIKey {

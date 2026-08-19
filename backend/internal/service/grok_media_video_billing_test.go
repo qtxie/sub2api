@@ -60,6 +60,7 @@ func TestExtractGrokVideoBillingFromStatusBodyPrefersUpstreamParams(t *testing.T
 		BillingModel:         "pending-billing",
 		UpstreamModel:        "pending-upstream",
 		VideoResolution:      VideoBillingResolution720P,
+		VideoInputImageCount: 1,
 		VideoDurationSeconds: 8,
 	}
 	// Official completed body from docs.x.ai Video Generation.
@@ -74,6 +75,7 @@ func TestExtractGrokVideoBillingFromStatusBodyPrefersUpstreamParams(t *testing.T
 	require.Equal(t, "grok-imagine-video-1.5", result.Model)
 	// Resolution is not in official status response — use create-time request.
 	require.Equal(t, VideoBillingResolution720P, result.VideoResolution)
+	require.Equal(t, 1, result.VideoInputImageCount)
 	// Duration prefers official video.duration.
 	require.Equal(t, 12, result.VideoDurationSeconds)
 }
@@ -110,14 +112,52 @@ func TestExtractGrokVideoBillingRejectsNonDoneStatus(t *testing.T) {
 	))
 }
 
+func TestExtractGrokVideoBillingRecoversSingleInputImageFromOfficialUsage(t *testing.T) {
+	t.Parallel()
+	status := []byte(`{
+		"status":"done",
+		"model":"grok-imagine-video-1.5",
+		"video":{"url":"https://vidgen.x.ai/a.mp4","duration":8},
+		"usage":{"input_tokens":120,"input_tokens_details":{"image_tokens":100,"text_tokens":20}}
+	}`)
+
+	withoutPending := ExtractGrokVideoBillingFromStatusBody(status, nil, "req-image")
+	require.NotNil(t, withoutPending)
+	require.Equal(t, 1, withoutPending.VideoInputImageCount)
+	require.Equal(t, 100, withoutPending.Usage.ImageInputTokens)
+
+	preUpgradePending := ExtractGrokVideoBillingFromStatusBody(status, &GrokVideoPendingBilling{
+		Model: "grok-imagine-video-1.5",
+	}, "req-old-pending")
+	require.NotNil(t, preUpgradePending)
+	require.Equal(t, 1, preUpgradePending.VideoInputImageCount)
+
+	legacy := ExtractGrokVideoBillingFromStatusBody(
+		[]byte(`{"status":"done","model":"grok-imagine-video","video":{"url":"https://vidgen.x.ai/a.mp4","duration":8},"usage":{"input_tokens_details":{"image_tokens":100}}}`),
+		nil,
+		"req-legacy",
+	)
+	require.NotNil(t, legacy)
+	require.Zero(t, legacy.VideoInputImageCount)
+}
+
 func TestGrokMediaUsageFromResponseVideoCreateDoesNotBill(t *testing.T) {
 	t.Parallel()
-	info := GrokMediaRequestInfo{Model: "grok-imagine-video", Resolution: "720p", DurationSeconds: 10}
+	info := GrokMediaRequestInfo{
+		Model: "grok-imagine-video-1.5", Resolution: "720p", DurationSeconds: 10,
+		InputImageURLs: []string{"data:image/png;base64,AAAA"},
+	}
 	meta := grokMediaUsageFromResponse(GrokMediaEndpointVideosGenerations, info, []byte(`{"request_id":"v1"}`))
 	require.Equal(t, "v1", meta.ResponseID)
 	require.Equal(t, 0, meta.VideoCount)
 	require.Equal(t, 10, meta.VideoDurationSeconds)
 	require.Equal(t, VideoBillingResolution720P, meta.VideoResolution)
+	require.Equal(t, 1, meta.VideoInputImageCount)
+
+	legacy := grokMediaUsageFromResponse(GrokMediaEndpointVideosGenerations, GrokMediaRequestInfo{
+		Model: "grok-imagine-video", InputImageURLs: info.InputImageURLs,
+	}, []byte(`{"request_id":"legacy"}`))
+	require.Zero(t, legacy.VideoInputImageCount)
 }
 
 func TestGrokMediaUsageFromResponseVideoStatusBillsOnOfficialDone(t *testing.T) {
@@ -130,6 +170,15 @@ func TestGrokMediaUsageFromResponseVideoStatusBillsOnOfficialDone(t *testing.T) 
 	require.Equal(t, 1, meta.VideoCount)
 	require.Equal(t, 9, meta.VideoDurationSeconds)
 	require.Equal(t, "grok-imagine-video-1.5", meta.Model)
+	require.Zero(t, meta.VideoInputImageCount)
+
+	imageBacked := grokMediaUsageFromResponse(
+		GrokMediaEndpointVideoStatus,
+		GrokMediaRequestInfo{},
+		[]byte(`{"status":"done","model":"grok-imagine-video-1.5","video":{"url":"https://vidgen.x.ai/a.mp4","duration":9},"usage":{"input_tokens_details":{"image_tokens":100}}}`),
+	)
+	require.Equal(t, 1, imageBacked.VideoInputImageCount)
+	require.Equal(t, 100, imageBacked.Usage.ImageInputTokens)
 
 	// Official non-done must not set billable units.
 	pendingOnly := grokMediaUsageFromResponse(

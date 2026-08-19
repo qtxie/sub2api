@@ -2168,6 +2168,7 @@ func TestGrokVideoBillingUsesSeparateVideoRateMultiplier(t *testing.T) {
 			ImageCount:           0,
 			VideoCount:           1,
 			VideoResolution:      VideoBillingResolution480P,
+			VideoInputImageCount: 1,
 			VideoDurationSeconds: 1,
 			Duration:             time.Second,
 		},
@@ -2195,8 +2196,9 @@ func TestGrokVideoBillingUsesSeparateVideoRateMultiplier(t *testing.T) {
 	require.Equal(t, "grok-imagine-video-1.5", usageRepo.lastLog.Model)
 	require.Equal(t, 0, usageRepo.lastLog.ImageCount)
 	require.Nil(t, usageRepo.lastLog.ImageSize)
-	require.InDelta(t, 0.08, usageRepo.lastLog.TotalCost, 1e-12)
-	require.InDelta(t, 0.02, usageRepo.lastLog.ActualCost, 1e-12)
+	require.InDelta(t, 0.09, usageRepo.lastLog.TotalCost, 1e-12)
+	require.InDelta(t, 0.0225, usageRepo.lastLog.ActualCost, 1e-12)
+	require.InDelta(t, 0.01, usageRepo.lastLog.ImageInputCost, 1e-12)
 	require.InDelta(t, 0.25, usageRepo.lastLog.RateMultiplier, 1e-12)
 	require.NotNil(t, usageRepo.lastLog.BillingMode)
 	require.Equal(t, string(BillingModeVideo), *usageRepo.lastLog.BillingMode)

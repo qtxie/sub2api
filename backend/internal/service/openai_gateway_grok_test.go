@@ -1291,6 +1291,7 @@ func TestForwardGrokMediaVideoGenerationReturnsUsageAndResponseID(t *testing.T) 
 	require.JSONEq(t, `{"model":"grok-imagine-video-1.5","prompt":"waves","resolution":"720p","duration":10}`, string(upstream.lastBody))
 	require.Equal(t, "video-request-123", result.ResponseID)
 	require.Equal(t, "grok-imagine-video-1.5", result.BillingModel)
+	require.Zero(t, result.VideoInputImageCount)
 	require.Equal(t, 3, result.Usage.InputTokens)
 	require.Equal(t, 4, result.Usage.OutputTokens)
 	// Create accepts the job only — VideoCount stays 0 until status returns video.url.
@@ -1382,6 +1383,7 @@ func TestForwardGrokMediaVideoGenerationPreservesImageToVideoModel(t *testing.T)
 	require.JSONEq(t, `{"model":"grok-imagine-video-1.5","prompt":"animate","image":{"url":"data:image/png;base64,aW1n"}}`, string(upstream.lastBody))
 	require.Equal(t, "video-request-456", result.ResponseID)
 	require.Equal(t, "grok-imagine-video-1.5", result.BillingModel)
+	require.Equal(t, 1, result.VideoInputImageCount)
 	// 未指定 duration 时按上游默认 8 秒计费。
 	require.Equal(t, VideoBillingDefaultDurationSeconds, result.VideoDurationSeconds)
 }

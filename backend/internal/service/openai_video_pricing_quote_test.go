@@ -35,7 +35,7 @@ func TestOpenAIQuoteVideoPriceUsesConfiguredPriceAndUserMultiplier(t *testing.T)
 	)
 	gateway := &OpenAIGatewayService{billingService: &BillingService{}, userGroupRateResolver: resolver}
 
-	quote, err := gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "720p", 10)
+	quote, err := gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "720p", 10, false)
 	require.NoError(t, err)
 	require.Equal(t, VideoPricingKindFixed, quote.PricingKind)
 	require.NotNil(t, quote.UnitPrice)
@@ -54,7 +54,7 @@ func TestOpenAIQuoteVideoPriceHonorsIndependentFreeVideoRate(t *testing.T) {
 	}}
 	gateway := &OpenAIGatewayService{billingService: &BillingService{}}
 
-	quote, err := gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "1080p", 15)
+	quote, err := gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "1080p", 15, true)
 	require.NoError(t, err)
 	require.NotNil(t, quote.UnitPrice)
 	require.NotNil(t, quote.TotalPrice)
@@ -66,12 +66,71 @@ func TestOpenAIQuoteVideoPriceRejectsValuesSettlementWouldNormalize(t *testing.T
 	key := &APIKey{Group: &Group{}}
 	gateway := &OpenAIGatewayService{billingService: &BillingService{}}
 
-	_, err := gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "4k", 8)
+	_, err := gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "4k", 8, false)
 	require.ErrorIs(t, err, ErrInvalidVideoPricingInput)
 
-	_, err = gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "720p", 16)
+	_, err = gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "720p", 16, false)
 	require.ErrorIs(t, err, ErrInvalidVideoPricingInput)
 
-	_, err = gateway.QuoteVideoPrice(context.Background(), nil, 7, "grok-imagine-video-1.5", "720p", 8)
+	_, err = gateway.QuoteVideoPrice(context.Background(), nil, 7, "grok-imagine-video-1.5", "720p", 8, false)
 	require.True(t, errors.Is(err, ErrVideoPricingUnavailable))
+}
+
+func TestOpenAIQuoteVideoPriceIncludesGrok15InputImageFee(t *testing.T) {
+	configuredPrice := 0.20
+	key := &APIKey{Group: &Group{
+		VideoRateIndependent: true,
+		VideoRateMultiplier:  1.5,
+		VideoModelPrices: map[string]map[string]float64{
+			VideoPriceFamilyGrokImagineVideo15: {VideoBillingResolution720P: configuredPrice},
+		},
+	}}
+	gateway := &OpenAIGatewayService{billingService: &BillingService{}}
+
+	quote, err := gateway.QuoteVideoPrice(context.Background(), key, 7, "grok-imagine-video-1.5", "720p", 10, true)
+	require.NoError(t, err)
+	require.NotNil(t, quote.UnitPrice)
+	require.NotNil(t, quote.TotalPrice)
+	require.InDelta(t, (configuredPrice*10+grokImagineVideo15InputImagePrice)*1.5, *quote.TotalPrice, 1e-10)
+	require.InDelta(t, *quote.TotalPrice/10, *quote.UnitPrice, 1e-10)
+}
+
+func TestCalculateOpenAIVideoCostAddsGrok15InputFeeAcrossFixedPricingSources(t *testing.T) {
+	model := "grok-imagine-video-1.5"
+	result := &OpenAIForwardResult{
+		VideoCount: 1, VideoResolution: VideoBillingResolution720P,
+		VideoInputImageCount: 1, VideoDurationSeconds: 1,
+	}
+
+	t.Run("default", func(t *testing.T) {
+		gateway := &OpenAIGatewayService{billingService: &BillingService{}}
+		cost := gateway.calculateOpenAIVideoCost(context.Background(), model, &APIKey{Group: &Group{}}, result, 2)
+		require.InDelta(t, defaultGrokImagineVideo15Price720P+grokImagineVideo15InputImagePrice, cost.TotalCost, 1e-12)
+		require.InDelta(t, (defaultGrokImagineVideo15Price720P+grokImagineVideo15InputImagePrice)*2, cost.ActualCost, 1e-12)
+		require.InDelta(t, grokImagineVideo15InputImagePrice, cost.ImageInputCost, 1e-12)
+	})
+
+	t.Run("group", func(t *testing.T) {
+		price := 0.20
+		gateway := &OpenAIGatewayService{billingService: &BillingService{}}
+		key := &APIKey{Group: &Group{VideoModelPrices: map[string]map[string]float64{
+			VideoPriceFamilyGrokImagineVideo15: {VideoBillingResolution720P: price},
+		}}}
+		cost := gateway.calculateOpenAIVideoCost(context.Background(), model, key, result, 1.5)
+		require.InDelta(t, price+grokImagineVideo15InputImagePrice, cost.TotalCost, 1e-12)
+		require.InDelta(t, (price+grokImagineVideo15InputImagePrice)*1.5, cost.ActualCost, 1e-12)
+	})
+
+	t.Run("channel", func(t *testing.T) {
+		groupID := int64(501)
+		price := 0.30
+		gateway := &OpenAIGatewayService{
+			billingService: &BillingService{},
+			resolver:       newOpenAIImageChannelPricingResolverForTest(t, groupID, model, price),
+		}
+		key := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+		cost := gateway.calculateOpenAIVideoCost(context.Background(), model, key, result, 1.25)
+		require.InDelta(t, price+grokImagineVideo15InputImagePrice, cost.TotalCost, 1e-12)
+		require.InDelta(t, (price+grokImagineVideo15InputImagePrice)*1.25, cost.ActualCost, 1e-12)
+	})
 }
