@@ -8,10 +8,17 @@ export type ImageQuality = 'auto' | 'low' | 'medium' | 'high'
 export type ImageBackground = 'auto' | 'opaque'
 export type ImageStudioProvider = 'openai' | 'gemini' | 'grok'
 
-interface ImageStudioGenerationRequestBase {
+export interface ImageStudioSourceImage {
+  mime_type: 'image/png' | 'image/jpeg' | 'image/webp'
+  /** Base64 payload without a data URL prefix. */
+  data: string
+}
+
+export interface ImageStudioGenerationRequestBase {
   api_key_id: number
   prompt: string
   model: string
+  source_images?: ImageStudioSourceImage[]
 }
 
 export interface OpenAIImageStudioGenerationRequest extends ImageStudioGenerationRequestBase {
@@ -34,10 +41,16 @@ export interface GrokImageStudioGenerationRequest extends ImageStudioGenerationR
   n: number
 }
 
+export interface GrokImageStudioEditRequest extends ImageStudioGenerationRequestBase {
+  source_images: ImageStudioSourceImage[]
+  aspect_ratio?: string
+}
+
 export type ImageStudioGenerationRequest =
   | OpenAIImageStudioGenerationRequest
   | GeminiImageStudioGenerationRequest
   | GrokImageStudioGenerationRequest
+  | GrokImageStudioEditRequest
 
 export interface ImageStudioModelCapability {
   id: string
@@ -49,6 +62,7 @@ export interface ImageStudioModelCapability {
   backgrounds: ImageBackground[]
   output_formats: ImageOutputFormat[]
   max_images: number
+  max_input_images: number
   supports_custom_size: boolean
 }
 
@@ -297,6 +311,7 @@ function normalizeCapabilities(value: unknown): ImageStudioCapabilitiesResponse 
       const id = stringValue(model?.id) || stringValue(model?.model)
       if (!id) return null
       const maxImages = positiveInteger(model?.max_images ?? model?.maxImages) || 1
+      const maxInputImages = nonNegativeInteger(model?.max_input_images ?? model?.maxInputImages)
       return {
         id,
         label: stringValue(model?.label) || stringValue(model?.name) || id,
@@ -307,6 +322,7 @@ function normalizeCapabilities(value: unknown): ImageStudioCapabilitiesResponse 
         backgrounds: enumArray(model?.backgrounds, ['auto', 'opaque'] as const),
         output_formats: enumArray(model?.output_formats ?? model?.outputFormats, ['png', 'jpeg', 'webp'] as const),
         max_images: maxImages,
+        max_input_images: maxInputImages,
         supports_custom_size: model?.supports_custom_size === true || model?.supportsCustomSize === true
       }
     })
@@ -373,6 +389,10 @@ function enumArray<T extends string>(value: unknown, allowed: readonly T[]): T[]
 
 function positiveInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0
 }
 
 function isImageStudioProvider(value: string): value is ImageStudioProvider {

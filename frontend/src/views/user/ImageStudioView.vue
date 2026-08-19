@@ -122,7 +122,7 @@
               </p>
             </div>
 
-            <div v-if="provider !== 'openai' && aspectRatioOptions.length" class="control-group">
+            <div v-if="provider !== 'openai' && !(provider === 'grok' && sourceImages.length === 1) && aspectRatioOptions.length" class="control-group">
               <label for="image-studio-aspect-ratio" class="control-label">{{ t('imageStudio.aspectRatio') }}</label>
               <div class="size-select-shell">
                 <span class="size-shape" :class="selectedSizeShape" aria-hidden="true"></span>
@@ -145,7 +145,7 @@
               </select>
             </div>
 
-            <div v-if="provider === 'grok' && resolutionOptions.length" class="control-group">
+            <div v-if="provider === 'grok' && !hasSourceImages && resolutionOptions.length" class="control-group">
               <label for="image-studio-resolution" class="control-label">{{ t('imageStudio.resolution') }}</label>
               <select id="image-studio-resolution" v-model="form.resolution" class="studio-select">
                 <option v-for="resolution in resolutionOptions" :key="resolution" :value="resolution">
@@ -154,7 +154,7 @@
               </select>
             </div>
 
-            <fieldset v-if="qualityOptions.length" class="control-group">
+            <fieldset v-if="qualityOptions.length && !(provider === 'grok' && hasSourceImages)" class="control-group">
               <legend class="control-label">{{ t('imageStudio.quality') }}</legend>
               <div class="segmented-control" :class="segmentColumnClass(qualityOptions.length)">
                 <button
@@ -196,7 +196,7 @@
               </div>
             </fieldset>
 
-            <div v-if="maxImageCount > 1" class="control-group count-control">
+            <div v-if="maxImageCount > 1 && !(provider === 'grok' && hasSourceImages)" class="control-group count-control">
               <span class="control-label">{{ t('imageStudio.count') }}</span>
               <div class="stepper">
                 <button type="button" :title="t('imageStudio.decreaseCount')" :disabled="form.count <= 1" @click="form.count--">-</button>
@@ -230,6 +230,54 @@
               :placeholder="t('imageStudio.promptPlaceholder')"
               rows="10"
             ></textarea>
+            <div v-if="maxInputImageCount > 0" class="source-images-control">
+              <div class="source-images-header">
+                <div class="source-images-label">
+                  <span class="control-label">{{ t('imageStudio.sourceImages') }}</span>
+                  <small>{{ t('imageStudio.sourceImagesCount', { count: sourceImages.length, max: maxInputImageCount }) }}</small>
+                </div>
+                <label
+                  class="source-image-upload-button"
+                  :class="{ disabled: readingSourceImages || sourceImages.length >= maxInputImageCount }"
+                >
+                  <Icon name="upload" size="sm" />
+                  <span>{{ t('imageStudio.addSourceImages') }}</span>
+                  <input
+                    data-testid="source-image-input"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    :multiple="maxInputImageCount > 1"
+                    class="sr-only"
+                    :aria-label="t('imageStudio.addSourceImages')"
+                    :disabled="readingSourceImages || sourceImages.length >= maxInputImageCount"
+                    @change="handleSourceImageFiles"
+                  />
+                </label>
+              </div>
+              <div v-if="sourceImages.length" class="source-image-list">
+                <article v-for="image in sourceImages" :key="image.id" class="source-image-item">
+                  <button
+                    type="button"
+                    class="source-image-preview-button"
+                    :title="t('imageStudio.previewSourceImage')"
+                    @click="openSourceImagePreview(image)"
+                  >
+                    <img :src="sourceImageURL(image)" :alt="image.name" />
+                  </button>
+                  <button
+                    type="button"
+                    class="source-image-remove-button"
+                    :title="t('imageStudio.removeSourceImage')"
+                    :aria-label="t('imageStudio.removeSourceImage')"
+                    @click="removeSourceImage(image.id)"
+                  >
+                    <Icon name="x" size="xs" />
+                  </button>
+                  <span :title="image.name">{{ image.name }}</span>
+                </article>
+              </div>
+              <small class="source-images-hint">{{ t('imageStudio.sourceImagesHint') }}</small>
+            </div>
             <div class="prompt-submit-area">
               <div class="prompt-request-summary">
                 <span class="prompt-selection">{{ selectionSummary }}</span>
@@ -300,6 +348,7 @@
                       : t('imageStudio.generating') }}
                   </strong>
                   <small :id="`generation-prompt-${job.id}`" class="placeholder-prompt">{{ job.snapshot.prompt }}</small>
+                  <small v-if="job.snapshot.sourceImages.length">{{ t('imageStudio.sourceImagesAttached', { count: job.snapshot.sourceImages.length }) }}</small>
                   <small>{{ t('imageStudio.elapsed', { seconds: elapsedForJob(job) }) }}</small>
                   <button
                     type="button"
@@ -316,6 +365,7 @@
                   <Icon name="exclamationCircle" size="lg" />
                   <strong>{{ t('imageStudio.generationFailed') }}</strong>
                   <small :id="`generation-prompt-${job.id}`" class="placeholder-prompt">{{ job.snapshot.prompt }}</small>
+                  <small v-if="job.snapshot.sourceImages.length">{{ t('imageStudio.sourceImagesAttached', { count: job.snapshot.sourceImages.length }) }}</small>
                   <small>{{ job.error }}</small>
                   <div class="placeholder-actions">
                     <button
@@ -347,7 +397,7 @@
                   class="gallery-image-button"
                   :style="aspectRatioStyle(item.aspectRatio || item.size)"
                   :title="t('imageStudio.preview')"
-                  @click="previewItem = item"
+                  @click="openGalleryPreview(item)"
                 >
                   <img :src="item.imageSrc" :alt="item.prompt" loading="lazy" />
                 </button>
@@ -375,15 +425,15 @@
       </form>
     </div>
 
-    <div v-if="previewItem" class="preview-backdrop" role="dialog" aria-modal="true" @click.self="previewItem = null">
+    <div v-if="previewItem || previewSourceImage" class="preview-backdrop" role="dialog" aria-modal="true" @click.self="closePreview">
       <div class="preview-dialog">
-        <button type="button" class="preview-close" :title="t('imageStudio.closePreview')" @click="previewItem = null">
+        <button type="button" class="preview-close" :title="t('imageStudio.closePreview')" @click="closePreview">
           <Icon name="x" size="md" />
         </button>
-        <img :src="previewItem.imageSrc" :alt="previewItem.prompt" />
+        <img :src="previewSource" :alt="previewAlt" />
         <div class="preview-caption">
-          <p>{{ previewItem.prompt }}</p>
-          <span>{{ galleryItemSummary(previewItem) }}</span>
+          <p>{{ previewCaption }}</p>
+          <span>{{ previewDetail }}</span>
         </div>
       </div>
     </div>
@@ -408,7 +458,8 @@ import {
   type ImageStudioImage,
   type ImageStudioModelCapability,
   type ImageStudioPricingResponse,
-  type ImageStudioProvider
+  type ImageStudioProvider,
+  type ImageStudioSourceImage
 } from '@/api/imageStudio'
 import type { ApiKey } from '@/types'
 import { useAppStore } from '@/stores/app'
@@ -447,6 +498,7 @@ interface ImageGenerationSettings {
   count: number
   expectedCount: number
   aspectToken: string
+  sourceImages: ImageStudioSourceImage[]
 }
 
 interface ImageGenerationSnapshot extends ImageGenerationSettings {
@@ -460,6 +512,17 @@ interface ImageGenerationJob {
   startedAt: number
   snapshot: ImageGenerationSnapshot
 }
+
+interface SourceImageDraft extends ImageStudioSourceImage {
+  id: string
+  name: string
+  size: number
+}
+
+const sourceImageMimeTypes = ['image/png', 'image/jpeg', 'image/webp'] as const
+const maxSourceImageBytes = 6 * 1024 * 1024
+// Base64 expands binary data by roughly 4/3. A 14 MB binary cap keeps the inline JSON below 20 MB.
+const maxSourceImagesTotalBytes = 14 * 1024 * 1024
 
 const { t, locale } = useI18n()
 const appStore = useAppStore()
@@ -477,6 +540,9 @@ const loadingPricing = ref(false)
 const pricing = ref<ImageStudioPricingResponse | null>(null)
 const pricingError = ref('')
 const previewItem = ref<ImageStudioGalleryItem | null>(null)
+const previewSourceImage = ref<SourceImageDraft | null>(null)
+const sourceImages = ref<SourceImageDraft[]>([])
+const readingSourceImages = ref(false)
 const generationJobs = ref<ImageGenerationJob[]>([])
 const generationNow = ref(Date.now())
 const generationControllers = new Map<string, AbortController>()
@@ -532,6 +598,8 @@ const backgroundOptions = computed(() => (selectedModelCapability.value?.backgro
 })))
 const outputFormats = computed(() => selectedModelCapability.value?.output_formats || [])
 const maxImageCount = computed(() => provider.value === 'gemini' ? 1 : selectedModelCapability.value?.max_images || 1)
+const maxInputImageCount = computed(() => selectedModelCapability.value?.max_input_images || 0)
+const hasSourceImages = computed(() => sourceImages.value.length > 0)
 const selectedSizeOption = computed(() => sizeOptions.value.find((option) => option.value === form.size))
 const sizeValidation = computed(() => validateGPTImage2Size(form.size))
 const customWidthBounds = computed(() => gptImage2DimensionBounds(Number(customSize.height)))
@@ -560,7 +628,7 @@ const sizeErrorMessage = computed(() => {
   return t(messages[sizeValidation.value.error || 'format'])
 })
 const canGenerate = computed(() => {
-  if (loadingCapabilities.value || !capabilities.value || !selectedModelCapability.value) return false
+  if (loadingCapabilities.value || readingSourceImages.value || !capabilities.value || !selectedModelCapability.value) return false
   if (form.apiKeyId <= 0 || !form.prompt.trim()) return false
   if (provider.value === 'openai') {
     return sizeValidation.value.valid
@@ -572,6 +640,9 @@ const canGenerate = computed(() => {
   if (provider.value === 'gemini') {
     return imageSizeOptions.value.length === 0 || imageSizeOptions.value.includes(form.imageSize)
   }
+  if (provider.value === 'grok' && hasSourceImages.value) {
+    return sourceImages.value.length === 1 || aspectRatioOptions.value.includes(form.aspectRatio)
+  }
   return resolutionOptions.value.includes(form.resolution)
     && (form.quality === 'low' || form.quality === 'medium')
     && qualityOptions.value.some((option) => option.value === form.quality)
@@ -580,6 +651,12 @@ const canGenerate = computed(() => {
 const selectionSummary = computed(() => {
   if (provider.value === 'openai') return [selectedSizeLabel.value, selectedQualityLabel.value, form.count].join(' · ')
   if (provider.value === 'gemini') return [form.aspectRatio, form.imageSize].filter(Boolean).join(' · ')
+  if (provider.value === 'grok' && hasSourceImages.value) {
+    return [
+      t('imageStudio.sourceImagesAttached', { count: sourceImages.value.length }),
+      ...(sourceImages.value.length > 1 ? [form.aspectRatio] : [])
+    ].join(' · ')
+  }
   if (provider.value === 'grok') return [form.aspectRatio, form.resolution.toUpperCase(), selectedQualityLabel.value, form.count].filter(Boolean).join(' · ')
   return t('imageStudio.selectApiKey')
 })
@@ -600,13 +677,22 @@ const selectedPrice = computed(() => {
     || modelPrices[0]
 })
 const selectedUnitPrice = computed(() => selectedPrice.value?.unit_price ?? null)
-const pricedImageCount = computed(() => provider.value === 'gemini' ? 1 : form.count)
+const pricedImageCount = computed(() => provider.value === 'gemini' || (provider.value === 'grok' && hasSourceImages.value) ? 1 : form.count)
 const activeGenerationCount = computed(() => generationJobs.value.filter((job) => job.status === 'generating').length)
 const formattedEstimate = computed(() => {
   if (loadingPricing.value) return '...'
   if (selectedUnitPrice.value != null) return formatPrice(selectedUnitPrice.value * pricedImageCount.value)
   if (pricing.value?.pricing_kind === 'usage_based') return t('imageStudio.usageBasedPricing')
   return '—'
+})
+const previewSource = computed(() => previewSourceImage.value ? sourceImageURL(previewSourceImage.value) : previewItem.value?.imageSrc || '')
+const previewAlt = computed(() => previewSourceImage.value?.name || previewItem.value?.prompt || '')
+const previewCaption = computed(() => previewSourceImage.value?.name || previewItem.value?.prompt || '')
+const previewDetail = computed(() => {
+  if (previewSourceImage.value) {
+    return `${previewSourceImage.value.mime_type.replace('image/', '').toUpperCase()} · ${formatFileSize(previewSourceImage.value.size)}`
+  }
+  return previewItem.value ? galleryItemSummary(previewItem.value) : ''
 })
 
 function storageKey(): string {
@@ -799,10 +885,130 @@ function applyModelCapabilities() {
   form.background = validOrFirst(form.background, model.backgrounds) as ImageBackground
   form.outputFormat = validOrFirst(form.outputFormat, model.output_formats) as ImageOutputFormat
   form.count = provider.value === 'gemini' ? 1 : Math.min(Math.max(1, form.count), model.max_images)
+  reconcileSourceImages(model.max_input_images)
 }
 
 function validOrFirst<T extends string>(current: string, values: T[]): T | '' {
   return values.includes(current as T) ? current as T : values[0] || ''
+}
+
+function reconcileSourceImages(limit: number) {
+  const normalizedLimit = Math.max(0, limit || 0)
+  if (sourceImages.value.length <= normalizedLimit) return
+  const removed = sourceImages.value.slice(normalizedLimit)
+  sourceImages.value = sourceImages.value.slice(0, normalizedLimit)
+  if (previewSourceImage.value && removed.some((image) => image.id === previewSourceImage.value?.id)) {
+    previewSourceImage.value = null
+  }
+  appStore.showWarning(t('imageStudio.sourceImagesTrimmed', { max: normalizedLimit }))
+}
+
+function isSourceImageMime(value: string): value is ImageStudioSourceImage['mime_type'] {
+  return (sourceImageMimeTypes as readonly string[]).includes(value)
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error || new Error('Failed to read source image'))
+    reader.onload = () => {
+      const result = String(reader.result || '')
+      const separator = result.indexOf(',')
+      if (separator < 0 || !result.slice(separator + 1)) {
+        reject(new Error('Source image did not contain image data'))
+        return
+      }
+      resolve(result.slice(separator + 1))
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+async function handleSourceImageFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (readingSourceImages.value || files.length === 0) return
+
+  const limit = maxInputImageCount.value
+  const slots = Math.max(0, limit - sourceImages.value.length)
+  if (slots === 0) {
+    appStore.showError(t('imageStudio.sourceImageLimitReached', { max: limit }))
+    return
+  }
+  readingSourceImages.value = true
+  try {
+    const next: SourceImageDraft[] = []
+    let reachedLimit = false
+    let totalBytes = sourceImages.value.reduce((sum, image) => sum + image.size, 0)
+    for (const file of files) {
+      if (!isSourceImageMime(file.type)) {
+        appStore.showError(t('imageStudio.sourceImageFormatUnsupported', { name: file.name }))
+        continue
+      }
+      if (file.size > maxSourceImageBytes) {
+        appStore.showError(t('imageStudio.sourceImageTooLarge', { name: file.name }))
+        continue
+      }
+      if (next.length >= slots) {
+        reachedLimit = true
+        continue
+      }
+      if (totalBytes + file.size > maxSourceImagesTotalBytes) {
+        appStore.showError(t('imageStudio.sourceImagesTotalTooLarge'))
+        continue
+      }
+      try {
+        const data = await readFileAsBase64(file)
+        next.push({
+          id: globalThis.crypto?.randomUUID?.() || `source-image-${Date.now()}-${Math.random()}`,
+          name: file.name,
+          size: file.size,
+          mime_type: file.type,
+          data
+        })
+        totalBytes += file.size
+      } catch {
+        appStore.showError(t('imageStudio.sourceImageReadFailed', { name: file.name }))
+      }
+    }
+    if (reachedLimit) appStore.showError(t('imageStudio.sourceImageLimitReached', { max: limit }))
+
+    const remaining = Math.max(0, maxInputImageCount.value - sourceImages.value.length)
+    sourceImages.value = [...sourceImages.value, ...next.slice(0, remaining)]
+  } finally {
+    readingSourceImages.value = false
+  }
+}
+
+function sourceImageURL(image: ImageStudioSourceImage): string {
+  return sanitizeImageStudioSource(`data:${image.mime_type};base64,${image.data}`)
+}
+
+function removeSourceImage(id: string) {
+  sourceImages.value = sourceImages.value.filter((image) => image.id !== id)
+  if (previewSourceImage.value?.id === id) previewSourceImage.value = null
+}
+
+function openSourceImagePreview(image: SourceImageDraft) {
+  previewItem.value = null
+  previewSourceImage.value = image
+}
+
+function openGalleryPreview(item: ImageStudioGalleryItem) {
+  previewSourceImage.value = null
+  previewItem.value = item
+}
+
+function closePreview() {
+  previewItem.value = null
+  previewSourceImage.value = null
+}
+
+function formatFileSize(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`
 }
 
 async function loadPricing() {
@@ -886,7 +1092,13 @@ function resultFormat(result: ImageStudioImage, snapshot: ImageGenerationSnapsho
 }
 
 function generationPayload(settings: ImageGenerationSettings): ImageStudioGenerationRequest {
-  const base = { api_key_id: settings.apiKeyId, prompt: settings.prompt, model: settings.model }
+  const sourceImages = settings.sourceImages.map((image) => ({ ...image }))
+  const base = {
+    api_key_id: settings.apiKeyId,
+    prompt: settings.prompt,
+    model: settings.model,
+    ...(sourceImages.length ? { source_images: sourceImages } : {})
+  }
   if (settings.provider === 'gemini') {
     return {
       ...base,
@@ -895,6 +1107,15 @@ function generationPayload(settings: ImageGenerationSettings): ImageStudioGenera
     }
   }
   if (settings.provider === 'grok') {
+    if (sourceImages.length) {
+      return {
+        ...base,
+        source_images: sourceImages,
+        ...(sourceImages.length > 1 && settings.aspectRatio !== 'auto'
+          ? { aspect_ratio: settings.aspectRatio }
+          : {})
+      }
+    }
     return {
       ...base,
       aspect_ratio: settings.aspectRatio,
@@ -915,6 +1136,9 @@ function generationPayload(settings: ImageGenerationSettings): ImageStudioGenera
 
 function captureGenerationSnapshot(): ImageGenerationSnapshot | null {
   if (!provider.value) return null
+  const sourceImageSnapshot = sourceImages.value.map(({ mime_type, data }) => ({ mime_type, data }))
+  const isGrokEdit = provider.value === 'grok' && sourceImageSnapshot.length > 0
+  const effectiveAspectRatio = isGrokEdit && sourceImageSnapshot.length === 1 ? 'auto' : form.aspectRatio
   const settings: ImageGenerationSettings = {
     userId: userId.value,
     apiKeyId: form.apiKeyId,
@@ -922,15 +1146,16 @@ function captureGenerationSnapshot(): ImageGenerationSnapshot | null {
     model: form.model,
     prompt: form.prompt.trim(),
     size: form.size,
-    aspectRatio: form.aspectRatio,
+    aspectRatio: effectiveAspectRatio,
     imageSize: form.imageSize,
     resolution: form.resolution,
     quality: form.quality,
     background: form.background,
     outputFormat: form.outputFormat,
-    count: provider.value === 'gemini' ? 1 : form.count,
-    expectedCount: provider.value === 'gemini' ? 1 : form.count,
-    aspectToken: provider.value === 'openai' ? form.size : form.aspectRatio
+    count: provider.value === 'gemini' || isGrokEdit ? 1 : form.count,
+    expectedCount: provider.value === 'gemini' || isGrokEdit ? 1 : form.count,
+    aspectToken: provider.value === 'openai' ? form.size : effectiveAspectRatio,
+    sourceImages: sourceImageSnapshot
   }
   return Object.freeze({
     ...settings,
@@ -964,6 +1189,7 @@ function galleryItemsForResults(
   return results.map((result, index): ImageStudioGalleryItem | null => {
     const imageSrc = resultSource(result, snapshot)
     if (!imageSrc) return null
+    const isGrokEdit = snapshot.provider === 'grok' && snapshot.sourceImages.length > 0
     const size = snapshot.provider === 'openai' ? snapshot.size : snapshot.aspectRatio
     return {
       id: globalThis.crypto?.randomUUID?.() || `${createdAt}-${index}-${Math.random()}`,
@@ -977,8 +1203,8 @@ function galleryItemsForResults(
       size,
       ...(snapshot.provider !== 'openai' ? { aspectRatio: snapshot.aspectRatio } : {}),
       ...(snapshot.provider === 'gemini' && snapshot.imageSize ? { imageSize: snapshot.imageSize } : {}),
-      ...(snapshot.provider === 'grok' ? { resolution: snapshot.resolution } : {}),
-      ...(snapshot.provider !== 'gemini' ? { quality: snapshot.quality } : {}),
+      ...(snapshot.provider === 'grok' && !isGrokEdit ? { resolution: snapshot.resolution } : {}),
+      ...(snapshot.provider !== 'gemini' && !isGrokEdit ? { quality: snapshot.quality } : {}),
       ...(snapshot.provider === 'openai' ? { background: snapshot.background } : {}),
       outputFormat: resultFormat(result, snapshot),
       imageSrc
@@ -1194,6 +1420,21 @@ onBeforeUnmount(() => {
 .prompt-header > span { color: rgb(156 163 175); font-size: .6875rem; font-variant-numeric: tabular-nums; }
 .studio-prompt { display: block; min-height: 16rem; max-height: 40rem; width: calc(100% - 2.5rem); margin: 0 1.25rem; resize: vertical; padding: .875rem; line-height: 1.65; }
 .studio-select:focus, .studio-prompt:focus { border-color: rgb(13 148 136); box-shadow: 0 0 0 3px rgb(20 184 166 / .12); }
+.source-images-control { display: flex; margin: .875rem 1.25rem 0; flex-direction: column; gap: .625rem; border: 1px solid rgb(229 231 235); border-radius: 6px; background: rgb(249 250 251 / .72); padding: .75rem; }
+.source-images-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .75rem; }
+.source-images-label { display: flex; min-width: 0; align-items: baseline; gap: .5rem; }
+.source-images-label small, .source-images-hint { color: rgb(107 114 128); font-size: .6875rem; }
+.source-image-upload-button { display: inline-flex; min-height: 2.25rem; flex: 0 0 auto; cursor: pointer; align-items: center; justify-content: center; gap: .4rem; border: 1px solid rgb(209 213 219); border-radius: 6px; background: white; padding: .375rem .75rem; color: rgb(55 65 81); font-size: .75rem; font-weight: 650; }
+.source-image-upload-button:hover:not(.disabled) { border-color: rgb(153 246 228); color: rgb(13 148 136); }
+.source-image-upload-button.disabled { cursor: not-allowed; opacity: .45; }
+.source-image-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(4.75rem, 5.5rem)); gap: .625rem; }
+.source-image-item { position: relative; min-width: 0; }
+.source-image-preview-button { display: block; width: 100%; aspect-ratio: 1; overflow: hidden; border: 1px solid rgb(209 213 219); border-radius: 6px; background: white; }
+.source-image-preview-button:hover { border-color: rgb(94 234 212); }
+.source-image-preview-button img { height: 100%; width: 100%; object-fit: cover; }
+.source-image-remove-button { position: absolute; right: -.3rem; top: -.3rem; display: inline-flex; height: 1.35rem; width: 1.35rem; align-items: center; justify-content: center; border: 1px solid rgb(229 231 235); border-radius: 9999px; background: white; color: rgb(75 85 99); box-shadow: 0 1px 2px rgb(0 0 0 / .1); }
+.source-image-remove-button:hover { border-color: rgb(254 202 202); color: rgb(220 38 38); }
+.source-image-item > span { display: block; overflow: hidden; margin-top: .25rem; color: rgb(107 114 128); font-size: .625rem; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .size-select-shell { position: relative; }
 .size-select { padding-left: 2.75rem; }
 .size-shape { position: absolute; left: .875rem; top: 50%; z-index: 1; flex: 0 0 auto; border: 1.5px solid currentColor; border-radius: 2px; color: rgb(107 114 128); pointer-events: none; transform: translateY(-50%); }
@@ -1286,6 +1527,9 @@ onBeforeUnmount(() => {
 :global(.dark .studio-controls), :global(.dark .studio-workspace), :global(.dark .gallery-item) { border-color: rgb(51 65 85); background: rgb(15 23 42 / .92); }
 :global(.dark .control-label), :global(.dark .gallery-item-meta p), :global(.dark .generation-placeholder strong) { color: rgb(203 213 225); }
 :global(.dark .studio-select), :global(.dark .studio-prompt) { border-color: rgb(71 85 105); background: rgb(30 41 59); color: rgb(241 245 249); }
+:global(.dark .source-images-control) { border-color: rgb(51 65 85); background: rgb(15 23 42 / .5); }
+:global(.dark .source-images-label small), :global(.dark .source-images-hint), :global(.dark .source-image-item > span) { color: rgb(148 163 184); }
+:global(.dark .source-image-upload-button), :global(.dark .source-image-preview-button), :global(.dark .source-image-remove-button) { border-color: rgb(71 85 105); background: rgb(30 41 59); color: rgb(203 213 225); }
 :global(.dark .dimension-input-shell input) { border-color: rgb(71 85 105); background: rgb(30 41 59); color: rgb(241 245 249); }
 :global(.dark .custom-size-field) { color: rgb(148 163 184); }
 :global(.dark .swap-size-button) { border-color: rgb(71 85 105); color: rgb(148 163 184); }
@@ -1325,6 +1569,8 @@ onBeforeUnmount(() => {
   .preview-caption { align-items: flex-start; flex-direction: column; }
   .prompt-header { padding-inline: 1rem; }
   .studio-prompt { min-height: 12.5rem; width: calc(100% - 2rem); margin-inline: 1rem; }
+  .source-images-control { margin-inline: 1rem; }
+  .source-images-header { align-items: flex-start; flex-direction: column; }
   .prompt-submit-area { align-items: stretch; flex-direction: column; gap: .625rem; padding: .75rem 1rem 1rem; }
   .generate-button { width: 100%; }
 }

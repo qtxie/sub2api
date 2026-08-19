@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -75,6 +76,20 @@ func imageStudioTestModelCapability(t *testing.T, provider, model string) imageS
 	return capability
 }
 
+func imageStudioTestSourceImage(mimeType string) imageStudioSourceImage {
+	var data []byte
+	switch mimeType {
+	case "image/jpeg":
+		data = []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10}
+	case "image/webp":
+		data = []byte("RIFF\x04\x00\x00\x00WEBP")
+	default:
+		mimeType = "image/png"
+		data = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	}
+	return imageStudioSourceImage{MIMEType: mimeType, Data: base64.StdEncoding.EncodeToString(data)}
+}
+
 func TestImageStudioGenerateUsesFixedModelAndBase64Response(t *testing.T) {
 	var upstreamBody map[string]any
 	handler := &ImageStudioHandler{
@@ -105,6 +120,73 @@ func TestImageStudioGenerateUsesFixedModelAndBase64Response(t *testing.T) {
 	require.Equal(t, "b64_json", upstreamBody["response_format"])
 	require.Equal(t, true, upstreamBody["stream"])
 	require.Equal(t, float64(4), upstreamBody["n"])
+}
+
+func TestImageStudioGenerateRejectsOversizedRequestBeforeGateway(t *testing.T) {
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+		httpClient: &http.Client{Transport: imageStudioRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("oversized request reached the gateway")
+			return nil, nil
+		})},
+		cfg: &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+	}
+
+	body := `{"api_key_id":7,"model":"gpt-image-2","prompt":"` + strings.Repeat("a", imageStudioMaxRequestBytes) + `"}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, recorder.Code, recorder.Body.String())
+}
+
+func TestImageStudioGenerateOpenAIEditUsesJSONImageReferences(t *testing.T) {
+	var upstreamBody map[string]any
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+		cfg:     &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+	}
+	handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "http://127.0.0.1:8080/v1/images/edits", req.URL.String())
+		require.Equal(t, "Bearer sk-secret", req.Header.Get("Authorization"))
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`)),
+		}, nil
+	})}
+
+	body, err := json.Marshal(map[string]any{
+		"api_key_id":    7,
+		"model":         imageStudioModel,
+		"prompt":        "turn these into a poster",
+		"size":          "1024x1024",
+		"quality":       "high",
+		"background":    "opaque",
+		"output_format": "webp",
+		"n":             2,
+		"source_images": []imageStudioSourceImage{
+			imageStudioTestSourceImage("image/png"),
+			imageStudioTestSourceImage("image/jpeg"),
+		},
+	})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, imageStudioModel, upstreamBody["model"])
+	require.Equal(t, true, upstreamBody["stream"])
+	require.Equal(t, float64(2), upstreamBody["n"])
+	images, ok := upstreamBody["images"].([]any)
+	require.True(t, ok)
+	require.Len(t, images, 2)
+	require.True(t, strings.HasPrefix(images[0].(map[string]any)["image_url"].(string), "data:image/png;base64,"))
+	require.True(t, strings.HasPrefix(images[1].(map[string]any)["image_url"].(string), "data:image/jpeg;base64,"))
 }
 
 func TestImageStudioValidatesGPTImage2BackgroundAndFormats(t *testing.T) {
@@ -220,6 +302,10 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 				legacy, ok := imageStudioCapabilityForModel(capabilities, "gemini-2.5-flash-image")
 				require.True(t, ok)
 				require.Empty(t, legacy.ImageSizes)
+				require.Equal(t, imageStudioGemini25MaxInputImages, legacy.MaxInputImages)
+				for _, model := range capabilities.Models[:3] {
+					require.Equal(t, imageStudioGeminiMaxInputImages, model.MaxInputImages)
+				}
 			},
 		},
 		{
@@ -232,6 +318,14 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 				require.Empty(t, model.Backgrounds)
 				require.Empty(t, model.OutputFormats)
 				require.Equal(t, 10, model.MaxImages)
+				require.Equal(t, imageStudioGrokMaxInputImages, model.MaxInputImages)
+			},
+		},
+		{
+			provider: service.PlatformOpenAI, defaultModel: imageStudioModel,
+			assert: func(t *testing.T, capabilities imageStudioCapabilitiesResponse) {
+				require.Len(t, capabilities.Models, 1)
+				require.Equal(t, imageStudioOpenAIMaxInputImages, capabilities.Models[0].MaxInputImages)
 			},
 		},
 	}
@@ -307,6 +401,52 @@ func TestImageStudioGenerateGeminiUsesInteractionsAndNormalizesImage(t *testing.
 	require.Equal(t, "image/jpeg", payload.Data.Data[0].MIMEType)
 }
 
+func TestImageStudioGenerateGeminiEditUsesMultimodalInteractionInput(t *testing.T) {
+	var upstreamBody map[string]any
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKeyForPlatform(42, service.PlatformGemini)},
+		cfg:     &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+	}
+	handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "http://127.0.0.1:8080/v1beta/interactions", req.URL.String())
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"steps":[{"type":"model_output","content":[{"type":"image","data":"aGVsbG8=","mime_type":"image/png"}]}]
+			}`)),
+		}, nil
+	})}
+
+	body, err := json.Marshal(map[string]any{
+		"api_key_id":   7,
+		"model":        "gemini-3.1-flash-image",
+		"prompt":       "combine the references",
+		"aspect_ratio": "4:3",
+		"image_size":   "2K",
+		"source_images": []imageStudioSourceImage{
+			imageStudioTestSourceImage("image/png"),
+			imageStudioTestSourceImage("image/webp"),
+		},
+	})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	parts, ok := upstreamBody["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, parts, 3)
+	require.Equal(t, map[string]any{"type": "text", "text": "combine the references"}, parts[0])
+	require.Equal(t, "image", parts[1].(map[string]any)["type"])
+	require.Equal(t, "image/png", parts[1].(map[string]any)["mime_type"])
+	require.Equal(t, imageStudioTestSourceImage("image/png").Data, parts[1].(map[string]any)["data"])
+	require.Equal(t, "image/webp", parts[2].(map[string]any)["mime_type"])
+}
+
 func TestNormalizeImageStudioGeminiInteractionResponseIgnoresNonModelOutputSteps(t *testing.T) {
 	result, err := normalizeImageStudioGeminiInteractionResponse([]byte(`{
 		"steps":[
@@ -361,6 +501,100 @@ func TestImageStudioGenerateGrokUsesOnlyDocumentedOptions(t *testing.T) {
 	require.NotContains(t, upstreamBody, "output_format")
 }
 
+func TestImageStudioGenerateGrokEditUsesDocumentedImageShape(t *testing.T) {
+	tests := []struct {
+		name            string
+		sources         []imageStudioSourceImage
+		aspectRatio     string
+		wantImage       bool
+		wantImages      int
+		wantAspectRatio bool
+	}{
+		{
+			name:       "single image",
+			sources:    []imageStudioSourceImage{imageStudioTestSourceImage("image/png")},
+			wantImage:  true,
+			wantImages: 0,
+		},
+		{
+			name: "multiple images with automatic ratio",
+			sources: []imageStudioSourceImage{
+				imageStudioTestSourceImage("image/png"),
+				imageStudioTestSourceImage("image/jpeg"),
+			},
+			aspectRatio: "auto",
+			wantImages:  2,
+		},
+		{
+			name: "multiple images",
+			sources: []imageStudioSourceImage{
+				imageStudioTestSourceImage("image/png"),
+				imageStudioTestSourceImage("image/jpeg"),
+			},
+			aspectRatio:     "16:9",
+			wantImages:      2,
+			wantAspectRatio: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var upstreamBody map[string]any
+			handler := &ImageStudioHandler{
+				apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKeyForPlatform(42, service.PlatformGrok)},
+				cfg:     &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+			}
+			handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				require.Equal(t, "http://127.0.0.1:8080/v1/images/edits", req.URL.String())
+				require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"aGVsbG8=","mime_type":"image/jpeg"}]}`)),
+				}, nil
+			})}
+
+			payload := map[string]any{
+				"api_key_id":    7,
+				"model":         imageStudioDefaultGrokModel,
+				"prompt":        "edit the source",
+				"source_images": test.sources,
+			}
+			if test.aspectRatio != "" {
+				payload["aspect_ratio"] = test.aspectRatio
+			}
+			body, err := json.Marshal(payload)
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.Equal(t, test.wantImage, upstreamBody["image"] != nil)
+			if test.wantImage {
+				image := upstreamBody["image"].(map[string]any)
+				require.Equal(t, "image_url", image["type"])
+				require.True(t, strings.HasPrefix(image["url"].(string), "data:image/png;base64,"))
+			}
+			if test.wantImages > 0 {
+				require.Len(t, upstreamBody["images"], test.wantImages)
+			} else {
+				require.NotContains(t, upstreamBody, "images")
+			}
+			if test.wantAspectRatio {
+				require.Equal(t, test.aspectRatio, upstreamBody["aspect_ratio"])
+			} else {
+				require.NotContains(t, upstreamBody, "aspect_ratio")
+			}
+			require.Equal(t, "b64_json", upstreamBody["response_format"])
+			for _, unsupported := range []string{"resolution", "quality", "n"} {
+				require.NotContains(t, upstreamBody, unsupported)
+			}
+		})
+	}
+}
+
 func TestImageStudioRejectsProviderUnsupportedAndUnknownFields(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -384,8 +618,20 @@ func TestImageStudioRejectsProviderUnsupportedAndUnknownFields(t *testing.T) {
 			body: `{"api_key_id":7,"model":"grok-imagine-image-2.0","prompt":"draw","aspect_ratio":"1:1","resolution":"1k","quality":"medium","n":1,"seed":7}`,
 		},
 		{
+			name: "unknown source image field", provider: service.PlatformOpenAI,
+			body: `{"api_key_id":7,"model":"gpt-image-2","prompt":"edit","source_images":[{"mime_type":"image/png","data":"iVBORw0KGgo=","url":"https://example.com/source.png"}]}`,
+		},
+		{
 			name: "grok too many", provider: service.PlatformGrok,
 			body: `{"api_key_id":7,"model":"grok-imagine-image-2.0","prompt":"draw","aspect_ratio":"1:1","resolution":"1k","quality":"medium","n":11}`,
+		},
+		{
+			name: "grok single image aspect ratio", provider: service.PlatformGrok,
+			body: `{"api_key_id":7,"model":"grok-imagine-image-2.0","prompt":"edit","aspect_ratio":"1:1","source_images":[{"mime_type":"image/png","data":"iVBORw0KGgo="}]}`,
+		},
+		{
+			name: "grok edit resolution", provider: service.PlatformGrok,
+			body: `{"api_key_id":7,"model":"grok-imagine-image-2.0","prompt":"edit","resolution":"1k","source_images":[{"mime_type":"image/png","data":"iVBORw0KGgo="}]}`,
 		},
 		{
 			name: "gemini 2.5 image size", provider: service.PlatformGemini,
@@ -408,6 +654,78 @@ func TestImageStudioRejectsProviderUnsupportedAndUnknownFields(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			imageStudioTestRouter(handler).ServeHTTP(recorder, request)
 			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
+		})
+	}
+}
+
+func TestImageStudioValidatesSourceImages(t *testing.T) {
+	capability := imageStudioTestModelCapability(t, service.PlatformOpenAI, imageStudioModel)
+	png := imageStudioTestSourceImage("image/png")
+
+	tooMany := make([]imageStudioSourceImage, capability.MaxInputImages+1)
+	for index := range tooMany {
+		tooMany[index] = png
+	}
+
+	oversizedData := make([]byte, imageStudioMaxSourceImageBytes+1)
+	copy(oversizedData, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	oversized := imageStudioSourceImage{
+		MIMEType: "image/png",
+		Data:     base64.StdEncoding.EncodeToString(oversizedData),
+	}
+
+	fiveMegabytes := make([]byte, 5<<20)
+	copy(fiveMegabytes, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	fiveMegabyteImage := imageStudioSourceImage{
+		MIMEType: "image/png",
+		Data:     base64.StdEncoding.EncodeToString(fiveMegabytes),
+	}
+
+	tests := []struct {
+		name   string
+		images []imageStudioSourceImage
+		want   string
+	}{
+		{
+			name:   "unsupported MIME type",
+			images: []imageStudioSourceImage{{MIMEType: "image/gif", Data: png.Data}},
+			want:   "Source image 1 must use image/png, image/jpeg, or image/webp",
+		},
+		{
+			name:   "data URL prefix",
+			images: []imageStudioSourceImage{{MIMEType: "image/png", Data: "data:image/png;base64," + png.Data}},
+			want:   "Source image 1 must contain base64 data without a data URL prefix",
+		},
+		{
+			name:   "invalid base64",
+			images: []imageStudioSourceImage{{MIMEType: "image/png", Data: "not-base64"}},
+			want:   "Source image 1 must contain valid base64 data",
+		},
+		{
+			name:   "MIME mismatch",
+			images: []imageStudioSourceImage{{MIMEType: "image/jpeg", Data: png.Data}},
+			want:   "Source image 1 content does not match its MIME type",
+		},
+		{
+			name:   "too many images",
+			images: tooMany,
+			want:   "A maximum of 16 source images is supported by this model",
+		},
+		{
+			name:   "single image too large",
+			images: []imageStudioSourceImage{oversized},
+			want:   "Source image 1 exceeds the 6 MB limit",
+		},
+		{
+			name:   "combined images too large",
+			images: []imageStudioSourceImage{fiveMegabyteImage, fiveMegabyteImage, fiveMegabyteImage},
+			want:   "Source images exceed the 14 MB total limit",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.want, validateImageStudioSourceImages(test.images, capability.MaxInputImages))
 		})
 	}
 }

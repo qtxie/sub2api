@@ -51,6 +51,14 @@ function mountView() {
   })
 }
 
+async function selectSourceFiles(wrapper: ReturnType<typeof mountView>, files: File[]) {
+  const input = wrapper.get<HTMLInputElement>('[data-testid="source-image-input"]')
+  Object.defineProperty(input.element, 'files', { value: files, configurable: true })
+  await input.trigger('change')
+  await vi.waitFor(() => expect(input.element.disabled).toBe(false))
+  await flushPromises()
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason?: unknown) => void
@@ -85,12 +93,12 @@ describe('ImageStudioView', () => {
             {
               id: 'gemini-3.1-flash-image', label: 'Gemini 3.1 Flash Image',
               aspect_ratios: ['1:1', '16:9'], image_sizes: ['1K', '2K'], resolutions: [], qualities: [],
-              backgrounds: [], output_formats: [], max_images: 1, supports_custom_size: false
+              backgrounds: [], output_formats: [], max_images: 1, max_input_images: 3, supports_custom_size: false
             },
             {
               id: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image',
               aspect_ratios: ['1:1', '16:9'], image_sizes: [], resolutions: [], qualities: [],
-              backgrounds: [], output_formats: [], max_images: 1, supports_custom_size: false
+              backgrounds: [], output_formats: [], max_images: 1, max_input_images: 1, supports_custom_size: false
             }
           ]
         }
@@ -102,7 +110,7 @@ describe('ImageStudioView', () => {
           models: [{
             id: 'grok-imagine-image-2.0', label: 'Grok Imagine Image 2.0',
             aspect_ratios: ['auto', '1:1', '20:9'], image_sizes: [], resolutions: ['1k', '2k'],
-            qualities: ['medium', 'low'], backgrounds: [], output_formats: [], max_images: 10, supports_custom_size: false
+            qualities: ['medium', 'low'], backgrounds: [], output_formats: [], max_images: 10, max_input_images: 3, supports_custom_size: false
           }]
         }
       }
@@ -112,7 +120,7 @@ describe('ImageStudioView', () => {
           id: 'gpt-image-2', label: 'GPT Image 2', aspect_ratios: [], image_sizes: [
             '1024x1024', '1536x1024', '1024x1536', '2048x2048', '2048x1152', '1152x2048', '3840x2160', '2160x3840'
           ], resolutions: [], qualities: ['auto', 'low', 'medium', 'high'], backgrounds: ['auto', 'opaque'],
-          output_formats: ['png', 'jpeg', 'webp'], max_images: 4, supports_custom_size: true
+          output_formats: ['png', 'jpeg', 'webp'], max_images: 4, max_input_images: 4, supports_custom_size: true
         }]
       }
     })
@@ -287,6 +295,177 @@ describe('ImageStudioView', () => {
       quality: 'low',
       n: 1
     }, expect.any(AbortSignal))
+  })
+
+  it('validates, previews, and removes reference images', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const valid = new File([new Uint8Array([1, 2, 3])], 'valid.png', { type: 'image/png' })
+    const unsupported = new File(['gif'], 'unsupported.gif', { type: 'image/gif' })
+    const tooLarge = new File(['large'], 'large.webp', { type: 'image/webp' })
+    Object.defineProperty(tooLarge, 'size', { value: 6 * 1024 * 1024 + 1 })
+
+    await selectSourceFiles(wrapper, [valid, unsupported, tooLarge])
+
+    expect(wrapper.findAll('.source-image-item')).toHaveLength(1)
+    expect(wrapper.get('.source-image-preview-button img').attributes('src')).toBe('data:image/png;base64,AQID')
+    expect(showError).toHaveBeenCalledWith('imageStudio.sourceImageFormatUnsupported')
+    expect(showError).toHaveBeenCalledWith('imageStudio.sourceImageTooLarge')
+
+    await wrapper.get('.source-image-preview-button').trigger('click')
+    expect(wrapper.get('.preview-backdrop img').attributes('src')).toBe('data:image/png;base64,AQID')
+    expect(wrapper.get('.preview-caption').text()).toContain('valid.png')
+    await wrapper.get('.source-image-remove-button').trigger('click')
+    expect(wrapper.find('.source-image-item').exists()).toBe(false)
+    expect(wrapper.find('.preview-backdrop').exists()).toBe(false)
+
+    const fiveMb = (name: string) => {
+      const file = new File(['small payload'], name, { type: 'image/jpeg' })
+      Object.defineProperty(file, 'size', { value: 5 * 1024 * 1024 })
+      return file
+    }
+    await selectSourceFiles(wrapper, [fiveMb('one.jpg'), fiveMb('two.jpg'), fiveMb('three.jpg')])
+    expect(wrapper.findAll('.source-image-item')).toHaveLength(2)
+    expect(showError).toHaveBeenCalledWith('imageStudio.sourceImagesTotalTooLarge')
+  })
+
+  it('fills the available reference slots after skipping invalid files', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('#image-studio-key').setValue('10')
+    await flushPromises()
+
+    const input = wrapper.get<HTMLInputElement>('[data-testid="source-image-input"]')
+    Object.defineProperty(input.element, 'files', { value: [
+      new File(['bad'], 'bad.gif', { type: 'image/gif' }),
+      new File(['one'], 'one.png', { type: 'image/png' }),
+      new File(['two'], 'two.jpeg', { type: 'image/jpeg' }),
+      new File(['three'], 'three.webp', { type: 'image/webp' })
+    ], configurable: true })
+    await input.trigger('change')
+    await vi.waitFor(() => expect(wrapper.findAll('.source-image-item')).toHaveLength(3))
+    await flushPromises()
+
+    expect(wrapper.findAll('.source-image-item')).toHaveLength(3)
+    expect(showError).toHaveBeenCalledWith('imageStudio.sourceImageFormatUnsupported')
+    expect(showError).not.toHaveBeenCalledWith('imageStudio.sourceImageLimitReached')
+  })
+
+  it('deep-copies reference images into concurrent generation snapshots', async () => {
+    const first = deferred<ReturnType<typeof generatedImage>>()
+    const second = deferred<ReturnType<typeof generatedImage>>()
+    generateImage.mockReset()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await selectSourceFiles(wrapper, [new File(['first'], 'first.png', { type: 'image/png' })])
+    await wrapper.get('#image-studio-prompt').setValue('first edit')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('.source-image-remove-button').trigger('click')
+    await selectSourceFiles(wrapper, [new File(['second'], 'second.webp', { type: 'image/webp' })])
+    await wrapper.get('#image-studio-prompt').setValue('second edit')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenCalledTimes(2)
+    expect(generateImage.mock.calls[0][0]).toEqual(expect.objectContaining({
+      prompt: 'first edit',
+      source_images: [{ mime_type: 'image/png', data: 'Zmlyc3Q=' }]
+    }))
+    expect(generateImage.mock.calls[1][0]).toEqual(expect.objectContaining({
+      prompt: 'second edit',
+      source_images: [{ mime_type: 'image/webp', data: 'c2Vjb25k' }]
+    }))
+    expect(generateImage.mock.calls[0][0].source_images).not.toBe(generateImage.mock.calls[1][0].source_images)
+
+    first.resolve(generatedImage('Zmlyc3Q='))
+    second.resolve(generatedImage('c2Vjb25k'))
+    await flushPromises()
+  })
+
+  it('sends only documented Grok edit options for one or multiple reference images', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('#image-studio-key').setValue('10')
+    await flushPromises()
+
+    await selectSourceFiles(wrapper, [new File(['first'], 'first.png', { type: 'image/png' })])
+    expect(wrapper.find('#image-studio-aspect-ratio').exists()).toBe(false)
+    expect(wrapper.find('#image-studio-resolution').exists()).toBe(false)
+    expect(wrapper.find('.count-control').exists()).toBe(false)
+    expect(wrapper.find('.segmented-control').exists()).toBe(false)
+    await wrapper.get('#image-studio-prompt').setValue('restyle one image')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenNthCalledWith(1, {
+      api_key_id: 10,
+      prompt: 'restyle one image',
+      model: 'grok-imagine-image-2.0',
+      source_images: [{ mime_type: 'image/png', data: 'Zmlyc3Q=' }]
+    }, expect.any(AbortSignal))
+    const savedSingleEdit = saveGallery.mock.calls[0]?.[0]
+    expect(savedSingleEdit).toEqual(expect.objectContaining({
+      provider: 'grok',
+      size: 'auto',
+      aspectRatio: 'auto'
+    }))
+    expect(savedSingleEdit).not.toHaveProperty('resolution')
+    expect(savedSingleEdit).not.toHaveProperty('quality')
+
+    await selectSourceFiles(wrapper, [new File(['second'], 'second.jpeg', { type: 'image/jpeg' })])
+    expect(wrapper.get('#image-studio-aspect-ratio').exists()).toBe(true)
+    await wrapper.get('#image-studio-aspect-ratio').setValue('auto')
+    await wrapper.get('#image-studio-prompt').setValue('blend at the source ratio')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenNthCalledWith(2, {
+      api_key_id: 10,
+      prompt: 'blend at the source ratio',
+      model: 'grok-imagine-image-2.0',
+      source_images: [
+        { mime_type: 'image/png', data: 'Zmlyc3Q=' },
+        { mime_type: 'image/jpeg', data: 'c2Vjb25k' }
+      ]
+    }, expect.any(AbortSignal))
+
+    await wrapper.get('#image-studio-aspect-ratio').setValue('20:9')
+    await wrapper.get('#image-studio-prompt').setValue('blend two images')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenNthCalledWith(3, {
+      api_key_id: 10,
+      prompt: 'blend two images',
+      model: 'grok-imagine-image-2.0',
+      source_images: [
+        { mime_type: 'image/png', data: 'Zmlyc3Q=' },
+        { mime_type: 'image/jpeg', data: 'c2Vjb25k' }
+      ],
+      aspect_ratio: '20:9'
+    }, expect.any(AbortSignal))
+  })
+
+  it('trims reference images when the selected model has a lower limit', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('#image-studio-key').setValue('8')
+    await flushPromises()
+    await selectSourceFiles(wrapper, [
+      new File(['one'], 'one.png', { type: 'image/png' }),
+      new File(['two'], 'two.png', { type: 'image/png' })
+    ])
+    expect(wrapper.findAll('.source-image-item')).toHaveLength(2)
+
+    await wrapper.get('#image-studio-model').setValue('gemini-2.5-flash-image')
+    await flushPromises()
+
+    expect(wrapper.findAll('.source-image-item')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="source-image-input"]').attributes('multiple')).toBeUndefined()
+    expect(showWarning).toHaveBeenCalledWith('imageStudio.sourceImagesTrimmed')
   })
 
   it('keeps the composer editable and snapshots concurrent submissions', async () => {

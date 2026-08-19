@@ -24,6 +24,19 @@ describe('parseImageStudioResponse', () => {
     expect(response).toEqual({ created: 7, data: [{ b64_json: 'aGVsbG8=', mime_type: 'image/png' }] })
   })
 
+  it('extracts edit completion images and ignores edit partials', () => {
+    const response = parseImageStudioResponse([
+      'event: image_edit.partial_image',
+      'data: {"type":"image_edit.partial_image","b64_json":"cGFydGlhbA=="}',
+      '',
+      'event: image_edit.completed',
+      'data: {"type":"image_edit.completed","b64_json":"ZWRpdGVk","output_format":"png"}',
+      ''
+    ].join('\n'))
+
+    expect(response.data).toEqual([{ b64_json: 'ZWRpdGVk', mime_type: 'image/png' }])
+  })
+
   it('rejects unsafe upstream URLs and malformed stream events', () => {
     expect(() => parseImageStudioResponse({ data: [{ url: 'javascript:alert(1)' }] })).toThrow('no usable images')
     expect(() => parseImageStudioResponse('event: completed\ndata: not-json\n\n')).toThrow('invalid stream event')
