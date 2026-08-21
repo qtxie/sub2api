@@ -90,7 +90,7 @@ func imageStudioTestSourceImage(mimeType string) imageStudioSourceImage {
 	return imageStudioSourceImage{MIMEType: mimeType, Data: base64.StdEncoding.EncodeToString(data)}
 }
 
-func TestImageStudioGenerateUsesFixedModelAndBase64Response(t *testing.T) {
+func TestImageStudioGenerateUsesSupportedGPTImage2Payload(t *testing.T) {
 	var upstreamBody map[string]any
 	handler := &ImageStudioHandler{
 		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
@@ -117,7 +117,8 @@ func TestImageStudioGenerateUsesFixedModelAndBase64Response(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, imageStudioModel, upstreamBody["model"])
-	require.Equal(t, "b64_json", upstreamBody["response_format"])
+	require.NotContains(t, upstreamBody, "response_format")
+	require.Equal(t, "webp", upstreamBody["output_format"])
 	require.Equal(t, true, upstreamBody["stream"])
 	require.Equal(t, float64(4), upstreamBody["n"])
 }
@@ -180,6 +181,8 @@ func TestImageStudioGenerateOpenAIEditUsesJSONImageReferences(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.Equal(t, imageStudioModel, upstreamBody["model"])
+	require.NotContains(t, upstreamBody, "response_format")
+	require.Equal(t, "webp", upstreamBody["output_format"])
 	require.Equal(t, true, upstreamBody["stream"])
 	require.Equal(t, float64(2), upstreamBody["n"])
 	images, ok := upstreamBody["images"].([]any)

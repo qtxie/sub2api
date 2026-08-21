@@ -697,15 +697,14 @@ func imageStudioPricingOptions(provider string, capability imageStudioModelCapab
 
 func (h *ImageStudioHandler) generateImageStudioOpenAI(c *gin.Context, apiKey *service.APIKey, input imageStudioGenerationRequest) {
 	payload := map[string]any{
-		"model":           imageStudioModel,
-		"prompt":          input.Prompt,
-		"n":               input.OutputCount,
-		"stream":          true,
-		"response_format": "b64_json",
-		"size":            input.Size,
-		"quality":         input.Quality,
-		"background":      input.Background,
-		"output_format":   input.OutputFormat,
+		"model":         imageStudioModel,
+		"prompt":        input.Prompt,
+		"n":             input.OutputCount,
+		"stream":        true,
+		"size":          input.Size,
+		"quality":       input.Quality,
+		"background":    input.Background,
+		"output_format": input.OutputFormat,
 	}
 	path := "/v1/images/generations"
 	if len(input.SourceImages) > 0 {
