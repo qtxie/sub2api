@@ -10,6 +10,9 @@ const listGallery = vi.hoisted(() => vi.fn())
 const saveGallery = vi.hoisted(() => vi.fn())
 const deleteGallery = vi.hoisted(() => vi.fn())
 const clearGallery = vi.hoisted(() => vi.fn())
+const createThumbnail = vi.hoisted(() => vi.fn())
+const createArchive = vi.hoisted(() => vi.fn())
+const isArchiveLimitError = vi.hoisted(() => vi.fn())
 const showSuccess = vi.hoisted(() => vi.fn())
 const showWarning = vi.hoisted(() => vi.fn())
 const showError = vi.hoisted(() => vi.fn())
@@ -27,7 +30,10 @@ vi.mock('@/utils/imageStudioGallery', async (importOriginal) => {
     listImageStudioGallery: listGallery,
     saveImageStudioGalleryItem: saveGallery,
     deleteImageStudioGalleryItem: deleteGallery,
-    clearImageStudioGallery: clearGallery
+    clearImageStudioGallery: clearGallery,
+    createImageStudioThumbnail: createThumbnail,
+    createImageStudioArchiveItem: createArchive,
+    isImageStudioArchiveLimitError: isArchiveLimitError
   }
 })
 vi.mock('@/stores/app', () => ({
@@ -73,6 +79,23 @@ function generatedImage(base64: string) {
   return { data: [{ b64_json: base64, mime_type: 'image/png' }] }
 }
 
+function archivedImage(prompt = 'stored prompt', id = 'stored-image') {
+  return {
+    id,
+    userId: 42,
+    createdAt: 1,
+    archivedAt: 2,
+    prompt,
+    apiKeyId: 7,
+    provider: 'openai',
+    model: 'gpt-image-2',
+    size: '1024x1024',
+    outputFormat: 'png',
+    recordVersion: 4,
+    thumbnailSrc: 'data:image/webp;base64,dGh1bWI='
+  }
+}
+
 describe('ImageStudioView', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -80,6 +103,12 @@ describe('ImageStudioView', () => {
     saveGallery.mockReset().mockResolvedValue(undefined)
     deleteGallery.mockReset().mockResolvedValue(undefined)
     clearGallery.mockReset().mockResolvedValue(undefined)
+    createThumbnail.mockReset().mockResolvedValue('data:image/webp;base64,dGh1bWI=')
+    createArchive.mockReset().mockImplementation((item: any, thumbnailSrc: string) => {
+      const { imageSrc: _imageSrc, ...metadata } = item
+      return { ...metadata, archivedAt: Date.now(), recordVersion: 4, thumbnailSrc }
+    })
+    isArchiveLimitError.mockReset().mockReturnValue(false)
     showSuccess.mockReset()
     showWarning.mockReset()
     showError.mockReset()
@@ -406,12 +435,18 @@ describe('ImageStudioView', () => {
       model: 'grok-imagine-image-2.0',
       source_images: [{ mime_type: 'image/png', data: 'Zmlyc3Q=' }]
     }, expect.any(AbortSignal))
+    expect(saveGallery).not.toHaveBeenCalled()
+    await wrapper.get('.archive-button').trigger('click')
+    await flushPromises()
     const savedSingleEdit = saveGallery.mock.calls[0]?.[0]
     expect(savedSingleEdit).toEqual(expect.objectContaining({
       provider: 'grok',
       size: 'auto',
-      aspectRatio: 'auto'
+      aspectRatio: 'auto',
+      sourceImageCount: 1,
+      isEdit: true
     }))
+    expect(savedSingleEdit).not.toHaveProperty('imageSrc')
     expect(savedSingleEdit).not.toHaveProperty('resolution')
     expect(savedSingleEdit).not.toHaveProperty('quality')
 
@@ -510,11 +545,9 @@ describe('ImageStudioView', () => {
     first.resolve(generatedImage('Zmlyc3Q='))
     await flushPromises()
     expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(0)
-    expect(saveGallery.mock.calls.map(([item]) => ({ prompt: item.prompt, size: item.size })))
-      .toEqual(expect.arrayContaining([
-        { prompt: 'first prompt', size: '1024x1024' },
-        { prompt: 'second prompt', size: '1536x1024' }
-      ]))
+    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text()))
+      .toEqual(expect.arrayContaining(['first prompt', 'second prompt']))
+    expect(saveGallery).not.toHaveBeenCalled()
   })
 
   it('keeps provider-specific metadata and format fallbacks with each request', async () => {
@@ -541,13 +574,22 @@ describe('ImageStudioView', () => {
     openAIRequest.resolve({ data: [{ b64_json: 'b3BlbmFp' }] })
     await flushPromises()
 
+    const resultCards = wrapper.findAll('.gallery-item')
+    const openAICard = resultCards.find((card) => card.text().includes('OpenAI prompt'))!
+    const grokCard = resultCards.find((card) => card.text().includes('Grok prompt'))!
+    expect(openAICard.get('img').attributes('src')).toBe('data:image/webp;base64,b3BlbmFp')
+    expect(grokCard.get('img').attributes('src')).toBe('data:image/jpeg;base64,Z3Jvaw==')
+    await openAICard.get('.archive-button').trigger('click')
+    await grokCard.get('.archive-button').trigger('click')
+    await flushPromises()
+
     const savedByPrompt = Object.fromEntries(saveGallery.mock.calls.map(([item]) => [item.prompt, item]))
     expect(savedByPrompt['OpenAI prompt']).toEqual(expect.objectContaining({
       apiKeyId: 7,
       provider: 'openai',
       model: 'gpt-image-2',
       outputFormat: 'webp',
-      imageSrc: 'data:image/webp;base64,b3BlbmFp'
+      thumbnailSrc: 'data:image/webp;base64,dGh1bWI='
     }))
     expect(savedByPrompt['Grok prompt']).toEqual(expect.objectContaining({
       apiKeyId: 10,
@@ -556,8 +598,102 @@ describe('ImageStudioView', () => {
       aspectRatio: '20:9',
       resolution: '2k',
       outputFormat: 'jpeg',
-      imageSrc: 'data:image/jpeg;base64,Z3Jvaw=='
+      thumbnailSrc: 'data:image/webp;base64,dGh1bWI='
     }))
+    expect(Object.values(savedByPrompt).every((item: any) => !('imageSrc' in item))).toBe(true)
+  })
+
+  it('archives a result at most once while thumbnail creation is pending', async () => {
+    const thumbnail = deferred<string>()
+    createThumbnail.mockReturnValueOnce(thumbnail.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('archive once')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const archiveButton = wrapper.get('.archive-button')
+    await archiveButton.trigger('click')
+    await archiveButton.trigger('click')
+
+    expect(createThumbnail).toHaveBeenCalledTimes(1)
+    expect(saveGallery).not.toHaveBeenCalled()
+    thumbnail.resolve('data:image/webp;base64,dGh1bWI=')
+    await flushPromises()
+    expect(saveGallery).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('.archive-button').attributes('disabled')).toBeDefined()
+  })
+
+  it('keeps the session original when archiving fails', async () => {
+    createThumbnail.mockRejectedValueOnce(new Error('thumbnail failed'))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('keep original')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    const originalSource = wrapper.get('.gallery-item img').attributes('src')
+    await wrapper.get('.archive-button').trigger('click')
+    await flushPromises()
+
+    expect(saveGallery).not.toHaveBeenCalled()
+    expect(wrapper.get('.gallery-item img').attributes('src')).toBe(originalSource)
+    expect(wrapper.get('.archive-button').attributes('disabled')).toBeUndefined()
+    expect(showError).toHaveBeenCalled()
+  })
+
+  it('renders restored archives as thumbnails without an original download action', async () => {
+    listGallery.mockResolvedValueOnce([archivedImage()])
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('.gallery-mode-switch button')[1].trigger('click')
+
+    expect(wrapper.get('.archived-gallery-item img').attributes('src')).toBe('data:image/webp;base64,dGh1bWI=')
+    expect(wrapper.find('.archived-gallery-item a[download]').exists()).toBe(false)
+    expect(saveGallery).not.toHaveBeenCalled()
+  })
+
+  it('does not rearchive a session result while its archive is being deleted', async () => {
+    const deletion = deferred<void>()
+    deleteGallery.mockReturnValueOnce(deletion.promise)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('delete race')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await wrapper.get('.archive-button').trigger('click')
+    await flushPromises()
+    expect(saveGallery).toHaveBeenCalledTimes(1)
+
+    await wrapper.findAll('.gallery-mode-switch button')[1].trigger('click')
+    await wrapper.get('.archived-gallery-item .gallery-actions button:last-child').trigger('click')
+    await wrapper.findAll('.gallery-mode-switch button')[0].trigger('click')
+    expect(wrapper.get('.archive-button').attributes('disabled')).toBeDefined()
+    await wrapper.get('.archive-button').trigger('click')
+    expect(saveGallery).toHaveBeenCalledTimes(1)
+
+    deletion.resolve()
+    await flushPromises()
+    expect(wrapper.get('.archive-button').attributes('disabled')).toBeUndefined()
+  })
+
+  it('clears session results without deleting archives', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    listGallery.mockResolvedValueOnce([archivedImage()])
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('#image-studio-prompt').setValue('temporary result')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await wrapper.get('.toolbar-icon-button').trigger('click')
+
+    expect(wrapper.findAll('.gallery-item')).toHaveLength(0)
+    expect(clearGallery).not.toHaveBeenCalled()
+    await wrapper.findAll('.gallery-mode-switch button')[1].trigger('click')
+    expect(wrapper.findAll('.archived-gallery-item')).toHaveLength(1)
+    confirm.mockRestore()
   })
 
   it('isolates failure, cancellation, and retry to their original jobs', async () => {
@@ -598,7 +734,8 @@ describe('ImageStudioView', () => {
     retry.resolve(generatedImage('cmV0cnk='))
     await flushPromises()
     expect(wrapper.findAll('[data-testid="generation-placeholder"]')).toHaveLength(0)
-    expect(saveGallery.mock.calls[saveGallery.mock.calls.length - 1]?.[0].prompt).toBe('failed prompt')
+    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text())).toContain('failed prompt')
+    expect(saveGallery).not.toHaveBeenCalled()
   })
 
   it('aborts every active generation when the view unmounts', async () => {
@@ -625,7 +762,7 @@ describe('ImageStudioView', () => {
     await flushPromises()
   })
 
-  it('does not notify after unmounting during gallery persistence', async () => {
+  it('does not notify after unmounting during archive persistence', async () => {
     const persistence = deferred<void>()
     saveGallery.mockReset().mockReturnValueOnce(persistence.promise)
     const wrapper = mountView()
@@ -634,6 +771,9 @@ describe('ImageStudioView', () => {
     await wrapper.get('#image-studio-prompt').setValue('persisting prompt')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
+    showSuccess.mockClear()
+    await wrapper.get('.archive-button').trigger('click')
+    await flushPromises()
     expect(saveGallery).toHaveBeenCalledTimes(1)
     expect(showSuccess).not.toHaveBeenCalled()
 
@@ -641,10 +781,10 @@ describe('ImageStudioView', () => {
     persistence.resolve()
     await flushPromises()
     expect(showSuccess).not.toHaveBeenCalled()
-    expect(showWarning).not.toHaveBeenCalled()
+    expect(showError).not.toHaveBeenCalled()
   })
 
-  it('merges a late local gallery load with newly generated results', async () => {
+  it('keeps a late archive load separate from newly generated session results', async () => {
     const galleryLoad = deferred<any[]>()
     listGallery.mockReset().mockReturnValueOnce(galleryLoad.promise)
     const wrapper = mountView()
@@ -655,38 +795,36 @@ describe('ImageStudioView', () => {
     await flushPromises()
     expect(wrapper.findAll('.gallery-item')).toHaveLength(1)
 
-    galleryLoad.resolve([{
-      id: 'stored-image', userId: 42, createdAt: 1, prompt: 'stored prompt', apiKeyId: 7,
-      provider: 'openai', model: 'gpt-image-2', size: '1024x1024', outputFormat: 'png',
-      imageSrc: 'data:image/png;base64,c3RvcmVk'
-    }])
+    galleryLoad.resolve([archivedImage()])
     await flushPromises()
 
     expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text()))
-      .toEqual(['new prompt', 'stored prompt'])
+      .toEqual(['new prompt'])
+    await wrapper.findAll('.gallery-mode-switch button')[1].trigger('click')
+    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text()))
+      .toEqual(['stored prompt'])
   })
 
-  it('preserves newly generated results when clearing the gallery fails', async () => {
+  it('restores archives after a failed clear without touching session results', async () => {
     const clearing = deferred<void>()
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    listGallery.mockResolvedValueOnce([{
-      id: 'stored-image', userId: 42, createdAt: 1, prompt: 'stored prompt', apiKeyId: 7,
-      provider: 'openai', model: 'gpt-image-2', size: '1024x1024', outputFormat: 'png',
-      imageSrc: 'data:image/png;base64,c3RvcmVk'
-    }])
+    listGallery.mockResolvedValueOnce([archivedImage()])
     clearGallery.mockReturnValueOnce(clearing.promise)
     const wrapper = mountView()
     await flushPromises()
 
+    await wrapper.findAll('.gallery-mode-switch button')[1].trigger('click')
     await wrapper.get('.toolbar-icon-button').trigger('click')
+    await wrapper.findAll('.gallery-mode-switch button')[0].trigger('click')
     await wrapper.get('#image-studio-prompt').setValue('new prompt')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     clearing.reject(new Error('clear failed'))
     await flushPromises()
 
-    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text()))
-      .toEqual(['new prompt', 'stored prompt'])
+    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text())).toEqual(['new prompt'])
+    await wrapper.findAll('.gallery-mode-switch button')[1].trigger('click')
+    expect(wrapper.findAll('.gallery-item-meta p').map((item) => item.text())).toEqual(['stored prompt'])
     confirm.mockRestore()
   })
 })
