@@ -108,6 +108,12 @@ type codexOutboundIdentity struct {
 func resolveCodexOutboundIdentity(candidateUA string) codexOutboundIdentity {
 	canonical := codexCanonicalUserAgent()
 	ua := strings.TrimSpace(candidateUA)
+	if strings.Contains(ua, smartUserAgentSeparator) {
+		// 多槽配置的原始 '|' 分隔串不是单一 UA，绝不能被当作候选拼进出站身份
+		// （首段配对成功会把整串含 '|' 的畸形 UA 发给上游）。调用方应先经
+		// ResolveSmartUserAgent 选槽；这里兜底忽略未选槽的原始值。
+		ua = ""
+	}
 	if ua == "" {
 		ua = canonical
 	}

@@ -1187,7 +1187,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// 终态收口：强制统一 OAuth 出站身份（User-Agent / originator / version 同源自洽）。
 	// 客户端自报身份不参与构造，浏览器型 UA 也因此不会再到达上游（原浏览器 UA 兜底已被吸收）。
 	if account.Type == AccountTypeOAuth {
-		enforceCodexIdentityHeadersWithUA(req.Header, s.codexIdentityOverrideUA(account))
+		enforceCodexIdentityHeadersWithUA(req.Header, s.codexIdentityOverrideUA(account, c.GetHeader("User-Agent")))
 	}
 
 	// Ensure required headers exist
@@ -1206,12 +1206,17 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	return req, nil
 }
 
-// codexIdentityOverrideUA 返回账号级显式配置的出站 User-Agent，供强制统一身份时作为覆写来源。
+// codexIdentityOverrideUA 返回账号级显式配置的出站 User-Agent（已按客户端原始 UA 完成
+// OS 感知的多槽选择），供强制统一身份时作为覆写来源。多槽配置必须先选槽：原始的 '|'
+// 分隔串不是合法 UA，直接传入会被身份推导当成单一 UA 拼进出站头。
 // ForceCodexCLI 语义是「强制使用 Codex CLI 身份」，等价于使用网关规范身份，故返回空串；
 // 该优先级与历史行为一致（ForceCodexCLI 在账号自定义 UA 之后生效）。
-func (s *OpenAIGatewayService) codexIdentityOverrideUA(account *Account) string {
+func (s *OpenAIGatewayService) codexIdentityOverrideUA(account *Account, clientUA string) string {
 	if s != nil && s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		return ""
 	}
-	return account.GetOpenAIUserAgent()
+	if account == nil {
+		return ""
+	}
+	return account.ResolveOpenAIUserAgent(clientUA)
 }

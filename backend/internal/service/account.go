@@ -1604,7 +1604,9 @@ func (a *Account) GetOpenAIUserAgent() string {
 }
 
 // ResolveOpenAIUserAgent returns the account custom User-Agent after smart multi-slot
-// selection against the client original User-Agent. Empty clientUA selects the fallback slot.
+// selection against the client original User-Agent. Client identity has priority:
+// slots match by client name and OS family first, then by client name alone, and
+// empty clientUA selects the fallback (last) slot.
 func (a *Account) ResolveOpenAIUserAgent(clientUA string) string {
 	return ResolveSmartUserAgent(a.GetOpenAIUserAgent(), clientUA)
 }

@@ -32,13 +32,39 @@ func TestResolveSmartUserAgent(t *testing.T) {
 		require.Equal(t, "my-agent/1.0", ResolveSmartUserAgent("  my-agent/1.0  ", "curl/8.0"))
 	})
 
-	t.Run("three slots map by client", func(t *testing.T) {
-		require.Equal(t, testSmartUACodexTUI, ResolveSmartUserAgent(configured, "codex-tui/0.144.5 (Linux; x86_64) xterm"))
+	t.Run("three slots map by client and OS", func(t *testing.T) {
+		// 客户端名与 OS 家族都命中才选槽：Windows 的 codex-tui → 第一槽。
+		require.Equal(t, testSmartUACodexTUI, ResolveSmartUserAgent(configured, "codex-tui/0.144.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.144.5)"))
+		// Linux 家族的 codex-tui（Ubuntu）跳过 Windows 槽，命中 RHEL 第三槽。
+		require.Equal(t, testSmartUAFallback, ResolveSmartUserAgent(configured, "codex-tui/0.144.5 (Linux; x86_64) xterm"))
+		require.Equal(t, testSmartUAFallback, ResolveSmartUserAgent(configured, "codex-tui/0.148.0 (Ubuntu 24.04) terminal (codex-tui; 0.148.0)"))
+		// 配置中没有 Mac 的 codex-tui 槽：客户端名优先，退回同家族第一槽而非兜底槽。
+		require.Equal(t, testSmartUACodexTUI, ResolveSmartUserAgent(configured, "codex-tui/0.144.5 (Mac OS X 15.1.0; arm64) iTerm.app (codex-tui; 0.144.5)"))
 		require.Equal(t, testSmartUADesktop, ResolveSmartUserAgent(configured, "Codex Desktop/0.145.0 (Mac OS 26.5.2; arm64)"))
 		require.Equal(t, testSmartUAFallback, ResolveSmartUserAgent(configured, "curl/8.0"))
 		require.Equal(t, testSmartUAFallback, ResolveSmartUserAgent(configured, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"))
 		require.Equal(t, testSmartUAFallback, ResolveSmartUserAgent(configured, "codex_cli_rs/0.144.0"))
 		require.Equal(t, testSmartUAFallback, ResolveSmartUserAgent(configured, ""))
+	})
+
+	t.Run("client family has priority over OS and fallback", func(t *testing.T) {
+		// 用户实例：Ubuntu 客户端必须取最后一槽（Linux 家族），而不是第一槽（Windows）。
+		windows := "codex-tui/0.148.0 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.148.0)"
+		desktop := "Codex Desktop/0.148.0-alpha.9 (Mac OS 26.5.2; arm64) unknown (Codex Desktop; 26.810.52044)"
+		rhel := "codex-tui/0.148.0 (Red Hat Enterprise Linux 8.8.0; x86_64) vscode/1.104.3 (codex-tui; 0.148.0)"
+		configured := windows + " | " + desktop + " | " + rhel
+		require.Equal(t, rhel, ResolveSmartUserAgent(configured, "codex-tui/0.148.0 (Ubuntu 24.04) terminal (codex-tui; 0.148.0)"))
+		require.Equal(t, windows, ResolveSmartUserAgent(configured, windows))
+		require.Equal(t, desktop, ResolveSmartUserAgent(configured, "Codex Desktop/0.148.0 (Mac OS 26.5.2; arm64) unknown (Codex Desktop; 26.810.52044)"))
+		// 配置只有 Mac 的 Codex Desktop 槽：Windows 的 Codex Desktop 客户端仍取
+		// 家族命中的第二槽，而不是错拿其他家族的兜底槽。
+		require.Equal(t, desktop, ResolveSmartUserAgent(configured, "Codex Desktop/0.148.0-alpha.9 (Windows; arm64) unknown (Codex Desktop; 26.810.52044)"))
+	})
+
+	t.Run("slot without OS info matches any client OS (legacy wildcard)", func(t *testing.T) {
+		noOS := "codex-tui/0.1.0 | other-agent/1.0"
+		require.Equal(t, "codex-tui/0.1.0", ResolveSmartUserAgent(noOS, "codex-tui/0.1.0 (Mac OS X 15.1.0; arm64)"))
+		// 客户端 UA 无 OS 段时同样通配：按客户端名命中第一槽（见 case insensitive match）。
 	})
 
 	t.Run("case insensitive match", func(t *testing.T) {
@@ -97,14 +123,20 @@ func TestApplyHeaderOverrides_SmartUserAgent(t *testing.T) {
 		},
 	})
 
-	t.Run("maps codex-tui client", func(t *testing.T) {
+	t.Run("maps codex-tui client by OS", func(t *testing.T) {
 		h := make(http.Header)
-		h.Set("User-Agent", "codex-tui/0.144.5 (Linux; x86_64) xterm (codex-tui; 0.144.5)")
+		h.Set("User-Agent", "codex-tui/0.144.5 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.144.5)")
 		h.Set("x-app", "original")
 		acc.ApplyHeaderOverrides(h)
 		require.Equal(t, testSmartUACodexTUI, h.Get("User-Agent"))
 		// x-app is written with non-canonical wire casing; assert via map key.
 		require.Equal(t, []string{"cli"}, h["x-app"])
+
+		// Linux 家族客户端命中 RHEL 兜底槽，而不是 Windows 第一槽。
+		h = make(http.Header)
+		h.Set("User-Agent", "codex-tui/0.144.5 (Linux; x86_64) xterm (codex-tui; 0.144.5)")
+		acc.ApplyHeaderOverrides(h)
+		require.Equal(t, testSmartUAFallback, h.Get("User-Agent"))
 	})
 
 	t.Run("maps Codex Desktop client", func(t *testing.T) {

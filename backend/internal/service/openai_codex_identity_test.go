@@ -178,6 +178,21 @@ func TestEnforceCodexIdentityHeadersWithAccountOverrideUA(t *testing.T) {
 		require.Equal(t, "codex-tui/0.200.1 (Mac OS X 14.0; arm64) iTerm", h.Get("user-agent"))
 		require.Equal(t, "0.200.1", h.Get("version"))
 	})
+
+	// 回归：多槽配置的原始 '|' 分隔串不是单一 UA。首段（如 codex-tui）配对成功会把
+	// 整串含 '|' 的畸形 UA 发给上游；身份推导必须忽略未选槽的原始值，整体回退规范身份。
+	t.Run("多槽原始串不作为单一 UA 参与推导", func(t *testing.T) {
+		h := make(http.Header)
+		h.Set("originator", "codex-tui")
+
+		enforceCodexIdentityHeadersWithUA(h,
+			"codex-tui/0.148.0 (Windows 10.0.26100; x86_64) WindowsTerminal (codex-tui; 0.148.0) | Codex Desktop/0.148.0 (Mac OS 26.5.2; arm64) unknown")
+
+		require.Equal(t, openai.CodexDefaultOriginator, h.Get("originator"))
+		require.Equal(t, codexCLIUserAgent, h.Get("user-agent"))
+		require.Equal(t, codexCLIVersion, h.Get("version"))
+		require.NotContains(t, h.Get("user-agent"), "|")
+	})
 }
 
 // 规范身份跟随注入的解析器（后台面板 UA / 自动同步版本号），无需重启或发版。
