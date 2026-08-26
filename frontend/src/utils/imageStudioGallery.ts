@@ -27,6 +27,19 @@ export interface ImageStudioGalleryItem extends ImageStudioGalleryConfig {
   imageSrc: string
 }
 
+const sessionResultsByUser = new Map<number, ImageStudioGalleryItem[]>()
+
+/** Full-resolution results are retained for the active SPA session only. */
+export function getImageStudioSessionResults(userId: number): ImageStudioGalleryItem[] {
+  if (!positiveInteger(userId)) return []
+  return [...(sessionResultsByUser.get(userId) || [])]
+}
+
+export function setImageStudioSessionResults(userId: number, items: ImageStudioGalleryItem[]): void {
+  if (!positiveInteger(userId)) return
+  sessionResultsByUser.set(userId, [...items])
+}
+
 /** The only Image Studio record shape allowed in IndexedDB from database version 4. */
 export interface ImageStudioArchiveItem extends ImageStudioGalleryConfig {
   recordVersion: 4

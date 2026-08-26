@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import ImageStudioView from '../ImageStudioView.vue'
+import { setImageStudioSessionResults } from '@/utils/imageStudioGallery'
 
 const listKeys = vi.hoisted(() => vi.fn())
 const getPricing = vi.hoisted(() => vi.fn())
@@ -99,6 +100,7 @@ function archivedImage(prompt = 'stored prompt', id = 'stored-image') {
 describe('ImageStudioView', () => {
   beforeEach(() => {
     localStorage.clear()
+    setImageStudioSessionResults(42, [])
     listGallery.mockReset().mockResolvedValue([])
     saveGallery.mockReset().mockResolvedValue(undefined)
     deleteGallery.mockReset().mockResolvedValue(undefined)
@@ -203,6 +205,23 @@ describe('ImageStudioView', () => {
     expect(sizeOptions.map((option) => option.text()).join(' ')).toContain('3840 x 2160 · 4K')
     expect(sizeOptions.map((option) => option.text()).join(' ')).toContain('2160 x 3840 · 4K')
     expect(wrapper.get('.studio-workspace').find('.studio-gallery').exists()).toBe(true)
+  })
+
+  it('keeps completed results when Image Studio is remounted', async () => {
+    const first = mountView()
+    await flushPromises()
+    await first.get('#image-studio-prompt').setValue('retain this result')
+    await first.get('form').trigger('submit')
+    await flushPromises()
+    expect(first.findAll('.gallery-item')).toHaveLength(1)
+
+    first.unmount()
+    const second = mountView()
+    await flushPromises()
+
+    expect(second.findAll('.gallery-item')).toHaveLength(1)
+    expect(second.get('.gallery-item-meta p').text()).toBe('retain this result')
+    second.unmount()
   })
 
   it('validates custom dimensions and swaps their orientation', async () => {

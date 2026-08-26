@@ -559,10 +559,12 @@ import {
   createImageStudioArchiveItem,
   createImageStudioThumbnail,
   deleteImageStudioGalleryItem,
+  getImageStudioSessionResults,
   isImageStudioArchiveLimitError,
   listImageStudioGallery,
   sanitizeImageStudioSource,
   saveImageStudioGalleryItem,
+  setImageStudioSessionResults,
   type ImageStudioArchiveItem,
   type ImageStudioGalleryItem
 } from '@/utils/imageStudioGallery'
@@ -623,7 +625,7 @@ const authStore = useAuthStore()
 const userId = computed(() => authStore.user?.id || 0)
 
 const imageKeys = ref<ApiKey[]>([])
-const gallery = ref<ImageStudioGalleryItem[]>([])
+const gallery = ref<ImageStudioGalleryItem[]>(getImageStudioSessionResults(userId.value))
 const archives = ref<ImageStudioArchiveItem[]>([])
 const galleryMode = ref<'results' | 'archive'>('results')
 const archivingIds = ref<Set<string>>(new Set())
@@ -1565,6 +1567,13 @@ watch(() => form.model, (model, previousModel) => {
 })
 watch(() => form.background, () => {
   form.outputFormat = validOrFirst(form.outputFormat, outputFormats.value) as ImageOutputFormat
+})
+watch(gallery, (items) => {
+  setImageStudioSessionResults(userId.value, items)
+}, { flush: 'sync' })
+watch(userId, (currentUserId, previousUserId) => {
+  if (currentUserId === previousUserId) return
+  gallery.value = getImageStudioSessionResults(currentUserId)
 })
 
 onMounted(async () => {
