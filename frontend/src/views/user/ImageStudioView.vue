@@ -184,7 +184,7 @@
 
             <fieldset v-if="outputFormats.length" class="control-group min-w-0">
               <legend class="control-label">{{ t('imageStudio.format') }}</legend>
-              <div class="segmented-control three-columns compact">
+              <div class="segmented-control compact" :class="outputFormats.length === 2 ? 'two-columns' : 'three-columns'">
                 <button
                   v-for="format in outputFormats"
                   :key="format"

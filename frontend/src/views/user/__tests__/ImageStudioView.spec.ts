@@ -272,6 +272,7 @@ describe('ImageStudioView', () => {
     await flushPromises()
 
     expect(wrapper.findAll('.segmented-control.compact button').map((button) => button.text())).toEqual(['PNG', 'WEBP'])
+    expect(wrapper.get('.segmented-control.compact').classes()).toContain('two-columns')
     await wrapper.get('#image-studio-prompt').setValue('a product cutout')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
