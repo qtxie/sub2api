@@ -21,12 +21,12 @@ const (
 	// manual schedulable flag (still requires active accounts).
 	QCProbePoolScopeGlobal = "global"
 
-	QCProbeSourceZtest           = "ztest"
-	QCProbeSourceTokensQC        = "tokensqc"
-	QCProbeSourceHvoy            = "hvoy"
-	QCProbeSourceAPIRanking      = "apiranking"
-	QCProbeSourceLuguang         = "luguang"
-	QCProbeSourceUserAgent       = "user_agent"
+	QCProbeSourceZtest      = "ztest"
+	QCProbeSourceTokensQC   = "tokensqc"
+	QCProbeSourceHvoy       = "hvoy"
+	QCProbeSourceAPIRanking = "apiranking"
+	QCProbeSourceLuguang    = "luguang"
+	QCProbeSourceUserAgent  = "user_agent"
 	// QCProbeSourceEmptyUserAgent matches server-side QC probes (e.g. TokensQC)
 	// that omit User-Agent entirely or send "-".
 	QCProbeSourceEmptyUserAgent = "empty_user_agent"
@@ -42,7 +42,7 @@ type QCProbeSourceConfig struct {
 // QCProbeRoutingSettings is the admin-configurable QC probe routing policy.
 type QCProbeRoutingSettings struct {
 	Enabled             bool                           `json:"enabled"`
-	Fallback            string                         `json:"fallback"` // normal | reject
+	Fallback            string                         `json:"fallback"`   // normal | reject
 	PoolScope           string                         `json:"pool_scope"` // group | global
 	AccountIDs          []int64                        `json:"account_ids"`
 	Sources             map[string]QCProbeSourceConfig `json:"sources"`
@@ -447,6 +447,7 @@ type QCProbeAccountLoader func(ctx context.Context, ids []int64) ([]Account, err
 // ResolveAccountsForQCProbe applies QC pool policy to a candidate list.
 //   - group scope: intersect with the provided group-schedulable candidates
 //   - global scope: load pool accounts by ID (ignore group + manual unschedulable)
+//
 // Returns (accounts, reject).
 func ResolveAccountsForQCProbe(ctx context.Context, platform string, accounts []Account, loadPool QCProbeAccountLoader) ([]Account, bool) {
 	selection, ok := QCProbeSelectionFromContext(ctx)

@@ -338,9 +338,9 @@ func TestOpenAITryStickySessionHit_GlobalQCProbeAllowsOutsideGroupUnschedulable(
 		},
 	}
 	svc := &OpenAIGatewayService{
-		accountRepo:       repo,
-		cache:             cache,
-		cfg:               &config.Config{RunMode: config.RunModeStandard},
+		accountRepo: repo,
+		cache:       cache,
+		cfg:         &config.Config{RunMode: config.RunModeStandard},
 		schedulerSnapshot: &SchedulerSnapshotService{cache: &openAISnapshotCacheStub{
 			accountsByID: map[int64]*Account{34: &burn},
 		}},
