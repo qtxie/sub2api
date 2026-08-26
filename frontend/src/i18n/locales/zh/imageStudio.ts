@@ -50,6 +50,7 @@ export default {
     background: '背景',
     backgroundAuto: '自动',
     backgroundOpaque: '不透明',
+    backgroundTransparent: '透明',
     format: '格式',
     count: '数量',
     controls: '图像生成参数',

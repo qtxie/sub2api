@@ -148,7 +148,7 @@ describe('ImageStudioView', () => {
         models: [{
           id: 'gpt-image-2', label: 'GPT Image 2', aspect_ratios: [], image_sizes: [
             '1024x1024', '1536x1024', '1024x1536', '2048x2048', '2048x1152', '1152x2048', '3840x2160', '2160x3840'
-          ], resolutions: [], qualities: ['auto', 'low', 'medium', 'high'], backgrounds: ['auto', 'opaque'],
+          ], resolutions: [], qualities: ['auto', 'low', 'medium', 'high'], backgrounds: ['auto', 'opaque', 'transparent'],
           output_formats: ['png', 'jpeg', 'webp'], max_images: 4, max_input_images: 4, supports_custom_size: true
         }]
       }
@@ -227,11 +227,11 @@ describe('ImageStudioView', () => {
     expect(height.element.value).toBe('2048')
   })
 
-  it('offers the three GPT Image 2 output formats without transparent background', async () => {
+  it('offers the GPT Image 2 transparent background option and all formats by default', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.findAll('.background-control button')).toHaveLength(2)
+    expect(wrapper.findAll('.background-control button')).toHaveLength(3)
     expect(wrapper.find('.control-pair').exists()).toBe(false)
     expect(wrapper.get('.count-control').exists()).toBe(true)
     expect(wrapper.findAll('.four-columns button').map((button) => button.text())).toEqual([
@@ -241,7 +241,25 @@ describe('ImageStudioView', () => {
       'imageStudio.qualityHigh'
     ])
     expect(wrapper.findAll('.segmented-control.compact button').map((button) => button.text())).toEqual(['PNG', 'JPEG', 'WEBP'])
-    expect(wrapper.text()).not.toContain('imageStudio.backgroundTransparent')
+    expect(wrapper.text()).toContain('imageStudio.backgroundTransparent')
+  })
+
+  it('uses a compatible format for transparent GPT Image 2 backgrounds', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.findAll('.segmented-control.compact button')[1].trigger('click')
+    await wrapper.findAll('.background-control button')[2].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.segmented-control.compact button').map((button) => button.text())).toEqual(['PNG', 'WEBP'])
+    await wrapper.get('#image-studio-prompt').setValue('a product cutout')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({
+      background: 'transparent',
+      output_format: 'png'
+    }), expect.any(AbortSignal))
   })
 
   it('renders only Gemini-supported controls and sends an Interactions payload', async () => {

@@ -148,7 +148,7 @@ var imageStudioCapabilities = map[string]imageStudioCapabilitiesResponse{
 			ID: imageStudioModel, Label: "GPT Image 2",
 			AspectRatios: []string{}, ImageSizes: imageStudioPricingSizes, Resolutions: []string{},
 			Qualities: []string{"auto", "low", "medium", "high"}, MaxImages: imageStudioOpenAIMaxOutputCount,
-			SupportsCustomSize: true, OutputFormats: []string{"png", "jpeg", "webp"}, Backgrounds: []string{"auto", "opaque"},
+			SupportsCustomSize: true, OutputFormats: []string{"png", "jpeg", "webp"}, Backgrounds: []string{"auto", "opaque", "transparent"},
 			MaxInputImages: imageStudioOpenAIMaxInputImages,
 		}},
 	},
@@ -482,6 +482,9 @@ func validateImageStudioInput(input imageStudioGenerationRequest, provider strin
 		}
 		if !imageStudioOptionAllowed(input.OutputFormat, capability.OutputFormats...) {
 			return "Unsupported image output format"
+		}
+		if input.Background == "transparent" && input.OutputFormat == "jpeg" {
+			return "Transparent backgrounds require PNG or WebP output"
 		}
 	case service.PlatformGemini:
 		if !imageStudioOptionAllowed(input.AspectRatio, capability.AspectRatios...) {

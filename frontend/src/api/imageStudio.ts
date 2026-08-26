@@ -5,7 +5,7 @@ const imageGenerationTimeoutMs = 10 * 60 * 1000
 
 export type ImageOutputFormat = 'png' | 'jpeg' | 'webp'
 export type ImageQuality = 'auto' | 'low' | 'medium' | 'high'
-export type ImageBackground = 'auto' | 'opaque'
+export type ImageBackground = 'auto' | 'opaque' | 'transparent'
 export type ImageStudioProvider = 'openai' | 'gemini' | 'grok'
 
 export interface ImageStudioSourceImage {
@@ -319,7 +319,7 @@ function normalizeCapabilities(value: unknown): ImageStudioCapabilitiesResponse 
         image_sizes: stringArray(model?.image_sizes ?? model?.imageSizes),
         resolutions: stringArray(model?.resolutions),
         qualities: enumArray(model?.qualities, ['auto', 'low', 'medium', 'high'] as const),
-        backgrounds: enumArray(model?.backgrounds, ['auto', 'opaque'] as const),
+        backgrounds: enumArray(model?.backgrounds, ['auto', 'opaque', 'transparent'] as const),
         output_formats: enumArray(model?.output_formats ?? model?.outputFormats, ['png', 'jpeg', 'webp'] as const),
         max_images: maxImages,
         max_input_images: maxInputImages,

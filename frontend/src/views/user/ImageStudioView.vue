@@ -170,7 +170,7 @@
 
             <fieldset v-if="backgroundOptions.length" class="control-group background-control">
               <legend class="control-label">{{ t('imageStudio.background') }}</legend>
-              <div class="segmented-control two-columns">
+              <div class="segmented-control" :class="backgroundOptions.length === 3 ? 'three-columns' : 'two-columns'">
                 <button
                   v-for="option in backgroundOptions"
                   :key="option.value"
@@ -693,9 +693,15 @@ const qualityOptions = computed(() => (selectedModelCapability.value?.qualities 
 })))
 const backgroundOptions = computed(() => (selectedModelCapability.value?.backgrounds || []).map((value) => ({
   value,
-  label: value === 'auto' ? t('imageStudio.backgroundAuto') : t('imageStudio.backgroundOpaque')
+  label: value === 'auto'
+    ? t('imageStudio.backgroundAuto')
+    : value === 'opaque'
+      ? t('imageStudio.backgroundOpaque')
+      : t('imageStudio.backgroundTransparent')
 })))
-const outputFormats = computed(() => selectedModelCapability.value?.output_formats || [])
+const outputFormats = computed(() => (selectedModelCapability.value?.output_formats || []).filter((format) => (
+  form.background !== 'transparent' || format !== 'jpeg'
+)))
 const maxImageCount = computed(() => provider.value === 'gemini' ? 1 : selectedModelCapability.value?.max_images || 1)
 const maxInputImageCount = computed(() => selectedModelCapability.value?.max_input_images || 0)
 const hasSourceImages = computed(() => sourceImages.value.length > 0)
@@ -990,7 +996,7 @@ function applyModelCapabilities() {
   form.resolution = validOrFirst(form.resolution, model.resolutions)
   form.quality = validOrFirst(form.quality, model.qualities) as ImageQuality
   form.background = validOrFirst(form.background, model.backgrounds) as ImageBackground
-  form.outputFormat = validOrFirst(form.outputFormat, model.output_formats) as ImageOutputFormat
+  form.outputFormat = validOrFirst(form.outputFormat, outputFormats.value) as ImageOutputFormat
   form.count = provider.value === 'gemini' ? 1 : Math.min(Math.max(1, form.count), model.max_images)
   reconcileSourceImages(model.max_input_images)
 }
@@ -1556,6 +1562,9 @@ watch(() => form.model, (model, previousModel) => {
   if (!capabilities.value || !model || model === previousModel) return
   applyModelCapabilities()
   void loadPricing()
+})
+watch(() => form.background, () => {
+  form.outputFormat = validOrFirst(form.outputFormat, outputFormats.value) as ImageOutputFormat
 })
 
 onMounted(async () => {

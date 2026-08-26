@@ -110,7 +110,7 @@ func TestImageStudioGenerateUsesSupportedGPTImage2Payload(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewBufferString(`{
 		"api_key_id":7,"prompt":"draw a lighthouse","size":"3840x2160","quality":"high",
-		"background":"opaque","output_format":"webp","n":4
+		"background":"transparent","output_format":"webp","n":4
 	}`))
 	request.Header.Set("Content-Type", "application/json")
 	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
@@ -118,6 +118,7 @@ func TestImageStudioGenerateUsesSupportedGPTImage2Payload(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, imageStudioModel, upstreamBody["model"])
 	require.NotContains(t, upstreamBody, "response_format")
+	require.Equal(t, "transparent", upstreamBody["background"])
 	require.Equal(t, "webp", upstreamBody["output_format"])
 	require.Equal(t, true, upstreamBody["stream"])
 	require.Equal(t, float64(4), upstreamBody["n"])
@@ -204,9 +205,14 @@ func TestImageStudioValidatesGPTImage2BackgroundAndFormats(t *testing.T) {
 		require.Empty(t, validateImageStudioInput(input, service.PlatformOpenAI, capability), format)
 	}
 
-	base.OutputFormat = "png"
 	base.Background = "transparent"
-	require.Equal(t, "Unsupported image background", validateImageStudioInput(base, service.PlatformOpenAI, capability))
+	for _, format := range []string{"png", "webp"} {
+		input := base
+		input.OutputFormat = format
+		require.Empty(t, validateImageStudioInput(input, service.PlatformOpenAI, capability), format)
+	}
+	base.OutputFormat = "jpeg"
+	require.Equal(t, "Transparent backgrounds require PNG or WebP output", validateImageStudioInput(base, service.PlatformOpenAI, capability))
 }
 
 func TestImageStudioValidatesGPTImage2SizesAndQualities(t *testing.T) {
@@ -328,7 +334,9 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 			provider: service.PlatformOpenAI, defaultModel: imageStudioModel,
 			assert: func(t *testing.T, capabilities imageStudioCapabilitiesResponse) {
 				require.Len(t, capabilities.Models, 1)
-				require.Equal(t, imageStudioOpenAIMaxInputImages, capabilities.Models[0].MaxInputImages)
+				model := capabilities.Models[0]
+				require.Equal(t, []string{"auto", "opaque", "transparent"}, model.Backgrounds)
+				require.Equal(t, imageStudioOpenAIMaxInputImages, model.MaxInputImages)
 			},
 		},
 	}

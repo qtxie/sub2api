@@ -50,6 +50,7 @@ export default {
     background: 'Background',
     backgroundAuto: 'Auto',
     backgroundOpaque: 'Opaque',
+    backgroundTransparent: 'Transparent',
     format: 'Format',
     count: 'Images',
     controls: 'Image generation controls',
