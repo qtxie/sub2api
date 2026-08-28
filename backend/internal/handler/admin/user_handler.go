@@ -59,15 +59,16 @@ func NewUserHandler(
 
 // CreateUserRequest represents admin create user request
 type CreateUserRequest struct {
-	Email         string   `json:"email" binding:"required,email"`
-	Password      string   `json:"password" binding:"required,min=6"`
-	Username      string   `json:"username"`
-	Notes         string   `json:"notes"`
-	Role          string   `json:"role" binding:"omitempty,oneof=admin user"`
-	Balance       *float64 `json:"balance"`
-	Concurrency   int      `json:"concurrency"`
-	RPMLimit      int      `json:"rpm_limit"`
-	AllowedGroups []int64  `json:"allowed_groups"`
+	Email                string   `json:"email" binding:"required,email"`
+	Password             string   `json:"password" binding:"required,min=6"`
+	Username             string   `json:"username"`
+	Notes                string   `json:"notes"`
+	Role                 string   `json:"role" binding:"omitempty,oneof=admin user"`
+	Balance              *float64 `json:"balance"`
+	Concurrency          int      `json:"concurrency"`
+	RPMLimit             int      `json:"rpm_limit"`
+	AllowedGroups        []int64  `json:"allowed_groups"`
+	RestrictPublicGroups bool     `json:"restrict_public_groups"`
 }
 
 // UpdateUserRequest represents admin update user request
@@ -82,6 +83,7 @@ type UpdateUserRequest struct {
 	Concurrency           *int     `json:"concurrency"`
 	RPMLimit              *int     `json:"rpm_limit"`
 	SessionStorageEnabled *bool    `json:"session_storage_enabled"`
+	RestrictPublicGroups  *bool    `json:"restrict_public_groups"`
 	Status                string   `json:"status" binding:"omitempty,oneof=active disabled"`
 	AllowedGroups         *[]int64 `json:"allowed_groups"`
 	// GroupRates 用户专属分组倍率配置
@@ -285,16 +287,17 @@ func (h *UserHandler) Create(c *gin.Context) {
 	}
 
 	user, err := h.adminService.CreateUser(c.Request.Context(), &service.CreateUserInput{
-		Email:         req.Email,
-		Password:      req.Password,
-		Username:      req.Username,
-		Notes:         req.Notes,
-		Role:          req.Role,
-		Balance:       req.Balance,
-		Concurrency:   req.Concurrency,
-		RPMLimit:      req.RPMLimit,
-		AllowedGroups: req.AllowedGroups,
-		ActorAdminID:  getAdminIDFromContext(c),
+		Email:                req.Email,
+		Password:             req.Password,
+		Username:             req.Username,
+		Notes:                req.Notes,
+		Role:                 req.Role,
+		Balance:              req.Balance,
+		Concurrency:          req.Concurrency,
+		RPMLimit:             req.RPMLimit,
+		AllowedGroups:        req.AllowedGroups,
+		RestrictPublicGroups: req.RestrictPublicGroups,
+		ActorAdminID:         getAdminIDFromContext(c),
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -354,6 +357,7 @@ func (h *UserHandler) Update(c *gin.Context) {
 		Concurrency:           req.Concurrency,
 		RPMLimit:              req.RPMLimit,
 		SessionStorageEnabled: req.SessionStorageEnabled,
+		RestrictPublicGroups:  req.RestrictPublicGroups,
 		Status:                req.Status,
 		AllowedGroups:         req.AllowedGroups,
 		GroupRates:            req.GroupRates,
