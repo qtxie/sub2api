@@ -43,6 +43,7 @@ type BalanceNotifyService struct {
 	settingRepo              SettingRepository
 	accountRepo              AccountQuotaReader
 	notificationEmailService *NotificationEmailService
+	wechatNotifier           WeChatBotNotifier
 }
 
 // NewBalanceNotifyService creates a new BalanceNotifyService.
@@ -56,6 +57,10 @@ func NewBalanceNotifyService(emailService *EmailService, settingRepo SettingRepo
 
 func (s *BalanceNotifyService) SetNotificationEmailService(notificationEmailService *NotificationEmailService) {
 	s.notificationEmailService = notificationEmailService
+}
+
+func (s *BalanceNotifyService) SetWeChatNotifier(notifier WeChatBotNotifier) {
+	s.wechatNotifier = notifier
 }
 
 // resolveBalanceThreshold returns the effective balance threshold.
@@ -86,10 +91,10 @@ func (s *BalanceNotifyService) CheckBalanceAfterDeduction(ctx context.Context, u
 
 // canNotifyBalance checks nil guards and user-level toggle.
 func (s *BalanceNotifyService) canNotifyBalance(user *User) bool {
-	if user == nil || s.emailService == nil || s.settingRepo == nil {
+	if user == nil || s.settingRepo == nil || (s.emailService == nil && s.wechatNotifier == nil) {
 		return false
 	}
-	return user.BalanceNotifyEnabled
+	return s.wechatNotifier != nil || (s.emailService != nil && user.BalanceNotifyEnabled)
 }
 
 // resolveUserEffectiveThreshold reads global + user config, returns the effective threshold.
@@ -122,6 +127,16 @@ func crossedDownward(oldV, newV, threshold float64) bool {
 func (s *BalanceNotifyService) dispatchBalanceLowEmail(ctx context.Context, user *User, newBalance, threshold float64, rechargeURL string) {
 	siteName := s.getSiteName(ctx)
 	recipients := s.collectBalanceNotifyRecipients(user)
+	if s.wechatNotifier != nil {
+		message := fmt.Sprintf("[余额不足通知]\n当前余额：$%.4f\n提醒阈值：$%.4f", newBalance, threshold)
+		if strings.TrimSpace(rechargeURL) != "" {
+			message += "\n充值地址：" + strings.TrimSpace(rechargeURL)
+		}
+		s.wechatNotifier.NotifyUser(ctx, user.ID, WeChatBotEventBalance, message)
+	}
+	if s.emailService == nil || !user.BalanceNotifyEnabled {
+		return
+	}
 	slog.Info("CheckBalanceAfterDeduction: sending notification",
 		"user_id", user.ID, "recipients", recipients, "new_balance", newBalance, "threshold", threshold)
 	go func() {

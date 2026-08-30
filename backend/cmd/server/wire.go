@@ -97,6 +97,7 @@ func provideCleanup(
 	apiKeyService *service.APIKeyService,
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
 	telegramNotificationService *service.TelegramNotificationService,
+	weChatBotService *service.WeChatBotService,
 	schedulerSnapshot *service.SchedulerSnapshotService,
 	tokenRefresh *service.TokenRefreshService,
 	accountExpiry *service.AccountExpiryService,
@@ -172,6 +173,12 @@ func provideCleanup(
 			{"TelegramNotificationService", func() error {
 				if telegramNotificationService != nil {
 					telegramNotificationService.Stop()
+				}
+				return nil
+			}},
+			{"WeChatBotService", func() error {
+				if weChatBotService != nil {
+					weChatBotService.Stop()
 				}
 				return nil
 			}},

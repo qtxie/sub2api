@@ -72,6 +72,7 @@ type Handlers struct {
 	BatchImage       *BatchImageHandler
 	ImageStudio      *ImageStudioHandler
 	VideoStudio      *VideoStudioHandler
+	WeChatBot        *WeChatBotHandler
 }
 
 // BuildInfo contains build-time information

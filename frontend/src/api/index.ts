@@ -22,6 +22,14 @@ export { totpAPI } from './totp'
 export { passkeyAPI, type PasskeyCredentialSummary } from './passkey'
 export { default as announcementsAPI } from './announcements'
 export { channelMonitorUserAPI } from './channelMonitor'
+export { weChatBotAPI } from './wechatBot'
+export type {
+  WeChatBotAdminStatus,
+  WeChatBotLoginQR,
+  WeChatBotLoginStatus,
+  WeChatBotSettingsUpdate,
+  WeChatBotUserStatus,
+} from './wechatBot'
 
 // Admin APIs
 export { adminAPI } from './admin'

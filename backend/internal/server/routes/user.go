@@ -40,6 +40,16 @@ func RegisterUserRoutes(
 			user.GET("/api-keys/:id/usage/daily", panelRateLimiter.Heavy(), h.Usage.GetMyAPIKeyDailyUsage)
 			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
 
+			wechatBot := user.Group("/wechat-bot")
+			{
+				wechatBot.GET("", h.WeChatBot.GetUserStatus)
+				wechatBot.POST("/login/qr", h.WeChatBot.CreateLoginQR)
+				wechatBot.GET("/login/:login_id", h.WeChatBot.PollLoginQR)
+				wechatBot.PUT("/settings", h.WeChatBot.UpdateUserSettings)
+				wechatBot.POST("/test", h.WeChatBot.SendTest)
+				wechatBot.DELETE("", h.WeChatBot.Disconnect)
+			}
+
 			// 通知邮箱管理
 			notifyEmail := user.Group("/notify-email")
 			{

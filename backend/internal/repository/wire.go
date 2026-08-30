@@ -134,6 +134,7 @@ var ProviderSet = wire.NewSet(
 	NewSchedulerOutboxRepository,
 	NewAuthCacheInvalidationOutboxRepository,
 	NewTelegramNotificationOutboxRepository,
+	NewWeChatBotRepository,
 	NewProxyLatencyCache,
 	NewTotpCache,
 	NewRefreshTokenCache,

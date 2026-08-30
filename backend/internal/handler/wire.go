@@ -201,6 +201,7 @@ func ProvideHandlers(
 	batchImageHandler *BatchImageHandler,
 	imageStudioHandler *ImageStudioHandler,
 	videoStudioHandler *VideoStudioHandler,
+	weChatBotHandler *WeChatBotHandler,
 	videoStudioTracker *service.VideoStudioTracker,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
@@ -231,6 +232,7 @@ func ProvideHandlers(
 		BatchImage:       batchImageHandler,
 		ImageStudio:      imageStudioHandler,
 		VideoStudio:      videoStudioHandler,
+		WeChatBot:        weChatBotHandler,
 	}
 }
 
@@ -259,6 +261,7 @@ var ProviderSet = wire.NewSet(
 	ProvideBatchImageHandler,
 	NewImageStudioHandler,
 	NewVideoStudioHandler,
+	NewWeChatBotHandler,
 
 	// Admin handlers
 	admin.NewDashboardHandler,

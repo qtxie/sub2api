@@ -76,6 +76,8 @@ func RegisterAdminRoutes(
 		// 系统设置
 		registerSettingsRoutes(admin, h)
 
+		registerWeChatBotRoutes(admin, h)
+
 		// 数据管理
 		registerDataManagementRoutes(admin, h, stepUpAuth)
 
@@ -133,6 +135,14 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+	}
+}
+
+func registerWeChatBotRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	bot := admin.Group("/wechat-bot")
+	{
+		bot.GET("/status", h.WeChatBot.GetAdminStatus)
+		bot.POST("/broadcast", h.WeChatBot.Broadcast)
 	}
 }
 

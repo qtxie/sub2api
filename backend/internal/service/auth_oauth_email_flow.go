@@ -497,4 +497,8 @@ func (s *AuthService) RecordSuccessfulLogin(ctx context.Context, userID int64) {
 		}
 	}
 	s.touchUserLogin(ctx, userID)
+	if s != nil && s.loginNotifier != nil && userID > 0 {
+		s.loginNotifier.NotifyUser(ctx, userID, WeChatBotEventLogin,
+			fmt.Sprintf("[登录通知]\n您的账号于 %s 成功登录。", time.Now().Format("2006-01-02 15:04:05")))
+	}
 }
