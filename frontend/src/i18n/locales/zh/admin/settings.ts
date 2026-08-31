@@ -1195,7 +1195,7 @@ export default {
         usersWithErrors: '连接异常用户',
         statusFailed: '加载微信机器人状态失败。',
         broadcastTitle: '管理员通知',
-        broadcastHint: '向所有已连接且开启管理员通知的用户加入一条待发消息。',
+        broadcastHint: '主动通知默认关闭。只有用户手动开启管理员通知后，才会加入待发消息。',
         messageTitle: '标题',
         titlePlaceholder: '可选的通知标题',
         message: '通知内容',

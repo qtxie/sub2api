@@ -150,6 +150,25 @@ func TestWeChatILinkSendTextPayloadAndWindowError(t *testing.T) {
 	}
 }
 
+func TestWeChatILinkRecognizesExpiredAuthentication(t *testing.T) {
+	if !rawErrorCodeAuthExpired(json.RawMessage(`-14`)) {
+		t.Fatal("errcode -14 was not recognized as expired authentication")
+	}
+
+	client := &WeChatILinkClient{httpClient: weChatILinkDoFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`unauthorized`)),
+		}, nil
+	})}
+
+	_, _, err := client.GetUpdates(context.Background(), weChatILinkBaseURL, "expired-token", "")
+	if !errors.Is(err, ErrWeChatILinkAuthExpired) {
+		t.Fatalf("GetUpdates() error = %v, want ErrWeChatILinkAuthExpired", err)
+	}
+}
+
 func TestNormalizeWeChatILinkURL(t *testing.T) {
 	tests := []struct {
 		name    string

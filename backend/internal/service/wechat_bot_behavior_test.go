@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -64,6 +65,25 @@ type weChatCommandRepoStub struct {
 	updated *WeChatBotSettingsUpdate
 }
 
+type weChatInboundRepoStub struct {
+	WeChatBotRepository
+	account  *WeChatBotAccount
+	outbound int
+}
+
+func (r *weChatInboundRepoStub) TouchInbound(_ context.Context, _ int64, ilinkUserID, encryptedContextToken string, inboundAt time.Time) (*WeChatBotAccount, error) {
+	r.account.ILinkUserID = ilinkUserID
+	r.account.ContextTokenEncrypted = encryptedContextToken
+	r.account.LastInboundAt = &inboundAt
+	r.account.OutboundCount = 0
+	return r.account, nil
+}
+
+func (r *weChatInboundRepoStub) IncrementOutbound(_ context.Context, _ int64, _ time.Time) error {
+	r.outbound++
+	return nil
+}
+
 type weChatLoginRepoStub struct {
 	WeChatBotRepository
 	mu      sync.Mutex
@@ -99,6 +119,10 @@ func (weChatLoginEncryptor) Decrypt(value string) (string, error) {
 func (s *weChatCommandRepoStub) UpdateAccountSettings(_ context.Context, _ int64, update WeChatBotSettingsUpdate) error {
 	s.updated = &update
 	return nil
+}
+
+func (s *weChatCommandRepoStub) GetAccount(_ context.Context, _ int64) (*WeChatBotAccount, error) {
+	return nil, ErrWeChatBotAccountMissing
 }
 
 func TestRecordSuccessfulLoginNotifiesWeChat(t *testing.T) {
@@ -145,6 +169,21 @@ func TestBalanceCrossingNotifiesWeChatWithoutEmailService(t *testing.T) {
 	}
 }
 
+func TestWeChatBotStatusDefaultsProactiveNotificationsOff(t *testing.T) {
+	svc := &WeChatBotService{repo: &weChatCommandRepoStub{}}
+
+	status, err := svc.GetUserStatus(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("GetUserStatus() error = %v", err)
+	}
+	if status.NotifyAdmin || status.NotifyBalance || status.NotifyLogin {
+		t.Fatalf(
+			"proactive notification defaults = admin:%t balance:%t login:%t",
+			status.NotifyAdmin, status.NotifyBalance, status.NotifyLogin,
+		)
+	}
+}
+
 func TestWeChatBotBalanceCommandAndOwnedKeySelection(t *testing.T) {
 	repo := &weChatCommandRepoStub{}
 	svc := &WeChatBotService{
@@ -167,6 +206,57 @@ func TestWeChatBotBalanceCommandAndOwnedKeySelection(t *testing.T) {
 	svc.apiKeyRepo = &weChatAPIKeyRepoStub{key: &APIKey{ID: 44, UserID: 99, Status: StatusActive}}
 	if got := svc.handleCommand(context.Background(), account, "/key 44"); !strings.Contains(got, "不属于当前账号") {
 		t.Fatalf("foreign key response = %q", got)
+	}
+}
+
+func TestWeChatBotExplainsWhenChatIsDisabled(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &weChatInboundRepoStub{account: &WeChatBotAccount{
+		UserID:            7,
+		BotTokenEncrypted: "enc:bot-token",
+		BaseURL:           weChatILinkBaseURL,
+		ILinkUserID:       "wx-user",
+		Enabled:           true,
+		ChatEnabled:       false,
+		LastInboundAt:     &now,
+	}}
+	var sent string
+	svc := &WeChatBotService{
+		ctx:       context.Background(),
+		repo:      repo,
+		encryptor: weChatLoginEncryptor{},
+		ilink: &WeChatILinkClient{httpClient: weChatILinkDoFunc(func(req *http.Request) (*http.Response, error) {
+			var payload struct {
+				Message struct {
+					Items []struct {
+						Text struct {
+							Value string `json:"text"`
+						} `json:"text_item"`
+					} `json:"item_list"`
+				} `json:"msg"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			sent = payload.Message.Items[0].Text.Value
+			return weChatILinkJSONResponse(`{"ret":0}`), nil
+		})},
+	}
+	var item WeChatILinkMessageItem
+	item.Type = weChatILinkTextItemType
+	item.TextItem.Text = "hello"
+	svc.handleInboundMessage(7, WeChatILinkMessage{
+		MessageType:  1,
+		FromUserID:   "wx-user",
+		ContextToken: "context-token",
+		Items:        []WeChatILinkMessageItem{item},
+	})
+
+	if !strings.Contains(sent, "API Key 聊天尚未开启") {
+		t.Fatalf("reply = %q", sent)
+	}
+	if repo.outbound != 1 {
+		t.Fatalf("outbound count = %d, want 1", repo.outbound)
 	}
 }
 

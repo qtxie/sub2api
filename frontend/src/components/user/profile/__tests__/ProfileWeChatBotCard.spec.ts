@@ -60,9 +60,9 @@ describe('ProfileWeChatBotCard', () => {
       available: true,
       logged_in: false,
       enabled: true,
-      notify_admin: true,
-      notify_balance: true,
-      notify_login: true,
+      notify_admin: false,
+      notify_balance: false,
+      notify_login: false,
       chat_enabled: false,
       chat_model: 'gpt-4o-mini',
       delivery_open: false,
@@ -106,6 +106,37 @@ describe('ProfileWeChatBotCard', () => {
       margin: 1,
     })
     expect(wrapper.get('img').attributes('src')).toBe('data:image/png;base64,qr')
+    wrapper.unmount()
+  })
+
+  it('renders labels for all connected bot toggles', async () => {
+    getUserStatus.mockResolvedValue({
+      available: true,
+      logged_in: true,
+      enabled: true,
+      notify_admin: false,
+      notify_balance: false,
+      notify_login: false,
+      chat_enabled: false,
+      chat_model: 'gpt-4o-mini',
+      delivery_open: true,
+      outbound_count: 0,
+      last_inbound_at: '2026-08-31T07:06:22Z',
+    })
+
+    const wrapper = mountCard()
+    await flushPromises()
+
+    for (const label of [
+      'profile.wechatBot.enabled',
+      'profile.wechatBot.adminNotify',
+      'profile.wechatBot.balanceNotify',
+      'profile.wechatBot.loginNotify',
+      'profile.wechatBot.chatEnabled',
+      'profile.wechatBot.lastInbound',
+    ]) {
+      expect(wrapper.text()).toContain(label)
+    }
     wrapper.unmount()
   })
 })

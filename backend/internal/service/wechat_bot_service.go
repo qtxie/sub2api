@@ -159,7 +159,7 @@ func (s *WeChatBotService) NotifyUser(_ context.Context, userID int64, eventType
 func (s *WeChatBotService) GetUserStatus(ctx context.Context, userID int64) (*WeChatBotUserStatus, error) {
 	result := &WeChatBotUserStatus{
 		Available: s.running.Load(),
-		Enabled:   true, NotifyAdmin: true, NotifyBalance: true, NotifyLogin: true,
+		Enabled:   true, NotifyAdmin: false, NotifyBalance: false, NotifyLogin: false,
 		ChatModel: "gpt-4o-mini",
 	}
 	account, err := s.repo.GetAccount(ctx, userID)
@@ -584,15 +584,20 @@ func (s *WeChatBotService) handleInboundMessage(userID int64, message WeChatILin
 	if strings.HasPrefix(strings.TrimSpace(text), "/") {
 		reply := s.handleCommand(s.ctx, account, text)
 		if reply != "" {
-			_ = s.sendToAccount(s.ctx, account, reply)
+			s.replyToInbound(account, reply)
 		}
 		return
 	}
-	if !account.Enabled || !account.ChatEnabled {
+	if !account.Enabled {
+		s.replyToInbound(account, "微信 Bot 当前已在 Sub2API 个人资料中停用，请先开启并保存后再试。")
+		return
+	}
+	if !account.ChatEnabled {
+		s.replyToInbound(account, "API Key 聊天尚未开启。请在 Sub2API 个人资料中选择 API Key、开启聊天并保存；也可发送 /help 查看命令。")
 		return
 	}
 	if _, busy := s.chatBusy.LoadOrStore(account.UserID, struct{}{}); busy {
-		_ = s.sendToAccount(s.ctx, account, "上一条消息仍在处理中，请稍后再试。")
+		s.replyToInbound(account, "上一条消息仍在处理中，请稍后再试。")
 		return
 	}
 	select {
@@ -602,7 +607,7 @@ func (s *WeChatBotService) handleInboundMessage(userID int64, message WeChatILin
 		return
 	default:
 		s.chatBusy.Delete(account.UserID)
-		_ = s.sendToAccount(s.ctx, account, "聊天服务当前繁忙，请稍后再试。")
+		s.replyToInbound(account, "聊天服务当前繁忙，请稍后再试。")
 		return
 	}
 	s.chatWG.Add(1)
@@ -615,9 +620,19 @@ func (s *WeChatBotService) handleInboundMessage(userID int64, message WeChatILin
 			reply = "AI 对话失败：" + boundedWeChatBotUserError(chatErr)
 		}
 		if reply != "" {
-			_ = s.sendToAccount(s.ctx, account, reply)
+			s.replyToInbound(account, reply)
 		}
 	}(account, text)
+}
+
+func (s *WeChatBotService) replyToInbound(account *WeChatBotAccount, text string) {
+	if err := s.sendToAccount(s.ctx, account, text); err != nil {
+		userID := int64(0)
+		if account != nil {
+			userID = account.UserID
+		}
+		slog.Warn("failed to reply to wechat inbound message", "user_id", userID, "error", err)
+	}
 }
 
 func (s *WeChatBotService) handleCommand(ctx context.Context, account *WeChatBotAccount, input string) string {

@@ -225,6 +225,9 @@ func (c *WeChatILinkClient) doJSON(req *http.Request, out any) error {
 	if err != nil {
 		return err
 	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return ErrWeChatILinkAuthExpired
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("wechat ilink returned HTTP %d", resp.StatusCode)
 	}
@@ -255,7 +258,7 @@ func rawErrorCodeNonZero(raw json.RawMessage) bool {
 
 func rawErrorCodeAuthExpired(raw json.RawMessage) bool {
 	value := strings.ToLower(strings.Trim(strings.TrimSpace(string(raw)), `"`))
-	return value == "401" || value == "403" || value == "tokenexpired"
+	return value == "-14" || value == "401" || value == "403" || value == "tokenexpired"
 }
 
 func boundedWeChatILinkErrorCode(raw json.RawMessage) string {

@@ -1201,7 +1201,7 @@ export default {
         usersWithErrors: 'Connection errors',
         statusFailed: 'Failed to load WeChat bot status.',
         broadcastTitle: 'Administrator notification',
-        broadcastHint: 'Queues a message for each connected user who enabled administrator notifications.',
+        broadcastHint: 'Proactive notifications are off by default. Messages are queued only for users who explicitly enable administrator notifications.',
         messageTitle: 'Title',
         titlePlaceholder: 'Optional notification title',
         message: 'Message',

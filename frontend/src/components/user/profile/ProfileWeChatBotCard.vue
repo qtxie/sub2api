@@ -113,6 +113,9 @@
           <p v-if="status.last_connected_at" class="mt-2 text-xs text-gray-500 dark:text-gray-400">
             {{ t('profile.wechatBot.lastConnected', { time: formatTime(status.last_connected_at) }) }}
           </p>
+          <p v-if="status.last_inbound_at" class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('profile.wechatBot.lastInbound', { time: formatTime(status.last_inbound_at) }) }}
+          </p>
           <p v-if="status.bot_id" class="mt-1 break-all font-mono text-xs text-gray-500 dark:text-gray-400">
             Bot ID: {{ status.bot_id }}
           </p>
@@ -130,6 +133,16 @@
       </div>
 
       <div
+        v-if="status.last_error"
+        class="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-800 dark:bg-red-900/20"
+      >
+        <Icon name="exclamationCircle" size="md" class="mt-0.5 shrink-0 text-red-500" />
+        <p class="min-w-0 break-words text-sm text-red-700 dark:text-red-300">
+          {{ status.last_error }}
+        </p>
+      </div>
+
+      <div
         v-if="!status.delivery_open"
         class="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-900/20"
       >
@@ -140,24 +153,62 @@
       </div>
 
       <div class="space-y-4">
-        <SettingToggle
-          v-model="form.enabled"
-          :label="t('profile.wechatBot.enabled')"
-          :hint="t('profile.wechatBot.enabledHint')"
-        />
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-gray-900 dark:text-white">
+              {{ t('profile.wechatBot.enabled') }}
+            </p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('profile.wechatBot.enabledHint') }}
+            </p>
+          </div>
+          <Toggle
+            v-model="form.enabled"
+            class="mt-0.5 shrink-0"
+            :aria-label="t('profile.wechatBot.enabled')"
+          />
+        </div>
+        <p class="text-xs text-gray-500 dark:text-gray-400">
+          {{ t('profile.wechatBot.proactiveDefaultOff') }}
+        </p>
         <div class="grid grid-cols-1 gap-4 border-t border-gray-100 pt-4 md:grid-cols-3 dark:border-dark-700">
-          <SettingToggle v-model="form.notify_admin" :label="t('profile.wechatBot.adminNotify')" />
-          <SettingToggle v-model="form.notify_balance" :label="t('profile.wechatBot.balanceNotify')" />
-          <SettingToggle v-model="form.notify_login" :label="t('profile.wechatBot.loginNotify')" />
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm font-medium text-gray-900 dark:text-white">
+              {{ t('profile.wechatBot.adminNotify') }}
+            </p>
+            <Toggle v-model="form.notify_admin" :aria-label="t('profile.wechatBot.adminNotify')" />
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm font-medium text-gray-900 dark:text-white">
+              {{ t('profile.wechatBot.balanceNotify') }}
+            </p>
+            <Toggle v-model="form.notify_balance" :aria-label="t('profile.wechatBot.balanceNotify')" />
+          </div>
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm font-medium text-gray-900 dark:text-white">
+              {{ t('profile.wechatBot.loginNotify') }}
+            </p>
+            <Toggle v-model="form.notify_login" :aria-label="t('profile.wechatBot.loginNotify')" />
+          </div>
         </div>
       </div>
 
       <div class="space-y-4 border-t border-gray-100 pt-5 dark:border-dark-700">
-        <SettingToggle
-          v-model="form.chat_enabled"
-          :label="t('profile.wechatBot.chatEnabled')"
-          :hint="t('profile.wechatBot.chatHint')"
-        />
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-gray-900 dark:text-white">
+              {{ t('profile.wechatBot.chatEnabled') }}
+            </p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('profile.wechatBot.chatHint') }}
+            </p>
+          </div>
+          <Toggle
+            v-model="form.chat_enabled"
+            class="mt-0.5 shrink-0"
+            :aria-label="t('profile.wechatBot.chatEnabled')"
+          />
+        </div>
         <div v-if="form.chat_enabled" class="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
             <label class="input-label">{{ t('profile.wechatBot.apiKey') }}</label>
@@ -215,7 +266,6 @@ import { Icon } from '@/components/icons'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 
-const SettingToggle = Toggle
 const { t, locale } = useI18n()
 const appStore = useAppStore()
 
@@ -234,9 +284,9 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null
 
 const form = reactive<WeChatBotSettingsUpdate>({
   enabled: true,
-  notify_admin: true,
-  notify_balance: true,
-  notify_login: true,
+  notify_admin: false,
+  notify_balance: false,
+  notify_login: false,
   chat_enabled: false,
   chat_api_key_id: null,
   chat_model: 'gpt-4o-mini',
