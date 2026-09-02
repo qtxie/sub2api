@@ -76,7 +76,7 @@
               <input v-model="editAdaptiveBaseUrls[item.value]" type="text" class="input" />
             </div>
           </div>
-          <p v-if="account.platform !== 'deepseek'" class="input-hint">
+          <p v-if="!cnSupportsNativeResponses(account.platform)" class="input-hint">
             {{ t('admin.accounts.cnProviders.apiProtocol.responsesFallbackDesc') }}
           </p>
         </div>
@@ -1649,7 +1649,10 @@
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.expiresAt') }}</label>
         <input v-model="expiresAtInput" type="datetime-local" class="input" />
-        <p class="input-hint">{{ t('admin.accounts.expiresAtHint') }}</p>
+        <p class="input-hint">
+          {{ t('admin.accounts.expiresAtHint') }}
+          {{ t('admin.accounts.expiresAtTimezoneHint', { timezone: browserTimeZone }) }}
+        </p>
       </div>
 
       <!-- OpenAI 自动透传开关（OAuth/API Key） -->
@@ -2945,6 +2948,7 @@ import {
   isHeaderOverrideCapable,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
+  cnSupportsNativeResponses,
   defaultCNAdaptiveBaseUrls,
   defaultCNBaseUrl,
   HEADER_OVERRIDE_ENABLED_CREDENTIAL_KEY,
@@ -2954,7 +2958,12 @@ import {
   type CnNativeApiProtocol,
   type HeaderOverrideRow
 } from '@/components/account/credentialsBuilder'
-import { formatDateTime, formatDateTimeLocalInput, parseDateTimeLocalInput } from '@/utils/format'
+import {
+  formatDateTime,
+  formatDateTimeLocalInput,
+  getBrowserTimeZone,
+  parseDateTimeLocalInput
+} from '@/utils/format'
 import { createStableObjectKeyResolver } from '@/utils/stableObjectKey'
 import { parseOpenAIAPIKeyListInput } from '@/utils/openaiApiKeyList'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
@@ -2995,6 +3004,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const browserTimeZone = getBrowserTimeZone()
 
 // Spark 影子账号(parent_account_id 非空):代理恒继承母账号,不可独立编辑(外审 B/P1),
 // 故隐藏代理选择器。
@@ -3092,7 +3102,7 @@ const cnProtocolOptions = computed<Array<{ value: CnApiProtocol; labelKey: strin
     { value: 'chat_completions', labelKey: 'chatCompletions' },
     { value: 'anthropic', labelKey: 'anthropic' }
   ]
-  if (props.account?.platform === 'deepseek') {
+  if (cnSupportsNativeResponses(props.account?.platform ?? '')) {
     opts.push({ value: 'responses', labelKey: 'responses' })
   }
   return opts
@@ -3102,7 +3112,7 @@ const editAdaptiveProtocolOptions = computed<Array<{ value: CnNativeApiProtocol;
     { value: 'chat_completions', labelKey: 'chatCompletions' },
     { value: 'anthropic', labelKey: 'anthropic' }
   ]
-  if (props.account?.platform === 'deepseek') opts.push({ value: 'responses', labelKey: 'responses' })
+  if (cnSupportsNativeResponses(props.account?.platform ?? '')) opts.push({ value: 'responses', labelKey: 'responses' })
   return opts
 })
 watch(editApiProtocol, (protocol, previousProtocol) => {
@@ -3997,7 +4007,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
         storedProtocol === 'responses'
           ? storedProtocol
           : 'chat_completions'
-      if (newAccount.platform !== 'deepseek' && editApiProtocol.value === 'responses') {
+      if (!cnSupportsNativeResponses(newAccount.platform) && editApiProtocol.value === 'responses') {
         editApiProtocol.value = 'chat_completions'
       }
       const adaptiveDefaults = defaultCNAdaptiveBaseUrls(newAccount.platform, editAccountMode.value)
