@@ -405,7 +405,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			}
 			headerGuard.close()
 			return nil, s.newOpenAIFirstOutputTimeoutError(
-				ctx, c, account, startTime, reqModel, reasoningEffortValue,
+				ctx, c, account, opsUpstreamProxyID(account), opsUpstreamProxyName(account), startTime, reqModel, reasoningEffortValue,
 				requestRetryFirstOutputTimeout, "response_headers", nil,
 			)
 		}
@@ -564,6 +564,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	forwardResult := &OpenAIForwardResult{
 		RequestID:                     resp.Header.Get("x-request-id"),
+		UpstreamHeaders:               resp.Header,
 		ResponseID:                    responseID,
 		Usage:                         *usage,
 		Model:                         reqModel,
@@ -766,6 +767,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	applyOpenCodeSessionHeader(c, account, targetURL, req.Header)
 	// x-codex-beta-features：按真实 Codex 的会话级行为补注（在账号级覆写之后，
 	// 保证不被覆盖丢失）。
 	applyOpenAICodexBetaFeatures(c, account, req.Header)
@@ -940,6 +942,8 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 	canonicalModel := canonicalOpenAIAccountSchedulingModel(account, reqModel)
 	shouldDisable := s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, canonicalModel)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:              opsUpstreamProxyID(account),
+		ProxyName:            opsUpstreamProxyName(account),
 		Platform:             account.Platform,
 		AccountID:            account.ID,
 		AccountName:          account.Name,
@@ -1006,6 +1010,8 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 		_ = s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body, canonicalModel)
 	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ProxyID:              opsUpstreamProxyID(account),
+		ProxyName:            opsUpstreamProxyName(account),
 		Platform:             account.Platform,
 		AccountID:            account.ID,
 		AccountName:          account.Name,
@@ -1722,6 +1728,8 @@ func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 	if c != nil {
 		setOpsUpstreamError(c, statusCode, message, detail)
 		event := OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           PlatformOpenAI,
 			UpstreamStatusCode: statusCode,
 			UpstreamRequestID:  strings.TrimSpace(upstreamRequestID),
@@ -2270,7 +2278,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	ensureResponseFailedTerminal()
 	if requestRetryDeadlineExpired.Load() && firstTokenMs == nil {
 		return resultWithUsage(), s.newOpenAIFirstOutputTimeoutError(
-			ctx, c, account, startTime, originalModel, "",
+			ctx, c, account, opsUpstreamProxyID(account), opsUpstreamProxyName(account), startTime, originalModel, "",
 			openAIBoundedFirstOutputTimeout(ctx, startTime, 0), "semantic_output", resp.Header,
 		)
 	}

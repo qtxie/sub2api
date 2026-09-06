@@ -593,6 +593,10 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		}
 		imageCounter.AddSSEData(message)
 
+		if eventType == "error" || eventType == "response.failed" {
+			markOpenAICyberPolicyEvent(c, message, http.StatusOK, usage)
+		}
+
 		if eventType == "response.failed" {
 			if !wroteDownstream && shouldTriggerOpenAISameAccountModelFallback(ctx, s.settingService, account, originalModel, http.StatusBadRequest, message) {
 				if shouldRecordOpenAISameAccountFallbackUpstreamErrorBeforeRetry(http.StatusBadRequest, message) {
@@ -600,16 +604,6 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				}
 				lease.MarkBroken()
 				return nil, newOpenAISameAccountModelFallbackError(http.StatusBadRequest, lease.HandshakeHeaders(), message)
-			}
-			if hit, code, msg := detectOpenAICyberPolicy(message); hit {
-				MarkOpsCyberPolicy(c, CyberPolicyMark{
-					Code:           code,
-					Message:        msg,
-					Body:           truncateString(string(message), 4096),
-					UpstreamStatus: http.StatusOK,
-					UpstreamInTok:  usage.InputTokens,
-					UpstreamOutTok: usage.OutputTokens,
-				})
 			}
 		}
 

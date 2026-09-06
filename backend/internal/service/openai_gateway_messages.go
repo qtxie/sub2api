@@ -393,7 +393,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropicOnce(
 
 	// 7. Send request
 	proxyURL := ""
-	if account.Proxy != nil {
+	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
 	// Grok may reject encrypted reasoning replayed under a different OAuth
@@ -676,6 +676,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 
 	result := &OpenAIForwardResult{
 		RequestID:                     requestID,
+		UpstreamHeaders:               resp.Header,
 		ResponseID:                    finalResponse.ID,
 		Usage:                         usage,
 		Model:                         originalModel,
@@ -714,6 +715,8 @@ func (s *OpenAIGatewayService) recordOpenAIMessagesStreamUpstreamError(c *gin.Co
 	message = sanitizeUpstreamErrorMessage(message)
 	setOpsUpstreamError(c, http.StatusBadGateway, message, "")
 	event := OpsUpstreamErrorEvent{
+		ProxyID:            opsUpstreamProxyID(account),
+		ProxyName:          opsUpstreamProxyName(account),
 		Platform:           PlatformOpenAI,
 		UpstreamStatusCode: http.StatusBadGateway,
 		UpstreamRequestID:  strings.TrimSpace(upstreamRequestID),
@@ -981,6 +984,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	resultWithUsage := func() *OpenAIForwardResult {
 		out := &OpenAIForwardResult{
 			RequestID:                     requestID,
+			UpstreamHeaders:               resp.Header,
 			ResponseID:                    responseID,
 			Usage:                         usage,
 			Model:                         originalModel,

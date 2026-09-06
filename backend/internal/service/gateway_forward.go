@@ -458,6 +458,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 
 				if s.shouldRectifySignatureError(ctx, account, respBody, reqModel) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						ProxyID:            opsUpstreamProxyID(account),
+						ProxyName:          opsUpstreamProxyName(account),
 						Platform:           account.Platform,
 						AccountID:          account.ID,
 						AccountName:        account.Name,
@@ -519,6 +521,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 							_ = retryResp.Body.Close()
 							if retryReadErr == nil && retryResp.StatusCode == 400 && s.isSignatureErrorPattern(ctx, account, retryRespBody) {
 								appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+									ProxyID:            opsUpstreamProxyID(account),
+									ProxyName:          opsUpstreamProxyName(account),
 									Platform:           account.Platform,
 									AccountID:          account.ID,
 									AccountName:        account.Name,
@@ -559,6 +563,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 											_ = retryResp2.Body.Close()
 										}
 										appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+											ProxyID:            opsUpstreamProxyID(account),
+											ProxyName:          opsUpstreamProxyName(account),
 											Platform:           account.Platform,
 											AccountID:          account.ID,
 											AccountName:        account.Name,
@@ -598,6 +604,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 				errMsg := extractUpstreamErrorMessage(respBody)
 				if isThinkingBudgetConstraintError(errMsg) && s.settingService.IsBudgetRectifierEnabled(ctx) {
 					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						ProxyID:            opsUpstreamProxyID(account),
+						ProxyName:          opsUpstreamProxyName(account),
 						Platform:           account.Platform,
 						AccountID:          account.ID,
 						AccountName:        account.Name,
@@ -689,6 +697,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 				respBody, _ := s.readUpstreamErrorBody(resp)
 				_ = resp.Body.Close()
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -743,6 +753,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 
 			s.handleRetryExhaustedSideEffects(ctx, resp, account)
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID:            opsUpstreamProxyID(account),
+				ProxyName:          opsUpstreamProxyName(account),
 				Platform:           account.Platform,
 				AccountID:          account.ID,
 				AccountName:        account.Name,
@@ -778,6 +790,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 
 		s.handleFailoverSideEffects(ctx, resp, account, reqModel)
 		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			ProxyID:            opsUpstreamProxyID(account),
+			ProxyName:          opsUpstreamProxyName(account),
 			Platform:           account.Platform,
 			AccountID:          account.ID,
 			UpstreamStatusCode: resp.StatusCode,
@@ -820,6 +834,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 					upstreamDetail = truncateString(string(respBody), maxBytes)
 				}
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -896,6 +912,8 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 				}
 
 				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					ProxyID:            opsUpstreamProxyID(account),
+					ProxyName:          opsUpstreamProxyName(account),
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
@@ -936,6 +954,7 @@ func (s *GatewayService) forwardOnce(ctx context.Context, c *gin.Context, accoun
 
 	return &ForwardResult{
 		RequestID:                     resp.Header.Get("x-request-id"),
+		UpstreamHeaders:               resp.Header,
 		Usage:                         *usage,
 		Model:                         originalModel, // 使用原始模型用于计费和日志
 		UpstreamModel:                 mappedModel,
