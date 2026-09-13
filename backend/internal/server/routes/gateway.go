@@ -625,7 +625,7 @@ func compositeGeminiTargetPlatformMiddleware(resolver *service.CompositeRouteRes
 					return
 				}
 				model = strings.TrimSpace(gjson.GetBytes(body, "model").String())
-				resetRequestBody(c, body)
+				requestmodel.ResetRequestBody(c.Request, body)
 			}
 			if model != "" {
 				decision, err := resolver.Resolve(c.Request.Context(), apiKey.Group.ID, model, service.CompositeRouteEndpointGemini)
