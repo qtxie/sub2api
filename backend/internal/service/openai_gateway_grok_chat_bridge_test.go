@@ -619,7 +619,9 @@ func TestForwardGrokChatViaResponses429UsesGrokRateLimitPolicy(t *testing.T) {
 	require.Equal(t, grokChatResponsesEndpoint, GetActualOpenAIUpstreamEndpoint(c))
 	require.Equal(t, 1, repo.rateLimitedCalls)
 	require.Zero(t, repo.tempUnschedCalls)
-	require.WithinDuration(t, before.Add(45*time.Second), repo.lastRateLimitResetAt, time.Second)
+	// 本分支策略：非池 Grok 账号的普通 429 一律安装固定 1 分钟窗口，忽略上游
+	// Retry-After（含更短的 45s）；Retry-After 仅在 failover 错误头中原样保留。
+	require.WithinDuration(t, before.Add(time.Minute), repo.lastRateLimitResetAt, time.Second)
 	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 

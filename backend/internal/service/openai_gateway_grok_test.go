@@ -1529,8 +1529,10 @@ func TestForwardGrokMediaImagesEditMultipartPreservesExplicitGeometry(t *testing
 	require.False(t, gjson.GetBytes(upstream.lastBody, "size").Exists())
 	require.Equal(t, "2k", gjson.GetBytes(upstream.lastBody, "resolution").String())
 	require.Equal(t, "16:9", gjson.GetBytes(upstream.lastBody, "aspect_ratio").String())
-	require.Equal(t, ImageBillingSize1K, result.ImageSize)
-	require.Equal(t, "1024x1024", result.ImageInputSize)
+	// 本分支策略：显式 resolution 优先于 size 决定计费档位（image-studio 语义），
+	// size 仅在未提供 resolution 时作为回落。
+	require.Equal(t, ImageBillingSize2K, result.ImageSize)
+	require.Equal(t, "2k", result.ImageInputSize)
 }
 
 func TestForwardGrokMediaVideoGenerationReturnsUsageAndResponseID(t *testing.T) {

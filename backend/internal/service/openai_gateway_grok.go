@@ -2057,16 +2057,26 @@ func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Contex
 				return
 			}
 		}
+		if decision.Class == GrokFailureModelCapacity {
+			// Capacity 429 is model pressure, not account quota exhaustion: scope
+			// the cooldown to the requested model and never cool the account.
+			if decision.ShouldCooldown {
+				s.applyGrokUpstreamFailureDecision(ctx, account, decision)
+			}
+			return
+		}
+		// Ordinary 429s install the fixed one-minute window regardless of the
+		// upstream Retry-After / quota-window resets (see the 429 policy tests).
 		s.rateLimitGrokForDuration(ctx, account, time.Minute)
 	} else {
 		s.updateGrokUsageSnapshot(ctx, account, snapshot)
 	}
 
 	// Body-first free-usage / empty / billing / capacity must run before the
-	// status switch so non-429 free-usage bodies still cool the account. Local
-	// policy handles ordinary non-pool 429s with the fixed one-minute window
-	// above, while explicit free-usage responses may honor an upstream reset.
-	// Pool-mode still skips durable mutation unless an explicit temp rule matches.
+	// status switch so non-429 free-usage bodies still cool the account. Non-pool
+	// 429s use the fixed one-minute window; explicit free-usage responses may
+	// honor an upstream absolute reset. Pool-mode still skips durable mutation
+	// unless an explicit temp rule matches.
 	if statusCode != http.StatusTooManyRequests {
 		deferGatewayCooldown := decision.Class == GrokFailureServer &&
 			(statusCode == http.StatusBadGateway || statusCode == http.StatusServiceUnavailable)
