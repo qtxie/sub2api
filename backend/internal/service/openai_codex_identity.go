@@ -114,7 +114,7 @@ func codexCanonicalUserAgent() string {
 	resolver := codexCanonicalUAResolver
 	codexCanonicalUAMu.RUnlock()
 	if resolver != nil {
-		if ua := strings.TrimSpace(resolver()); ua != "" {
+		if ua := resolver(); strings.TrimSpace(ua) != "" {
 			return ua
 		}
 	}
@@ -139,6 +139,9 @@ type codexOutboundIdentity struct {
 // 需要固定版本请填「Codex 客户端版本号」并关闭自动同步。
 func resolveCodexOutboundIdentity(candidateUA string) codexOutboundIdentity {
 	canonical := codexCanonicalUserAgent()
+	if _, _, ok := openai.PairCodexClientIdentity(canonical); !ok {
+		canonical = codexCLIUserAgent
+	}
 	ua := strings.TrimSpace(candidateUA)
 	if strings.Contains(ua, smartUserAgentSeparator) {
 		// 多槽配置的原始 '|' 分隔串不是单一 UA，绝不能被当作候选拼进出站身份
