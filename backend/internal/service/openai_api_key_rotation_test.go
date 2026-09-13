@@ -47,6 +47,12 @@ func (s *openAIAPIKeyRotationStoreStub) ClaimGrokVideoBilled(context.Context, st
 func (s *openAIAPIKeyRotationStoreStub) ReleaseGrokVideoBilled(context.Context, string) error {
 	return nil
 }
+func (s *openAIAPIKeyRotationStoreStub) SetReasoningContent(context.Context, string, string, time.Duration) error {
+	return nil
+}
+func (s *openAIAPIKeyRotationStoreStub) GetReasoningContent(context.Context, string) (string, error) {
+	return "", ErrReasoningContentNotFound
+}
 
 func (s *openAIAPIKeyRotationStoreStub) ensurePool(fingerprint string, poolSize int) {
 	if s.fingerprint != fingerprint || s.active < 0 || s.active >= poolSize {
