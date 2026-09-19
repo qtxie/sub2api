@@ -694,6 +694,7 @@ func TestAPIContracts(t *testing.T) {
 					service.SettingKeyAPIBaseURL:   "https://api.example.com",
 					service.SettingKeyContactInfo:  "support",
 					service.SettingKeyDocURL:       "https://docs.example.com",
+					service.SettingKeyBuyRedeemCodeURL: "https://shop.example.com",
 
 					service.SettingKeyDefaultConcurrency:   "5",
 					service.SettingKeyDefaultBalance:       "1.25",
@@ -833,6 +834,7 @@ func TestAPIContracts(t *testing.T) {
 					"forwarded_client_ip_headers": [],
 					"contact_info": "support",
 					"doc_url": "https://docs.example.com",
+					"buy_redeem_code_url": "https://shop.example.com",
 					"auth_source_default_email_balance": 0,
 					"auth_source_default_email_concurrency": 5,
 					"auth_source_default_email_subscriptions": [],
@@ -1185,6 +1187,7 @@ func TestAPIContracts(t *testing.T) {
 					"forwarded_client_ip_headers": [],
 					"contact_info": "",
 					"doc_url": "",
+					"buy_redeem_code_url": "",
 					"home_content": "",
 					"hide_ccs_import_button": false,
 					"grok_default_text_model": "grok-4.6",

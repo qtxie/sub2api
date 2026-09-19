@@ -239,6 +239,8 @@ export interface PublicSettings {
   api_base_url: string
   contact_info: string
   doc_url: string
+  /** "购买兑换码"菜单外链 URL，空表示隐藏该菜单项；可选：旧缓存可能缺失 */
+  buy_redeem_code_url?: string
   home_content: string
   compact_home_enabled: boolean
   hide_ccs_import_button: boolean

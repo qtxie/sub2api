@@ -159,6 +159,7 @@ type UpdateSettingsRequest struct {
 	APIBaseURL                  string                `json:"api_base_url"`
 	ContactInfo                 string                `json:"contact_info"`
 	DocURL                      string                `json:"doc_url"`
+	BuyRedeemCodeURL            *string               `json:"buy_redeem_code_url"`
 	HomeContent                 string                `json:"home_content"`
 	CompactHomeEnabled          bool                  `json:"compact_home_enabled"`
 	HideCcsImportButton         bool                  `json:"hide_ccs_import_button"`
@@ -1274,6 +1275,18 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	// "购买兑换码"菜单外链 URL 验证（空表示隐藏菜单项）
+	buyRedeemCodeURL := previousSettings.BuyRedeemCodeURL
+	if req.BuyRedeemCodeURL != nil {
+		buyRedeemCodeURL = strings.TrimSpace(*req.BuyRedeemCodeURL)
+	}
+	if buyRedeemCodeURL != "" {
+		if err := config.ValidateAbsoluteHTTPURL(buyRedeemCodeURL); err != nil {
+			response.BadRequest(c, "Buy Redeem Code URL must be an absolute http(s) URL")
+			return
+		}
+	}
+
 	// Frontend URL 验证
 	req.FrontendURL = strings.TrimSpace(req.FrontendURL)
 	if req.FrontendURL != "" {
@@ -1652,6 +1665,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		APIBaseURL:                             req.APIBaseURL,
 		ContactInfo:                            req.ContactInfo,
 		DocURL:                                 req.DocURL,
+		BuyRedeemCodeURL:                       buyRedeemCodeURL,
 		HomeContent:                            req.HomeContent,
 		CompactHomeEnabled:                     req.CompactHomeEnabled,
 		HideCcsImportButton:                    req.HideCcsImportButton,
@@ -2296,6 +2310,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		APIBaseURL:                                             updatedSettings.APIBaseURL,
 		ContactInfo:                                            updatedSettings.ContactInfo,
 		DocURL:                                                 updatedSettings.DocURL,
+		BuyRedeemCodeURL:                                       updatedSettings.BuyRedeemCodeURL,
 		HomeContent:                                            updatedSettings.HomeContent,
 		CompactHomeEnabled:                                     updatedSettings.CompactHomeEnabled,
 		HideCcsImportButton:                                    updatedSettings.HideCcsImportButton,
