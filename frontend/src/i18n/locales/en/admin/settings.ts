@@ -669,7 +669,7 @@ export default {
         docUrlHint: 'Link to your documentation site. Leave empty to hide the documentation link.',
         buyRedeemCodeUrl: 'Buy Redeem Code URL',
         buyRedeemCodeUrlPlaceholder: 'https://shop.example.com/buy',
-        buyRedeemCodeUrlHint: 'Link to the page for purchasing redeem codes. When set, a "Buy Redeem Code" item appears above "Redeem" in the user sidebar and opens in a new tab. Leave empty to hide the menu item.',
+        buyRedeemCodeUrlHint: 'Link to the page for purchasing redeem codes. When set, a "Balance Top-up" item appears above "Redeem" in the user sidebar and opens in a new tab. Leave empty to hide the menu item.',
         siteLogo: 'Site Logo',
         uploadImage: 'Upload Image',
         remove: 'Remove',

@@ -660,7 +660,7 @@ export default {
         docUrlHint: '文档网站的链接。留空则隐藏文档链接。',
         docUrlPlaceholder: 'https://docs.example.com',
         buyRedeemCodeUrl: '购买兑换码链接',
-        buyRedeemCodeUrlHint: '购买兑换码页面的链接，配置后将在用户侧边栏「兑换」上方显示「购买兑换码」菜单项，点击后新标签页打开。留空则隐藏该菜单项。',
+        buyRedeemCodeUrlHint: '购买兑换码页面的链接，配置后将在用户侧边栏「兑换」上方显示「余额充值」菜单项，点击后新标签页打开。留空则隐藏该菜单项。',
         buyRedeemCodeUrlPlaceholder: 'https://shop.example.com/buy',
         siteLogo: '站点Logo',
         uploadImage: '上传图片',
