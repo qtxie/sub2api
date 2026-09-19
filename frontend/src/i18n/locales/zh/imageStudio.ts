@@ -1,7 +1,7 @@
 export default {
   imageStudio: {
     title: '图像工作室',
-    description: '使用 OpenAI、Gemini 和 Grok 创作和管理图像',
+    description: '使用 OpenAI、Gemini、Grok 和 SenseNova 创作和管理图像',
     apiKey: 'API 密钥',
     selectApiKey: '选择已启用生图的密钥',
     model: '模型',
@@ -39,6 +39,9 @@ export default {
     sizeErrorRatio: '宽高比必须在 1:3 到 3:1 之间',
     sizeErrorPixelsMin: '总像素不能少于 655,360',
     sizeErrorPixelsMax: '总像素不能超过 8,294,400',
+    sizeErrorMultipleSensenova: '宽度和高度必须是 32 的倍数',
+    sizeErrorEdgeSensenova: '宽度和高度需在 512 到 4096 之间',
+    sizeErrorRatioSensenova: '宽高比不能超过 3:1',
     square: '方形',
     landscape: '横向',
     portrait: '纵向',
@@ -77,7 +80,7 @@ export default {
     archiveEmptyTitle: '还没有归档',
     archiveEmpty: '归档的图像会显示在这里。',
     noKeysTitle: '没有可用于生图的 API 密钥',
-    noEligibleKeys: '请先为 OpenAI、Gemini 或 Grok 分组启用图片生成，再创建或更新该分组下的密钥。',
+    noEligibleKeys: '请先为 OpenAI、Gemini、Grok 或 SenseNova 分组启用图片生成，再创建或更新该分组下的密钥。',
     manageKeys: '管理 API 密钥',
     clearGallery: '清空本次结果',
     clearConfirm: '确定移除本次会话的全部生成结果吗？已归档内容不会受影响。',

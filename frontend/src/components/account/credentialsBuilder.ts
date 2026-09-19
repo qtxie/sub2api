@@ -46,6 +46,7 @@ export function isHeaderOverrideCapable(platform: string, type: string): boolean
     platform === 'zhipu' ||
     platform === 'deepseek' ||
     platform === 'minimax' ||
+    platform === 'sensenova' ||
     platform === 'opencode_go'
   ) {
     return type === 'apikey'
@@ -273,6 +274,13 @@ export function isCNProviderPlatform(platform: string): platform is CnProviderPl
 /** DeepSeek、Kimi 与 MiniMax 提供原生 Responses 端点。 */
 export function cnSupportsNativeResponses(platform: string): boolean {
   return platform === 'deepseek' || platform === 'kimi' || platform === 'minimax' || platform === 'opencode_go'
+}
+
+// SenseNova（商汤日日新）：纯生图平台，单一网关基址，无账号模式/多协议分档。
+export const SENSENOVA_BASE_URL = 'https://token.sensenova.cn'
+
+export function isSensenovaPlatform(platform: string): boolean {
+  return platform === 'sensenova'
 }
 
 export const OPENCODE_GO_BASE_URL = 'https://opencode.ai/zen/go/v1'

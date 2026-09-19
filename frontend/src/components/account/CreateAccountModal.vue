@@ -217,6 +217,19 @@
           </button>
           <button
             type="button"
+            @click="selectSensenovaPlatform()"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'sensenova'
+                ? 'bg-white text-sky-600 shadow-sm dark:bg-dark-600 dark:text-sky-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="sensenova" size="sm" />
+            SenseNova
+          </button>
+          <button
+            type="button"
             @click="selectOpenCodeGoPlatform()"
             :class="[
               'flex flex-1 items-center justify-center gap-2 rounded-md px-3 py-2.5 text-sm font-medium transition-all',
@@ -3967,6 +3980,7 @@ import {
   defaultOpenCodeProtocolRules,
   isCNProviderPlatform,
   isHeaderOverrideCapable,
+  SENSENOVA_BASE_URL,
   validateHeaderOverrideRows,
   type CnAccountMode,
   type CnApiProtocol,
@@ -4059,6 +4073,8 @@ const apiKeyBaseUrlPlaceholder = computed(() => {
       return 'https://generativelanguage.googleapis.com'
     case 'grok':
       return 'https://api.x.ai/v1'
+    case 'sensenova':
+      return SENSENOVA_BASE_URL
     default:
       return 'https://api.anthropic.com'
   }
@@ -4243,6 +4259,8 @@ const cnAccentActiveClass = computed(() => {
       return 'border-teal-500 bg-teal-50 dark:bg-teal-900/20'
     case 'minimax':
       return 'border-rose-500 bg-rose-50 dark:bg-rose-900/20'
+    case 'sensenova':
+      return 'border-sky-500 bg-sky-50 dark:bg-sky-900/20'
     case 'opencode_go':
       return 'border-amber-500 bg-amber-50 dark:bg-amber-900/20'
     default:
@@ -4259,6 +4277,8 @@ const cnAccentIconClass = computed(() => {
       return 'bg-teal-500 text-white'
     case 'minimax':
       return 'bg-rose-500 text-white'
+    case 'sensenova':
+      return 'bg-sky-500 text-white'
     case 'opencode_go':
       return 'bg-amber-500 text-white'
     default:
@@ -4277,6 +4297,13 @@ function selectCNPlatform(platform: CnProviderPlatform) {
   }
   apiKeyBaseUrl.value = defaultCNBaseUrl(platform, accountMode.value, apiProtocol.value)
   resetAdaptiveBaseUrls(platform, accountMode.value)
+}
+// SenseNova（商汤日日新）：纯生图平台，仅 API Key + 固定网关基址，无账号模式/协议分档。
+function selectSensenovaPlatform() {
+  form.platform = 'sensenova'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  apiKeyBaseUrl.value = SENSENOVA_BASE_URL
 }
 function selectOpenCodeGoPlatform() {
   form.platform = 'opencode_go'
@@ -4861,7 +4888,9 @@ watch(
             ? 'https://generativelanguage.googleapis.com'
             : newPlatform === 'grok'
               ? 'https://api.x.ai/v1'
-              : 'https://api.anthropic.com'
+              : newPlatform === 'sensenova'
+                ? SENSENOVA_BASE_URL
+                : 'https://api.anthropic.com'
     }
     // Clear model-related settings
     allowedModels.value = []
@@ -5790,7 +5819,9 @@ const handleSubmit = async () => {
         ? 'https://generativelanguage.googleapis.com'
         : form.platform === 'grok'
           ? 'https://api.x.ai/v1'
-          : 'https://api.anthropic.com'
+          : form.platform === 'sensenova'
+            ? SENSENOVA_BASE_URL
+            : 'https://api.anthropic.com'
 
   // Build credentials with optional model mapping
   const credentials: Record<string, unknown> = {

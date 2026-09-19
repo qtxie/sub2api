@@ -48,7 +48,7 @@
               </select>
             </div>
 
-            <div v-if="provider === 'openai'" class="control-group">
+            <div v-if="supportsSizeControl" class="control-group">
               <label for="image-studio-size" class="control-label">{{ t('imageStudio.size') }}</label>
               <div class="size-select-shell">
                 <span class="size-shape" :class="selectedSizeShape" aria-hidden="true"></span>
@@ -75,7 +75,7 @@
                       type="number"
                       :min="customWidthBounds?.min || 16"
                       :max="customWidthBounds?.max || 3840"
-                      step="16"
+                      :step="sizeStep"
                       inputmode="numeric"
                       :aria-invalid="!sizeValidation.valid"
                       @input="syncCustomSize"
@@ -101,7 +101,7 @@
                       type="number"
                       :min="customHeightBounds?.min || 16"
                       :max="customHeightBounds?.max || 3840"
-                      step="16"
+                      :step="sizeStep"
                       inputmode="numeric"
                       :aria-invalid="!sizeValidation.valid"
                       @input="syncCustomSize"
@@ -571,11 +571,17 @@ import {
 import {
   GPT_IMAGE_2_SIZE_PRESETS,
   gptImage2DimensionBounds,
-  imageBillingTierForSize,
   normalizeGPTImage2Dimension,
   snapGPTImage2Edge,
   validateGPTImage2Size
 } from '@/utils/gptImage2'
+import {
+  SENSENOVA_SIZE_PRESETS,
+  normalizeSensenovaDimension,
+  sensenovaDimensionBounds,
+  snapSensenovaEdge,
+  validateSensenovaSize
+} from '@/utils/sensenovaImage'
 
 interface ImageGenerationSettings {
   userId: number
@@ -671,16 +677,27 @@ const customSize = reactive<{ width: number | string; height: number | string }>
 const lastValidCustomSize = reactive({ width: 1536, height: 1024 })
 const sizeWasAdjusted = ref(false)
 
-const sizeOptions = computed(() => [
-  { value: '1024x1024', label: t('imageStudio.square'), detail: '1024 x 1024 · 1K', shape: 'square' },
-  { value: '1536x1024', label: t('imageStudio.landscape'), detail: '1536 x 1024 · 2K', shape: 'landscape' },
-  { value: '1024x1536', label: t('imageStudio.portrait'), detail: '1024 x 1536 · 2K', shape: 'portrait' },
-  { value: '2048x2048', label: t('imageStudio.square'), detail: '2048 x 2048 · 2K', shape: 'square', experimental: true },
-  { value: '2048x1152', label: t('imageStudio.landscape'), detail: '2048 x 1152 · 2K', shape: 'landscape' },
-  { value: '1152x2048', label: t('imageStudio.portrait'), detail: '1152 x 2048 · 2K', shape: 'portrait' },
-  { value: '3840x2160', label: t('imageStudio.landscape'), detail: '3840 x 2160 · 4K', shape: 'landscape', experimental: true },
-  { value: '2160x3840', label: t('imageStudio.portrait'), detail: '2160 x 3840 · 4K', shape: 'portrait', experimental: true }
-])
+const sizeOptions = computed(() => {
+  if (provider.value === 'sensenova') {
+    return imageSizeOptions.value.map((value) => {
+      const [width, height] = value.split('x').map(Number)
+      const shape = width === height ? 'square' : width > height ? 'landscape' : 'portrait'
+      const maxEdge = Math.max(width || 0, height || 0)
+      const tier = maxEdge > 2048 ? '4K' : maxEdge > 1024 ? '2K' : '1K'
+      return { value, label: t(`imageStudio.${shape}`), detail: `${value} · ${tier}`, shape, experimental: false }
+    })
+  }
+  return [
+    { value: '1024x1024', label: t('imageStudio.square'), detail: '1024 x 1024 · 1K', shape: 'square' },
+    { value: '1536x1024', label: t('imageStudio.landscape'), detail: '1536 x 1024 · 2K', shape: 'landscape' },
+    { value: '1024x1536', label: t('imageStudio.portrait'), detail: '1024 x 1536 · 2K', shape: 'portrait' },
+    { value: '2048x2048', label: t('imageStudio.square'), detail: '2048 x 2048 · 2K', shape: 'square', experimental: true },
+    { value: '2048x1152', label: t('imageStudio.landscape'), detail: '2048 x 1152 · 2K', shape: 'landscape' },
+    { value: '1152x2048', label: t('imageStudio.portrait'), detail: '1152 x 2048 · 2K', shape: 'portrait' },
+    { value: '3840x2160', label: t('imageStudio.landscape'), detail: '3840 x 2160 · 4K', shape: 'landscape', experimental: true },
+    { value: '2160x3840', label: t('imageStudio.portrait'), detail: '2160 x 3840 · 4K', shape: 'portrait', experimental: true }
+  ]
+})
 const selectedKey = computed(() => imageKeys.value.find((key) => key.id === form.apiKeyId))
 const provider = computed<ImageStudioProvider | null>(() => capabilities.value?.provider || null)
 const selectedModelCapability = computed<ImageStudioModelCapability | null>(() => (
@@ -708,11 +725,18 @@ const maxImageCount = computed(() => provider.value === 'gemini' ? 1 : selectedM
 const maxInputImageCount = computed(() => selectedModelCapability.value?.max_input_images || 0)
 const hasSourceImages = computed(() => sourceImages.value.length > 0)
 const selectedSizeOption = computed(() => sizeOptions.value.find((option) => option.value === form.size))
-const sizeValidation = computed(() => validateGPTImage2Size(form.size))
-const customWidthBounds = computed(() => gptImage2DimensionBounds(Number(customSize.height)))
-const customHeightBounds = computed(() => gptImage2DimensionBounds(Number(customSize.width)))
+const supportsSizeControl = computed(() => provider.value === 'openai' || provider.value === 'sensenova')
+const usingSensenovaSize = computed(() => provider.value === 'sensenova')
+const sizeStep = computed(() => usingSensenovaSize.value ? 32 : 16)
+const sizeValidation = computed(() => usingSensenovaSize.value ? validateSensenovaSize(form.size) : validateGPTImage2Size(form.size))
+const customWidthBounds = computed(() => usingSensenovaSize.value
+  ? sensenovaDimensionBounds(Number(customSize.height))
+  : gptImage2DimensionBounds(Number(customSize.height)))
+const customHeightBounds = computed(() => usingSensenovaSize.value
+  ? sensenovaDimensionBounds(Number(customSize.width))
+  : gptImage2DimensionBounds(Number(customSize.width)))
 const selectedSizeShape = computed(() => {
-  if (provider.value !== 'openai') return shapeForAspectRatio(form.aspectRatio)
+  if (!supportsSizeControl.value) return shapeForAspectRatio(form.aspectRatio)
   if (sizeMode.value === 'auto') return 'auto'
   if (sizeMode.value !== 'custom') return selectedSizeOption.value?.shape || 'square'
   const width = Number(customSize.width)
@@ -723,20 +747,32 @@ const selectedSizeShape = computed(() => {
 const selectedSizeLabel = computed(() => form.size === 'auto' ? t('imageStudio.sizeAuto') : form.size)
 const selectedQualityLabel = computed(() => qualityOptions.value.find((option) => option.value === form.quality)?.label || form.quality)
 const sizeErrorMessage = computed(() => {
-  if (provider.value !== 'openai' || sizeValidation.value.valid) return ''
-  const messages = {
-    format: 'imageStudio.sizeErrorFormat',
-    multiple: 'imageStudio.sizeErrorMultiple',
-    edge: 'imageStudio.sizeErrorEdge',
-    ratio: 'imageStudio.sizeErrorRatio',
-    pixelsMin: 'imageStudio.sizeErrorPixelsMin',
-    pixelsMax: 'imageStudio.sizeErrorPixelsMax'
-  } as const
+  if (!supportsSizeControl.value || sizeValidation.value.valid) return ''
+  const messages = usingSensenovaSize.value
+    ? {
+        format: 'imageStudio.sizeErrorFormat',
+        multiple: 'imageStudio.sizeErrorMultipleSensenova',
+        edge: 'imageStudio.sizeErrorEdgeSensenova',
+        ratio: 'imageStudio.sizeErrorRatioSensenova',
+        pixelsMin: 'imageStudio.sizeErrorEdgeSensenova',
+        pixelsMax: 'imageStudio.sizeErrorEdgeSensenova'
+      }
+    : {
+        format: 'imageStudio.sizeErrorFormat',
+        multiple: 'imageStudio.sizeErrorMultiple',
+        edge: 'imageStudio.sizeErrorEdge',
+        ratio: 'imageStudio.sizeErrorRatio',
+        pixelsMin: 'imageStudio.sizeErrorPixelsMin',
+        pixelsMax: 'imageStudio.sizeErrorPixelsMax'
+      } as const
   return t(messages[sizeValidation.value.error || 'format'])
 })
 const canGenerate = computed(() => {
   if (loadingCapabilities.value || readingSourceImages.value || !capabilities.value || !selectedModelCapability.value) return false
   if (form.apiKeyId <= 0 || !form.prompt.trim()) return false
+  if (provider.value === 'sensenova') {
+    return sizeValidation.value.valid && outputFormats.value.includes(form.outputFormat)
+  }
   if (provider.value === 'openai') {
     return sizeValidation.value.valid
       && qualityOptions.value.some((option) => option.value === form.quality)
@@ -757,6 +793,7 @@ const canGenerate = computed(() => {
 })
 const selectionSummary = computed(() => {
   if (provider.value === 'openai') return [selectedSizeLabel.value, selectedQualityLabel.value, form.count].join(' · ')
+  if (provider.value === 'sensenova') return [selectedSizeLabel.value, form.outputFormat.toUpperCase()].filter(Boolean).join(' · ')
   if (provider.value === 'gemini') return [form.aspectRatio, form.imageSize].filter(Boolean).join(' · ')
   if (provider.value === 'grok' && hasSourceImages.value) {
     return [
@@ -770,9 +807,9 @@ const selectionSummary = computed(() => {
 const selectedPrice = computed(() => {
   const prices = pricing.value?.prices || []
   const modelPrices = prices.filter((price) => !price.model || price.model === form.model)
-  if (provider.value === 'openai') {
+  if (provider.value === 'openai' || provider.value === 'sensenova') {
     return modelPrices.find((price) => price.size === form.size)
-      || modelPrices.find((price) => price.billing_tier === imageBillingTierForSize(form.size))
+      || modelPrices.find((price) => price.billing_tier === billingTierForSize(form.size))
   }
   if (provider.value === 'gemini') {
     return modelPrices.find((price) => price.image_size === form.imageSize || price.size === form.imageSize)
@@ -815,7 +852,18 @@ function storageKey(): string {
 }
 
 function isSizePreset(value: string): boolean {
-  return (GPT_IMAGE_2_SIZE_PRESETS as readonly string[]).includes(value)
+  const presets = usingSensenovaSize.value ? SENSENOVA_SIZE_PRESETS : GPT_IMAGE_2_SIZE_PRESETS
+  return (presets as readonly string[]).includes(value)
+}
+
+// billingTierForSize 与后端 ClassifyImageBillingTier 对齐（按最长边分 1K/2K/4K）。
+function billingTierForSize(value: string): '1K' | '2K' | '4K' {
+  const result = usingSensenovaSize.value ? validateSensenovaSize(value) : validateGPTImage2Size(value)
+  if (!result.valid || result.auto || !result.width || !result.height) return '2K'
+  const maxEdge = Math.max(result.width, result.height)
+  if (maxEdge <= 1024) return '1K'
+  if (maxEdge <= 2048) return '2K'
+  return '4K'
 }
 
 function applySizeMode() {
@@ -824,7 +872,7 @@ function applySizeMode() {
     form.size = sizeMode.value
     return
   }
-  const current = validateGPTImage2Size(form.size)
+  const current = sizeValidation.value
   if (current.valid && !current.auto && current.width && current.height) {
     customSize.width = current.width
     customSize.height = current.height
@@ -844,8 +892,10 @@ function normalizeCustomDimension(axis: 'width' | 'height') {
   const otherAxis = axis === 'width' ? 'height' : 'width'
   const rawValue = Number(customSize[axis])
   const rawOther = Number(customSize[otherAxis])
-  const normalizedOther = snapGPTImage2Edge(rawOther) || lastValidCustomSize[otherAxis]
-  const normalizedValue = normalizeGPTImage2Dimension(rawValue, normalizedOther)
+  const snapEdge = usingSensenovaSize.value ? snapSensenovaEdge : snapGPTImage2Edge
+  const normalizeDimension = usingSensenovaSize.value ? normalizeSensenovaDimension : normalizeGPTImage2Dimension
+  const normalizedOther = snapEdge(rawOther) || lastValidCustomSize[otherAxis]
+  const normalizedValue = normalizeDimension(rawValue, normalizedOther)
 
   if (normalizedValue === null) {
     customSize.width = lastValidCustomSize.width
@@ -856,7 +906,7 @@ function normalizeCustomDimension(axis: 'width' | 'height') {
   }
   form.size = `${customSize.width}x${customSize.height}`
 
-  const validation = validateGPTImage2Size(form.size)
+  const validation = sizeValidation.value
   if (!validation.valid || !validation.width || !validation.height) {
     customSize.width = lastValidCustomSize.width
     customSize.height = lastValidCustomSize.height
@@ -873,7 +923,7 @@ function swapCustomSize() {
   customSize.width = customSize.height
   customSize.height = width
   syncCustomSize()
-  const validation = validateGPTImage2Size(form.size)
+  const validation = sizeValidation.value
   if (validation.valid && validation.width && validation.height) {
     lastValidCustomSize.width = validation.width
     lastValidCustomSize.height = validation.height
@@ -882,7 +932,7 @@ function swapCustomSize() {
 
 function restoreSize(size: string, savedMode?: string) {
   const normalized = size.trim().toLowerCase()
-  const validation = validateGPTImage2Size(normalized)
+  const validation = usingSensenovaSize.value ? validateSensenovaSize(normalized) : validateGPTImage2Size(normalized)
   if (!validation.valid) return
 
   form.size = normalized
@@ -906,7 +956,7 @@ function restoreSize(size: string, savedMode?: string) {
 function imageKeyAllowed(key: ApiKey): boolean {
   const platform = key.group?.platform
   return key.status === 'active'
-    && (platform === 'openai' || platform === 'gemini' || platform === 'grok')
+    && (platform === 'openai' || platform === 'gemini' || platform === 'grok' || platform === 'sensenova')
     && key.group?.allow_image_generation === true
 }
 
@@ -977,6 +1027,12 @@ async function loadCapabilities() {
     capabilities.value = result
     if (!result.models.some((model) => model.id === form.model)) form.model = result.default_model
     applyModelCapabilities()
+    if (result.provider === 'sensenova' && sizeMode.value !== 'auto' && sizeMode.value !== 'custom'
+      && !imageSizeOptions.value.includes(form.size)) {
+      // 上一个会话遗留的 openai 预设尺寸对 sensenova 不可见时回落 auto。
+      sizeMode.value = 'auto'
+      form.size = 'auto'
+    }
     await loadPricing()
   } catch (error: any) {
     if (capabilitiesController === requestController && error?.code !== 'ERR_CANCELED' && error?.name !== 'AbortError') {
@@ -1190,7 +1246,9 @@ function elapsedForJob(job: ImageGenerationJob): number {
 
 function resultSource(result: ImageStudioImage, snapshot: ImageGenerationSnapshot): string {
   if (result.b64_json) {
-    const fallbackMime = snapshot.provider === 'openai' ? `image/${snapshot.outputFormat}` : 'image/jpeg'
+    const fallbackMime = snapshot.provider === 'openai' || snapshot.provider === 'sensenova'
+      ? `image/${snapshot.outputFormat}`
+      : 'image/jpeg'
     const mime = ['image/png', 'image/jpeg', 'image/webp'].includes(result.mime_type || '') ? result.mime_type! : fallbackMime
     return sanitizeImageStudioSource(`data:${mime};base64,${result.b64_json}`)
   }
@@ -1201,7 +1259,7 @@ function resultFormat(result: ImageStudioImage, snapshot: ImageGenerationSnapsho
   if (result.mime_type === 'image/jpeg') return 'jpeg'
   if (result.mime_type === 'image/webp') return 'webp'
   if (result.mime_type === 'image/png') return 'png'
-  return snapshot.provider === 'openai' ? snapshot.outputFormat : 'jpeg'
+  return snapshot.provider === 'openai' || snapshot.provider === 'sensenova' ? snapshot.outputFormat : 'jpeg'
 }
 
 function generationPayload(settings: ImageGenerationSettings): ImageStudioGenerationRequest {
@@ -1211,6 +1269,14 @@ function generationPayload(settings: ImageGenerationSettings): ImageStudioGenera
     prompt: settings.prompt,
     model: settings.model,
     ...(sourceImages.length ? { source_images: sourceImages } : {})
+  }
+  if (settings.provider === 'sensenova') {
+    return {
+      ...base,
+      size: settings.size,
+      output_format: settings.outputFormat,
+      n: 1
+    }
   }
   if (settings.provider === 'gemini') {
     return {
@@ -1252,6 +1318,8 @@ function captureGenerationSnapshot(): ImageGenerationSnapshot | null {
   const sourceImageSnapshot = sourceImages.value.map(({ mime_type, data }) => ({ mime_type, data }))
   const isGrokEdit = provider.value === 'grok' && sourceImageSnapshot.length > 0
   const effectiveAspectRatio = isGrokEdit && sourceImageSnapshot.length === 1 ? 'auto' : form.aspectRatio
+  const sensenovaSingle = provider.value === 'sensenova'
+  const forcedSingleCount = provider.value === 'gemini' || sensenovaSingle || isGrokEdit
   const settings: ImageGenerationSettings = {
     userId: userId.value,
     apiKeyId: form.apiKeyId,
@@ -1265,9 +1333,9 @@ function captureGenerationSnapshot(): ImageGenerationSnapshot | null {
     quality: form.quality,
     background: form.background,
     outputFormat: form.outputFormat,
-    count: provider.value === 'gemini' || isGrokEdit ? 1 : form.count,
-    expectedCount: provider.value === 'gemini' || isGrokEdit ? 1 : form.count,
-    aspectToken: provider.value === 'openai' ? form.size : effectiveAspectRatio,
+    count: forcedSingleCount ? 1 : form.count,
+    expectedCount: forcedSingleCount ? 1 : form.count,
+    aspectToken: provider.value === 'openai' || sensenovaSingle ? form.size : effectiveAspectRatio,
     sourceImages: sourceImageSnapshot
   }
   return Object.freeze({
@@ -1303,7 +1371,8 @@ function galleryItemsForResults(
     const imageSrc = resultSource(result, snapshot)
     if (!imageSrc) return null
     const isGrokEdit = snapshot.provider === 'grok' && snapshot.sourceImages.length > 0
-    const size = snapshot.provider === 'openai' ? snapshot.size : snapshot.aspectRatio
+    const sizedProvider = snapshot.provider === 'openai' || snapshot.provider === 'sensenova'
+    const size = sizedProvider ? snapshot.size : snapshot.aspectRatio
     return {
       id: globalThis.crypto?.randomUUID?.() || `${createdAt}-${index}-${Math.random()}`,
       userId: snapshot.userId,
@@ -1314,10 +1383,10 @@ function galleryItemsForResults(
       provider: snapshot.provider,
       model: snapshot.model,
       size,
-      ...(snapshot.provider !== 'openai' ? { aspectRatio: snapshot.aspectRatio } : {}),
+      ...(snapshot.provider !== 'openai' && !sizedProvider ? { aspectRatio: snapshot.aspectRatio } : {}),
       ...(snapshot.provider === 'gemini' && snapshot.imageSize ? { imageSize: snapshot.imageSize } : {}),
       ...(snapshot.provider === 'grok' && !isGrokEdit ? { resolution: snapshot.resolution } : {}),
-      ...(snapshot.provider !== 'gemini' && !isGrokEdit ? { quality: snapshot.quality } : {}),
+      ...(snapshot.provider !== 'gemini' && !isGrokEdit && !sizedProvider ? { quality: snapshot.quality } : {}),
       ...(snapshot.provider === 'openai' ? { background: snapshot.background } : {}),
       outputFormat: resultFormat(result, snapshot),
       count: snapshot.count,
@@ -1395,7 +1464,7 @@ function reuseItem(item: ImageStudioGalleryItem | ImageStudioArchiveItem) {
   if (imageKeys.value.some((key) => key.id === item.apiKeyId)) form.apiKeyId = item.apiKeyId
   form.prompt = item.prompt
   form.model = item.model
-  if (item.provider === 'openai') restoreSize(item.size)
+  if (item.provider === 'openai' || item.provider === 'sensenova') restoreSize(item.size)
   if (item.aspectRatio) form.aspectRatio = item.aspectRatio
   if (item.imageSize) form.imageSize = item.imageSize
   if (item.resolution) form.resolution = item.resolution
@@ -1520,7 +1589,7 @@ function segmentColumnClass(count: number): string {
 function galleryItemSummary(item: ImageStudioGalleryItem | ImageStudioArchiveItem): string {
   return [
     item.model,
-    item.provider === 'openai' ? item.size : item.aspectRatio,
+    item.provider === 'openai' || item.provider === 'sensenova' ? item.size : item.aspectRatio,
     item.imageSize || item.resolution,
     item.quality,
     item.outputFormat?.toUpperCase()

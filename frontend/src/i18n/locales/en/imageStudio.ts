@@ -1,7 +1,7 @@
 export default {
   imageStudio: {
     title: 'Image Studio',
-    description: 'Create and manage images with OpenAI, Gemini, and Grok',
+    description: 'Create and manage images with OpenAI, Gemini, Grok, and SenseNova',
     apiKey: 'API key',
     selectApiKey: 'Select an image-enabled key',
     model: 'Model',
@@ -39,6 +39,9 @@ export default {
     sizeErrorRatio: 'Aspect ratio must be between 1:3 and 3:1',
     sizeErrorPixelsMin: 'Total pixels cannot be less than 655,360',
     sizeErrorPixelsMax: 'Total pixels cannot exceed 8,294,400',
+    sizeErrorMultipleSensenova: 'Width and height must be multiples of 32',
+    sizeErrorEdgeSensenova: 'Width and height must be between 512 and 4096',
+    sizeErrorRatioSensenova: 'Aspect ratio cannot exceed 3:1',
     square: 'Square',
     landscape: 'Landscape',
     portrait: 'Portrait',
@@ -77,7 +80,7 @@ export default {
     archiveEmptyTitle: 'No archived images',
     archiveEmpty: 'Archived images will appear here.',
     noKeysTitle: 'No image-enabled API key',
-    noEligibleKeys: 'Enable image generation for an OpenAI, Gemini, or Grok group, then create or update a key in that group.',
+    noEligibleKeys: 'Enable image generation for an OpenAI, Gemini, Grok, or SenseNova group, then create or update a key in that group.',
     manageKeys: 'Manage API keys',
     clearGallery: 'Clear session results',
     clearConfirm: 'Remove every generated result from this session? Archived items will not be affected.',

@@ -341,7 +341,7 @@ function normalizeOutputFormat(value: unknown): string {
 }
 
 function legacyAspectRatio(provider: ImageStudioProvider, size: string): string | undefined {
-  if (provider === 'openai') return undefined
+  if (provider === 'openai' || provider === 'sensenova') return undefined
   if (size.includes(':')) return size
   if (size === '1536x1024') return '3:2'
   if (size === '1024x1536') return '2:3'
@@ -351,11 +351,12 @@ function legacyAspectRatio(provider: ImageStudioProvider, size: string): string 
 function providerForLegacyModel(model: string): ImageStudioProvider {
   if (model.startsWith('gemini-')) return 'gemini'
   if (model.startsWith('grok-')) return 'grok'
+  if (model.startsWith('sensenova-')) return 'sensenova'
   return 'openai'
 }
 
 function isImageStudioProvider(value: unknown): value is ImageStudioProvider {
-  return value === 'openai' || value === 'gemini' || value === 'grok'
+  return value === 'openai' || value === 'gemini' || value === 'grok' || value === 'sensenova'
 }
 
 function ensureArchiveMigration(db: IDBDatabase): Promise<void> {

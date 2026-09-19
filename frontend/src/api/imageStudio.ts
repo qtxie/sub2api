@@ -6,7 +6,7 @@ const imageGenerationTimeoutMs = 10 * 60 * 1000
 export type ImageOutputFormat = 'png' | 'jpeg' | 'webp'
 export type ImageQuality = 'auto' | 'low' | 'medium' | 'high'
 export type ImageBackground = 'auto' | 'opaque' | 'transparent'
-export type ImageStudioProvider = 'openai' | 'gemini' | 'grok'
+export type ImageStudioProvider = 'openai' | 'gemini' | 'grok' | 'sensenova'
 
 export interface ImageStudioSourceImage {
   mime_type: 'image/png' | 'image/jpeg' | 'image/webp'
@@ -46,11 +46,18 @@ export interface GrokImageStudioEditRequest extends ImageStudioGenerationRequest
   aspect_ratio?: string
 }
 
+export interface SensenovaImageStudioGenerationRequest extends ImageStudioGenerationRequestBase {
+  size: string
+  output_format: ImageOutputFormat
+  n: number
+}
+
 export type ImageStudioGenerationRequest =
   | OpenAIImageStudioGenerationRequest
   | GeminiImageStudioGenerationRequest
   | GrokImageStudioGenerationRequest
   | GrokImageStudioEditRequest
+  | SensenovaImageStudioGenerationRequest
 
 export interface ImageStudioModelCapability {
   id: string
@@ -396,7 +403,7 @@ function nonNegativeInteger(value: unknown): number {
 }
 
 function isImageStudioProvider(value: string): value is ImageStudioProvider {
-  return value === 'openai' || value === 'gemini' || value === 'grok'
+  return value === 'openai' || value === 'gemini' || value === 'grok' || value === 'sensenova'
 }
 
 export default { generateImage, getImageStudioCapabilities, getImageStudioPricing }

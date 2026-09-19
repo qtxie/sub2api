@@ -84,7 +84,8 @@ func RegisterGatewayRoutes(
 	}
 	imagesHandler := func(c *gin.Context) {
 		switch getGroupPlatform(c) {
-		case service.PlatformOpenAI:
+		case service.PlatformOpenAI, service.PlatformSensenova:
+			// sensenova（商汤日日新）生图接口与 OpenAI Images 兼容，同经 OpenAI Images 网关转发。
 			h.OpenAIGateway.Images(c)
 		case service.PlatformGrok:
 			h.OpenAIGateway.GrokImages(c)

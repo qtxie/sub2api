@@ -1251,6 +1251,7 @@ function generateRoutedCodexFiles(
     zhipu: 'Zhipu',
     deepseek: 'DeepSeek',
     minimax: 'MiniMax',
+    sensenova: 'SenseNova',
     opencode_go: 'OpenCode',
     composite: 'Composite'
   }

@@ -467,6 +467,7 @@ export function getModelsByPlatform(platform: string): string[] {
     ]
     case 'doubao': return doubaoModels
     case 'minimax': return minimaxModels
+    case 'sensenova': return ['sensenova-u1.5-lite', 'sensenova-u1.5-fast']
     case 'baidu': return baiduModels
     case 'spark': return sparkModels
     case 'hunyuan': return hunyuanModels

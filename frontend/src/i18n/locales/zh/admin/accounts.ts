@@ -311,6 +311,7 @@ export default {
         zhipu: 'Zhipu GLM',
         deepseek: 'DeepSeek',
         minimax: 'MiniMax',
+        sensenova: 'SenseNova（商汤日日新）',
         opencode_go: 'OpenCode',
       },
       cnProviders: {

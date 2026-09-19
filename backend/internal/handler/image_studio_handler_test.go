@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -780,5 +781,157 @@ func TestImageStudioPricingUsesProviderModelSizes(t *testing.T) {
 			}
 			require.Equal(t, test.wantSizes, sizes)
 		})
+	}
+}
+
+func TestImageStudioCapabilitiesIncludeSensenovaModels(t *testing.T) {
+	capabilities, ok := imageStudioCapabilitiesForProvider(service.PlatformSensenova)
+	require.True(t, ok)
+	require.Equal(t, service.PlatformSensenova, capabilities.Provider)
+	require.Equal(t, imageStudioDefaultSensenovaModel, capabilities.DefaultModel)
+	require.Len(t, capabilities.Models, 2)
+	require.Equal(t, []string{"sensenova-u1.5-lite", "sensenova-u1.5-fast"},
+		[]string{capabilities.Models[0].ID, capabilities.Models[1].ID})
+	for _, model := range capabilities.Models {
+		require.Equal(t, imageStudioSensenovaSizes, model.ImageSizes)
+		require.True(t, model.SupportsCustomSize)
+		require.Equal(t, 1, model.MaxImages)
+		require.Equal(t, imageStudioSensenovaMaxInputImages, model.MaxInputImages)
+		require.Equal(t, []string{"png", "jpeg", "webp"}, model.OutputFormats)
+		require.Empty(t, model.Qualities)
+		require.Empty(t, model.Backgrounds)
+		require.Empty(t, model.AspectRatios)
+	}
+}
+
+func TestImageStudioGenerateSensenovaUsesDocumentedPayload(t *testing.T) {
+	var upstreamBody map[string]any
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKeyForPlatform(42, service.PlatformSensenova)},
+		cfg:     &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+	}
+	handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "http://127.0.0.1:8080/v1/images/generations", req.URL.String())
+		require.Equal(t, "Bearer sk-secret", req.Header.Get("Authorization"))
+		require.Equal(t, "application/json", req.Header.Get("Accept"))
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"aGVsbG8="}],"size":"2048x2048"}`)),
+		}, nil
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", strings.NewReader(`{
+		"api_key_id":7,"model":"sensenova-u1.5-fast","prompt":"draw a lighthouse",
+		"size":"2048x2048","output_format":"webp"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, "sensenova-u1.5-fast", upstreamBody["model"])
+	require.Equal(t, "2048x2048", upstreamBody["size"])
+	require.Equal(t, "webp", upstreamBody["output_format"])
+	require.Equal(t, float64(1), upstreamBody["n"])
+	require.Equal(t, "b64_json", upstreamBody["response_format"])
+	require.Equal(t, false, upstreamBody["watermark"])
+	require.NotContains(t, upstreamBody, "quality")
+	require.NotContains(t, upstreamBody, "background")
+	require.NotContains(t, upstreamBody, "aspect_ratio")
+}
+
+func TestImageStudioGenerateSensenovaEditUsesDocumentedImageShape(t *testing.T) {
+	var upstreamBody map[string]any
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKeyForPlatform(42, service.PlatformSensenova)},
+		cfg:     &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+	}
+	handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "http://127.0.0.1:8080/v1/images/edits", req.URL.String())
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"aGVsbG8="}],"size":"auto"}`)),
+		}, nil
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", strings.NewReader(`{
+		"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"换到冰川背景",
+		"source_images":[{"mime_type":"image/png","data":"iVBORw0KGgo="}]
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Len(t, upstreamBody["images"], 1)
+	images := upstreamBody["images"].([]any)
+	image := images[0].(map[string]any)
+	require.True(t, strings.HasPrefix(image["image_url"].(string), "data:image/png;base64,"))
+	// 编辑请求 size=auto 时不传 size，让上游自动适配主图。
+	require.NotContains(t, upstreamBody, "size")
+}
+
+func TestImageStudioGenerateSensenovaRejectsUnsupportedInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{name: "n greater than one", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","n":2}`},
+		{name: "quality", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","quality":"high"}`},
+		{name: "aspect_ratio", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","aspect_ratio":"16:9"}`},
+		{name: "size not multiple of 32", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","size":"2049x2048"}`},
+		{name: "size below minimum", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","size":"480x512"}`},
+		{name: "size above maximum", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","size":"4128x4096"}`},
+		{name: "size ratio beyond 3:1", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","size":"4096x1024"}`},
+		{name: "too many source images", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","source_images":[
+			{"mime_type":"image/png","data":"iVBORw0KGgo="},{"mime_type":"image/png","data":"iVBORw0KGgo="},
+			{"mime_type":"image/png","data":"iVBORw0KGgo="},{"mime_type":"image/png","data":"iVBORw0KGgo="},
+			{"mime_type":"image/png","data":"iVBORw0KGgo="},{"mime_type":"image/png","data":"iVBORw0KGgo="}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &ImageStudioHandler{
+				apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKeyForPlatform(42, service.PlatformSensenova)},
+				cfg:     &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+				httpClient: &http.Client{Transport: imageStudioRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					t.Fatal("upstream must not be called for invalid requests")
+					return nil, nil
+				})},
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/generations", strings.NewReader(test.payload))
+			request.Header.Set("Content-Type", "application/json")
+			imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
+		})
+	}
+}
+
+func TestImageStudioGenerateSensenovaAcceptsBoundarySizes(t *testing.T) {
+	for _, size := range []string{"auto", "512x512", "2048x2048", "4096x4096", "4096x1536", "1536x4096"} {
+		var upstreamBody map[string]any
+		handler := &ImageStudioHandler{
+			apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKeyForPlatform(42, service.PlatformSensenova)},
+			cfg:     &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+		}
+		handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`)),
+			}, nil
+		})}
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/generations",
+			strings.NewReader(fmt.Sprintf(`{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","size":%q}`, size)))
+		request.Header.Set("Content-Type", "application/json")
+		imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+		require.Equal(t, http.StatusOK, recorder.Code, "size "+size)
+		require.Equal(t, size, upstreamBody["size"])
 	}
 }

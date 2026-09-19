@@ -27,23 +27,28 @@ const (
 	imageStudioModel                  = "gpt-image-2"
 	imageStudioDefaultGeminiModel     = "gemini-3.1-flash-image"
 	imageStudioDefaultGrokModel       = "grok-imagine-image-2.0"
+	imageStudioDefaultSensenovaModel  = "sensenova-u1.5-lite"
 	imageStudioOpenAIMaxOutputCount   = 4
 	imageStudioGrokMaxOutputCount     = 10
 	imageStudioOpenAIMaxInputImages   = 16
 	imageStudioGeminiMaxInputImages   = 14
 	imageStudioGemini25MaxInputImages = 3
 	imageStudioGrokMaxInputImages     = 3
-	imageStudioMaxSourceImageBytes    = 6 << 20
-	imageStudioMaxSourceImagesBytes   = 14 << 20
-	imageStudioMaxRequestBytes        = 20 << 20
-	imageStudioMaxOutputCount         = imageStudioGrokMaxOutputCount
-	imageStudioPerImageResponseSize   = int64(48 << 20)
-	imageStudioResponseOverhead       = int64(2 << 20)
-	imageStudioHeartbeatInterval      = 15 * time.Second
+	// SenseNova edits 至多 5 张参考图（第 1 张为主编辑图），见官方 images/edits 文档。
+	imageStudioSensenovaMaxInputImages = 5
+	imageStudioMaxSourceImageBytes     = 6 << 20
+	imageStudioMaxSourceImagesBytes    = 14 << 20
+	imageStudioMaxRequestBytes         = 20 << 20
+	imageStudioMaxOutputCount          = imageStudioGrokMaxOutputCount
+	imageStudioPerImageResponseSize    = int64(48 << 20)
+	imageStudioResponseOverhead        = int64(2 << 20)
+	imageStudioHeartbeatInterval       = 15 * time.Second
 )
 
 var (
-	imageStudioPricingSizes        = []string{"1024x1024", "1536x1024", "1024x1536", "2048x2048", "2048x1152", "1152x2048", "3840x2160", "2160x3840"}
+	imageStudioPricingSizes = []string{"1024x1024", "1536x1024", "1024x1536", "2048x2048", "2048x1152", "1152x2048", "3840x2160", "2160x3840"}
+	// SenseNova 官方建议分辨率（2K/4K），另支持 32 倍数自定义尺寸（512–4096，比例≤3:1）。
+	imageStudioSensenovaSizes = []string{"1024x1024", "2048x2048", "2720x1536", "1536x2720", "1664x2496", "2496x1664", "4096x4096"}
 	errImageStudioResponseTooLarge = errors.New("image gateway response is too large")
 )
 
@@ -191,6 +196,23 @@ var imageStudioCapabilities = map[string]imageStudioCapabilitiesResponse{
 			SupportsCustomSize: false, OutputFormats: []string{}, Backgrounds: []string{},
 			MaxInputImages: imageStudioGrokMaxInputImages,
 		}},
+	},
+	service.PlatformSensenova: {
+		Provider: service.PlatformSensenova, DefaultModel: imageStudioDefaultSensenovaModel,
+		Models: []imageStudioModelCapability{
+			{
+				ID: "sensenova-u1.5-lite", Label: "SenseNova U1.5 Lite",
+				AspectRatios: []string{}, ImageSizes: imageStudioSensenovaSizes, Resolutions: []string{}, Qualities: []string{}, MaxImages: 1,
+				SupportsCustomSize: true, OutputFormats: []string{"png", "jpeg", "webp"}, Backgrounds: []string{},
+				MaxInputImages: imageStudioSensenovaMaxInputImages,
+			},
+			{
+				ID: "sensenova-u1.5-fast", Label: "SenseNova U1.5 Fast",
+				AspectRatios: []string{}, ImageSizes: imageStudioSensenovaSizes, Resolutions: []string{}, Qualities: []string{}, MaxImages: 1,
+				SupportsCustomSize: true, OutputFormats: []string{"png", "jpeg", "webp"}, Backgrounds: []string{},
+				MaxInputImages: imageStudioSensenovaMaxInputImages,
+			},
+		},
 	},
 }
 
@@ -368,6 +390,8 @@ func (h *ImageStudioHandler) Generate(c *gin.Context) {
 		h.generateImageStudioGemini(c, apiKey, input)
 	case service.PlatformGrok:
 		h.generateImageStudioGrok(c, apiKey, input)
+	case service.PlatformSensenova:
+		h.generateImageStudioSensenova(c, apiKey, input)
 	default:
 		response.BadRequest(c, "Image Studio does not support this API key platform")
 	}
@@ -388,7 +412,7 @@ func (h *ImageStudioHandler) loadEligibleAPIKey(c *gin.Context, apiKeyID, userID
 		return nil, false
 	}
 	if apiKey.Group == nil || !imageStudioPlatformSupported(apiKey.Group.Platform) {
-		response.BadRequest(c, "Image Studio requires an OpenAI, Gemini, or Grok API key")
+		response.BadRequest(c, "Image Studio requires an OpenAI, Gemini, Grok, or SenseNova API key")
 		return nil, false
 	}
 	if !service.GroupAllowsImageGeneration(apiKey.Group) {
@@ -449,6 +473,15 @@ func normalizeImageStudioInput(input *imageStudioGenerationRequest, provider str
 		if input.OutputCount == 0 {
 			input.OutputCount = 1
 		}
+	case service.PlatformSensenova:
+		if input.Size == "" {
+			input.Size = "auto"
+		}
+		if input.OutputFormat == "" {
+			input.OutputFormat = "png"
+		}
+		// SenseNova 仅支持单图输出（n=1）。
+		input.OutputCount = 1
 	}
 }
 
@@ -510,10 +543,46 @@ func validateImageStudioInput(input imageStudioGenerationRequest, provider strin
 		if !imageStudioOptionAllowed(input.Quality, capability.Qualities...) {
 			return "Unsupported image quality"
 		}
+	case service.PlatformSensenova:
+		if input.OutputCount != 1 {
+			return "Image count must be 1"
+		}
+		if !validSensenovaImageSize(input.Size) {
+			return "Unsupported image size"
+		}
+		if !imageStudioOptionAllowed(input.OutputFormat, capability.OutputFormats...) {
+			return "Unsupported image output format"
+		}
 	default:
 		return "Unsupported image provider"
 	}
 	return ""
+}
+
+// validSensenovaImageSize 校验 SenseNova size 参数：auto，或 宽x高（32 的倍数，
+// 512–4096，宽高比最大 3:1 / 1:3），与官方 /v1/images/generations 文档一致。
+func validSensenovaImageSize(size string) bool {
+	trimmed := strings.TrimSpace(size)
+	if trimmed == "" || strings.EqualFold(trimmed, "auto") {
+		return true
+	}
+	parts := strings.SplitN(strings.ToLower(trimmed), "x", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	width, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
+	height, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if errW != nil || errH != nil || width <= 0 || height <= 0 {
+		return false
+	}
+	if width%32 != 0 || height%32 != 0 {
+		return false
+	}
+	if width < 512 || height < 512 || width > 4096 || height > 4096 {
+		return false
+	}
+	ratio := float64(width) / float64(height)
+	return ratio <= 3.0 && ratio >= 1.0/3.0
 }
 
 func validateImageStudioSourceImages(images []imageStudioSourceImage, maxImages int) string {
@@ -601,6 +670,8 @@ func validateImageStudioProviderFields(input imageStudioGenerationRequest, provi
 				unsupported = append(unsupported, "aspect_ratio")
 			}
 		}
+	case service.PlatformSensenova:
+		unsupported = []string{"aspect_ratio", "image_size", "resolution", "quality", "background", "n"}
 	default:
 		return "Unsupported image provider"
 	}
@@ -691,6 +762,12 @@ func imageStudioPricingOptions(provider string, capability imageStudioModelCapab
 		options := make([]imageStudioPricingOption, 0, len(capability.Resolutions))
 		for _, resolution := range capability.Resolutions {
 			options = append(options, imageStudioPricingOption{Size: strings.ToUpper(resolution), Resolution: resolution})
+		}
+		return options
+	case service.PlatformSensenova:
+		options := make([]imageStudioPricingOption, 0, len(imageStudioSensenovaSizes))
+		for _, size := range imageStudioSensenovaSizes {
+			options = append(options, imageStudioPricingOption{Size: size})
 		}
 		return options
 	default:
@@ -817,6 +894,42 @@ func imageStudioOpenAIImageReferences(images []imageStudioSourceImage) []map[str
 		})
 	}
 	return references
+}
+
+// generateImageStudioSensenova 走本地网关 /v1/images/*（OpenAI Images 兼容格式）。
+// response_format 固定 b64_json：上游 url 为 24 小时临时链接，不适合画廊存档；
+// watermark=false 在公测期免费，产出无水印纯图。
+func (h *ImageStudioHandler) generateImageStudioSensenova(c *gin.Context, apiKey *service.APIKey, input imageStudioGenerationRequest) {
+	payload := map[string]any{
+		"model":           input.Model,
+		"prompt":          input.Prompt,
+		"n":               1,
+		"size":            input.Size,
+		"output_format":   input.OutputFormat,
+		"response_format": "b64_json",
+		"watermark":       false,
+	}
+	path := "/v1/images/generations"
+	if len(input.SourceImages) > 0 {
+		path = "/v1/images/edits"
+		// SenseNova edits 的 images[].image_url 与 OpenAI 相同（支持 data URL），直接复用。
+		payload["images"] = imageStudioOpenAIImageReferences(input.SourceImages)
+		if strings.TrimSpace(input.Size) == "" || strings.EqualFold(input.Size, "auto") {
+			delete(payload, "size")
+		}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		response.InternalError(c, "Failed to build image generation request")
+		return
+	}
+	request, ok := h.newImageStudioGatewayRequest(c, path, body)
+	if !ok {
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey.Key)
+	request.Header.Set("Accept", "application/json")
+	h.forwardImageStudioRequest(c, request, 1, false, nil)
 }
 
 func imageStudioGrokImageReferences(images []imageStudioSourceImage) []map[string]string {

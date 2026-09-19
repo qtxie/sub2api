@@ -35,6 +35,9 @@ const (
 	openAIImagesGenerationsURL = "https://api.openai.com/v1/images/generations"
 	openAIImagesEditsURL       = "https://api.openai.com/v1/images/edits"
 
+	// SensenovaDefaultImageModel 是 sensenova 分组空 model 请求的缺省生图模型。
+	SensenovaDefaultImageModel = "sensenova-u1.5-lite"
+
 	openAIChatGPTStartURL                  = "https://chatgpt.com/"
 	openAIChatGPTFilesURL                  = "https://chatgpt.com/backend-api/files"
 	openAIImageBackendUserAgent            = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -187,7 +190,14 @@ func (r *OpenAIImagesRequest) StickySessionSeed() string {
 	return seed
 }
 
+// ParseOpenAIImagesRequest 解析 OpenAI Images 请求（openai 平台缺省语义）。
 func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []byte) (*OpenAIImagesRequest, error) {
+	return s.ParseOpenAIImagesRequestForPlatform(c, body, PlatformOpenAI)
+}
+
+// ParseOpenAIImagesRequestForPlatform 按 API Key 分组平台解析 Images 请求。
+// platform 只影响缺省 model（sensenova 分组缺省 sensenova-u1.5-lite）。
+func (s *OpenAIGatewayService) ParseOpenAIImagesRequestForPlatform(c *gin.Context, body []byte, platform string) (*OpenAIImagesRequest, error) {
 	if c == nil || c.Request == nil {
 		return nil, fmt.Errorf("missing request context")
 	}
@@ -226,7 +236,7 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 		}
 	}
 
-	applyOpenAIImagesDefaults(req)
+	applyOpenAIImagesDefaultsForPlatform(req, platform)
 	if err := validateOpenAIImagesModel(req.Model); err != nil {
 		return nil, err
 	}
@@ -453,6 +463,12 @@ func parseOpenAIImageDimensions(_ textproto.MIMEHeader) (int, int) {
 }
 
 func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
+	applyOpenAIImagesDefaultsForPlatform(req, PlatformOpenAI)
+}
+
+// applyOpenAIImagesDefaultsForPlatform 按分组平台回填缺省参数。
+// 空 model 的默认值随平台不同：openai 用 gpt-image-2，sensenova 用 U1.5 Lite。
+func applyOpenAIImagesDefaultsForPlatform(req *OpenAIImagesRequest, platform string) {
 	if req == nil {
 		return
 	}
@@ -463,11 +479,16 @@ func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
 		req.Model = strings.TrimSpace(req.Model)
 		return
 	}
-	req.Model = "gpt-image-2"
+	switch platform {
+	case PlatformSensenova:
+		req.Model = SensenovaDefaultImageModel
+	default:
+		req.Model = "gpt-image-2"
+	}
 }
 
 func isOpenAIImageGenerationModel(model string) bool {
-	return IsGPTImageGenerationModel(model) || isGrokImageGenerationModel(model)
+	return IsGPTImageGenerationModel(model) || isGrokImageGenerationModel(model) || IsSensenovaImageGenerationModel(model)
 }
 
 // IsGPTImageGenerationModel identifies the GPT native image-generation model family.
@@ -483,6 +504,13 @@ func isGrokImageGenerationModel(model string) bool {
 		strings.HasPrefix(model, "grok-imagine-image")
 }
 
+// IsSensenovaImageGenerationModel 标识 SenseNova（商汤日日新）U 系列生图模型。
+// 官方文档：sensenova-u1.5-lite / sensenova-u1.5-fast，前缀匹配兼容后续 U 系列型号。
+func IsSensenovaImageGenerationModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "sensenova-u")
+}
+
 func validateOpenAIImagesModel(model string) error {
 	model = strings.TrimSpace(model)
 	if isOpenAIImageGenerationModel(model) {
@@ -492,6 +520,26 @@ func validateOpenAIImagesModel(model string) error {
 		return fmt.Errorf("images endpoint requires an image model")
 	}
 	return fmt.Errorf("images endpoint requires an image model, got %q", model)
+}
+
+// ValidateOpenAIImagesModelForPlatform 在全局图片模型白名单之上按分组平台收窄：
+// sensenova 分组只接受 sensenova-u* 生图模型，openai 分组只接受 gpt-image-*，
+// 避免跨平台模型串组打到错误上游。其余平台（grok 走专用解析）不在此约束。
+func ValidateOpenAIImagesModelForPlatform(platform, model string) error {
+	if err := validateOpenAIImagesModel(model); err != nil {
+		return err
+	}
+	switch platform {
+	case PlatformSensenova:
+		if !IsSensenovaImageGenerationModel(model) {
+			return fmt.Errorf("sensenova images endpoint requires a sensenova image model, got %q", model)
+		}
+	case PlatformOpenAI:
+		if !IsGPTImageGenerationModel(model) {
+			return fmt.Errorf("openai images endpoint requires a gpt-image model, got %q", model)
+		}
+	}
+	return nil
 }
 
 func normalizeOpenAIImagesEndpointPath(path string) string {
