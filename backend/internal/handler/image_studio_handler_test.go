@@ -804,6 +804,32 @@ func TestImageStudioCapabilitiesIncludeSensenovaModels(t *testing.T) {
 	}
 }
 
+func TestImageStudioGenerateSensenovaAcceptsExplicitSingleCount(t *testing.T) {
+	var upstreamBody map[string]any
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKeyForPlatform(42, service.PlatformSensenova)},
+		cfg:     &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+	}
+	handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`)),
+		}, nil
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", strings.NewReader(`{
+		"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","n":1
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, float64(1), upstreamBody["n"])
+}
+
 func TestImageStudioGenerateSensenovaUsesDocumentedPayload(t *testing.T) {
 	var upstreamBody map[string]any
 	handler := &ImageStudioHandler{
@@ -881,6 +907,7 @@ func TestImageStudioGenerateSensenovaRejectsUnsupportedInput(t *testing.T) {
 		payload string
 	}{
 		{name: "n greater than one", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","n":2}`},
+		{name: "n zero", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","n":0}`},
 		{name: "quality", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","quality":"high"}`},
 		{name: "aspect_ratio", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","aspect_ratio":"16:9"}`},
 		{name: "size not multiple of 32", payload: `{"api_key_id":7,"model":"sensenova-u1.5-lite","prompt":"p","size":"2049x2048"}`},
@@ -907,6 +934,9 @@ func TestImageStudioGenerateSensenovaRejectsUnsupportedInput(t *testing.T) {
 			request.Header.Set("Content-Type", "application/json")
 			imageStudioTestRouter(handler).ServeHTTP(recorder, request)
 			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
+			if test.name == "n greater than one" || test.name == "n zero" {
+				require.Contains(t, recorder.Body.String(), "Image count must be 1")
+			}
 		})
 	}
 }

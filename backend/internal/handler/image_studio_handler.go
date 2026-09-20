@@ -480,8 +480,10 @@ func normalizeImageStudioInput(input *imageStudioGenerationRequest, provider str
 		if input.OutputFormat == "" {
 			input.OutputFormat = "png"
 		}
-		// SenseNova 仅支持单图输出（n=1）。
-		input.OutputCount = 1
+		// SenseNova 仅支持单图输出；未传 n 时补 1，已传的 n 交给校验层判断。
+		if !input.fieldWasProvided("n") {
+			input.OutputCount = 1
+		}
 	}
 }
 
@@ -671,7 +673,8 @@ func validateImageStudioProviderFields(input imageStudioGenerationRequest, provi
 			}
 		}
 	case service.PlatformSensenova:
-		unsupported = []string{"aspect_ratio", "image_size", "resolution", "quality", "background", "n"}
+		// n 是 SenseNova 文档字段，但取值只能为 1；非法取值由 validateImageStudioInput 拒绝。
+		unsupported = []string{"aspect_ratio", "image_size", "resolution", "quality", "background"}
 	default:
 		return "Unsupported image provider"
 	}
