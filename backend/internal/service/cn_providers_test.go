@@ -573,6 +573,16 @@ func TestGetOpenAIProtocolAPIKey_CNProviders(t *testing.T) {
 	}
 	require.Equal(t, "sk-opencode-go", openCodeGo.GetOpenAIProtocolAPIKey())
 	require.False(t, openCodeGo.IsOpenAIApiKey())
+
+	// SenseNova 生图账号同样存通用 api_key，OpenAI Images 网关需要能读到
+	sensenova := &Account{
+		Platform:    PlatformSensenova,
+		Type:        AccountTypeAPIKey,
+		Credentials: map[string]any{"api_key": "sk-sensenova"},
+	}
+	require.Equal(t, "sk-sensenova", sensenova.GetOpenAIProtocolAPIKey())
+	require.False(t, sensenova.IsOpenAIApiKey())
+	require.False(t, sensenova.IsMultiProtocolAPIKey())
 }
 
 // TestBuildUpstreamModelsRequest_CNProviders 验证“同步上游支持的模型”对国产供应商可用：

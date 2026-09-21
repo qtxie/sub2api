@@ -1768,15 +1768,17 @@ func (a *Account) GetOpenAIApiKey() string {
 }
 
 // GetOpenAIProtocolAPIKey 返回 OpenAI 协议族 APIKey 账号的密钥。
-// 覆盖 openai 原生账号、国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）
-// 以及 OpenCode Go 账号，供转发鉴权、模型列表同步等协议族共用路径使用。
+// 覆盖 openai 原生账号、国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）、
+// SenseNova 生图网关以及 OpenCode Go 账号，供转发鉴权、模型列表同步等
+// 协议族共用路径使用。SenseNova 存 credentials["api_key"]，但不进入
+// multi-protocol 自适应分流，因此这里单独放行。
 // 注意 IsOpenAIApiKey 语义上仅指 openai 平台账号，调度倍率/WS 能力门控
 // 继续以其为准，不受本方法影响。
 func (a *Account) GetOpenAIProtocolAPIKey() string {
 	if a == nil {
 		return ""
 	}
-	if a.IsMultiProtocolAPIKey() {
+	if a.IsMultiProtocolAPIKey() || a.IsSensenova() {
 		if a.Type != AccountTypeAPIKey {
 			return ""
 		}

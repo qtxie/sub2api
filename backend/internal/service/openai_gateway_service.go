@@ -1268,7 +1268,9 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 		}
 		return accessToken, "oauth", nil
 	case AccountTypeAPIKey:
-		if account.Platform == PlatformGrok {
+		// Grok / SenseNova 账号使用通用 credentials["api_key"]，
+		// 不走 OpenAI 的 api_key_list 轮换池。
+		if account.Platform == PlatformGrok || account.Platform == PlatformSensenova {
 			apiKey := strings.TrimSpace(account.GetCredential("api_key"))
 			if apiKey == "" {
 				return "", "", errors.New("api_key not found in credentials")
