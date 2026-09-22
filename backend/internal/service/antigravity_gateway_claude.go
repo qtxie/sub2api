@@ -48,7 +48,11 @@ func (s *AntigravityGatewayService) forwardOnce(ctx context.Context, c *gin.Cont
 	}
 
 	originalModel := claudeReq.Model
-	mappedModel := s.getMappedModel(account, claudeReq.Model)
+	mappedModel := s.getMappedModelForThinkingLevel(
+		account,
+		claudeReq.Model,
+		geminiThinkingLevelFromClaudeThinking(claudeReq.Thinking),
+	)
 	if mappedModel == "" {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		return nil, s.writeClaudeError(c, http.StatusForbidden, "permission_error", fmt.Sprintf("model %s not in whitelist", claudeReq.Model))
