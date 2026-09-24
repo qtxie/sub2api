@@ -1,5 +1,5 @@
-import { mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SubscriptionProgressMini from '../SubscriptionProgressMini.vue'
 import type { UserSubscription } from '@/types'
@@ -21,11 +21,18 @@ vi.mock('@/stores', () => ({
   })
 }))
 
+vi.mock('@/utils/featureFlags', () => ({
+  FeatureFlags: { subscription: 'subscription' },
+  isFeatureFlagEnabled: () => true
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string) => key
   })
 }))
+
+enableAutoUnmount(afterEach)
 
 function subscriptionFixture(): UserSubscription {
   return {
@@ -85,5 +92,25 @@ describe('SubscriptionProgressMini', () => {
     expect(wrapper.text()).toContain('$15.00/$20.00')
     expect(wrapper.find('.bg-orange-500').exists()).toBe(true)
     expect(wrapper.find('.bg-red-500').exists()).toBe(false)
+  })
+})
+
+describe('subscription expiry calendar labels', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 8, 22, 12))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it.each([
+    [new Date(2026, 8, 22, 18), 'expiresToday'],
+    [new Date(2026, 8, 23, 18), 'expiresTomorrow'],
+    [new Date(2026, 8, 22, 12), 'expired'],
+    [new Date(2026, 8, 25, 12), 'daysRemaining'],
+  ])('labels %s as %s', async (expires, label) => {
+    storeState.activeSubscriptions = [{ id: 1, group_id: 1, expires_at: expires.toISOString(), group: { name: 'Plan' } }]
+    const w = mount(SubscriptionProgressMini, { global: { stubs: { Icon: true, RouterLink: true } } })
+    await w.get('button').trigger('click')
+    expect(w.text()).toContain('subscriptionProgress.' + label)
   })
 })

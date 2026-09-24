@@ -62,6 +62,8 @@ type OpenAIImagesCapability string
 const (
 	OpenAIImagesCapabilityBasic  OpenAIImagesCapability = "images-basic"
 	OpenAIImagesCapabilityNative OpenAIImagesCapability = "images-native"
+	// Compatible provider models require the API-key Images passthrough path.
+	OpenAIImagesCapabilityAPIKey OpenAIImagesCapability = "images-apikey"
 )
 
 type OpenAIImagesUpload struct {
@@ -237,7 +239,14 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequestForPlatform(c *gin.Contex
 	}
 
 	applyOpenAIImagesDefaultsForPlatform(req, platform)
-	if err := validateOpenAIImagesModel(req.Model); err != nil {
+	// Composite middleware preserves multipart bodies, including their public
+	// alias. Validate and forward the resolved model without altering uploads.
+	if resolvedPlatform, _ := ResolvedTargetPlatformFromContext(c.Request.Context()); resolvedPlatform == PlatformOpenAI {
+		if model, ok := ResolvedUpstreamModelFromContext(c.Request.Context()); ok {
+			req.Model = model
+		}
+	}
+	if err := validateCompatibleImagesModel(req.Model); err != nil {
 		return nil, err
 	}
 	req.SizeTier = normalizeOpenAIImageSizeTier(req.Size)
@@ -525,8 +534,9 @@ func validateOpenAIImagesModel(model string) error {
 // ValidateOpenAIImagesModelForPlatform 在全局图片模型白名单之上按分组平台收窄：
 // sensenova 分组只接受 sensenova-u* 生图模型，openai 分组只接受 gpt-image-*，
 // 避免跨平台模型串组打到错误上游。其余平台（grok 走专用解析）不在此约束。
+// gemini 兼容生图模型同样被视为合法图片模型（API-key 专用栅栏由能力分类负责）。
 func ValidateOpenAIImagesModelForPlatform(platform, model string) error {
-	if err := validateOpenAIImagesModel(model); err != nil {
+	if err := validateCompatibleImagesModel(model); err != nil {
 		return err
 	}
 	switch platform {
@@ -535,11 +545,35 @@ func ValidateOpenAIImagesModelForPlatform(platform, model string) error {
 			return fmt.Errorf("sensenova images endpoint requires a sensenova image model, got %q", model)
 		}
 	case PlatformOpenAI:
-		if !IsGPTImageGenerationModel(model) {
+		if !IsGPTImageGenerationModel(model) && !isGeminiCompatibleImageModel(model) {
 			return fmt.Errorf("openai images endpoint requires a gpt-image model, got %q", model)
 		}
 	}
 	return nil
+}
+
+// Keep this separate from isOpenAIImageGenerationModel: that predicate also
+// drives native Responses tool conversion, pricing and rate-limit policy.
+func isGeminiCompatibleImageModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "gemini-") &&
+		(strings.HasSuffix(model, "-image") || strings.Contains(model, "-image-"))
+}
+
+func validateCompatibleImagesModel(model string) error {
+	if isGeminiCompatibleImageModel(model) {
+		return nil
+	}
+	return validateOpenAIImagesModel(model)
+}
+
+// RequiredCapabilityForModel also applies the API-key-only fence when channel
+// mapping introduces a compatible provider model after request parsing.
+func (req *OpenAIImagesRequest) RequiredCapabilityForModel(model string) OpenAIImagesCapability {
+	if isGeminiCompatibleImageModel(model) {
+		return OpenAIImagesCapabilityAPIKey
+	}
+	return req.RequiredCapability
 }
 
 func normalizeOpenAIImagesEndpointPath(path string) string {
@@ -557,6 +591,9 @@ func normalizeOpenAIImagesEndpointPath(path string) string {
 func classifyOpenAIImagesCapability(req *OpenAIImagesRequest) OpenAIImagesCapability {
 	if req == nil {
 		return OpenAIImagesCapabilityNative
+	}
+	if isGeminiCompatibleImageModel(req.Model) {
+		return OpenAIImagesCapabilityAPIKey
 	}
 	if req.ExplicitModel || req.ExplicitSize {
 		return OpenAIImagesCapabilityNative
@@ -642,11 +679,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
 		requestModel = mapped
 	}
-	if err := validateOpenAIImagesModel(requestModel); err != nil {
+	if err := validateCompatibleImagesModel(requestModel); err != nil {
 		return nil, err
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	if err := validateOpenAIImagesModel(upstreamModel); err != nil {
+	if err := validateCompatibleImagesModel(upstreamModel); err != nil {
 		return nil, err
 	}
 	SetOpsUpstreamModel(c, upstreamModel)
