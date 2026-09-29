@@ -109,8 +109,9 @@ func TestImageStudioGenerateUsesSupportedGPTImage2Payload(t *testing.T) {
 	})}
 
 	recorder := httptest.NewRecorder()
+	// 显式指定 gpt-image-2：OpenAI 分组默认已是 2.5 Flare，该用例覆盖 legacy 模型。
 	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewBufferString(`{
-		"api_key_id":7,"prompt":"draw a lighthouse","size":"3840x2160","quality":"high",
+		"api_key_id":7,"model":"gpt-image-2","prompt":"draw a lighthouse","size":"3840x2160","quality":"high",
 		"background":"transparent","output_format":"webp","n":4
 	}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -169,6 +170,32 @@ func TestImageStudioGenerateForwardsSelectedGPTImage25Model(t *testing.T) {
 			require.Equal(t, qualities[model], upstreamBody["quality"])
 		})
 	}
+}
+
+func TestImageStudioGenerateDefaultsToGPTImage25Flare(t *testing.T) {
+	var upstreamBody map[string]any
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+		cfg:     &config.Config{Server: config.ServerConfig{Host: "0.0.0.0", Port: 8080}},
+	}
+	handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`)),
+		}, nil
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewBufferString(`{"api_key_id":7,"prompt":"draw a lighthouse"}`))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, imageStudioDefaultOpenAIModel, upstreamBody["model"])
+	require.Equal(t, imageStudioModel25Flare, upstreamBody["model"])
+	require.Equal(t, "auto", upstreamBody["quality"])
 }
 
 func TestImageStudioGenerateRejectsLegacyQualityOnGPTImage25(t *testing.T) {
@@ -427,7 +454,7 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 			},
 		},
 		{
-			provider: service.PlatformOpenAI, defaultModel: imageStudioModel,
+			provider: service.PlatformOpenAI, defaultModel: imageStudioDefaultOpenAIModel,
 			assert: func(t *testing.T, capabilities imageStudioCapabilitiesResponse) {
 				require.Len(t, capabilities.Models, 3)
 				require.Equal(t,

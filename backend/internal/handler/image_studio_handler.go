@@ -24,9 +24,12 @@ import (
 )
 
 const (
-	imageStudioModel                  = "gpt-image-2"
-	imageStudioModel25Flare           = "gpt-image-2.5-flare"
-	imageStudioModel25Sunburst        = "gpt-image-2.5-sunburst"
+	imageStudioModel           = "gpt-image-2"
+	imageStudioModel25Flare    = "gpt-image-2.5-flare"
+	imageStudioModel25Sunburst = "gpt-image-2.5-sunburst"
+	// imageStudioDefaultOpenAIModel 是 OpenAI 分组的默认生图模型。2.5 Flare 与
+	// gpt-image-2 能力一致但质量更好，因此作为面板默认；gpt-image-2 仍可选。
+	imageStudioDefaultOpenAIModel     = imageStudioModel25Flare
 	imageStudioDefaultGeminiModel     = "gemini-3.1-flash-image"
 	imageStudioDefaultGrokModel       = "grok-imagine-image-2.0"
 	imageStudioDefaultSensenovaModel  = "sensenova-u1.5-lite"
@@ -150,7 +153,7 @@ type imageStudioPricingResponse struct {
 
 var imageStudioCapabilities = map[string]imageStudioCapabilitiesResponse{
 	service.PlatformOpenAI: {
-		Provider: service.PlatformOpenAI, DefaultModel: imageStudioModel,
+		Provider: service.PlatformOpenAI, DefaultModel: imageStudioDefaultOpenAIModel,
 		Models: []imageStudioModelCapability{
 			imageStudioOpenAIImageCapability(imageStudioModel, "GPT Image 2", imageStudioGPTImage2Qualities()),
 			imageStudioOpenAIImageCapability(imageStudioModel25Flare, "GPT Image 2.5 Flare", imageStudioGPTImage25Qualities()),

@@ -4,7 +4,10 @@ import { sanitizeImageStudioSource } from '@/utils/imageStudioGallery'
 const imageGenerationTimeoutMs = 10 * 60 * 1000
 
 export type ImageOutputFormat = 'png' | 'jpeg' | 'webp'
-export type ImageQuality = 'auto' | 'low' | 'medium' | 'high'
+// GPT Image 2 使用 auto / low / medium / high，GPT Image 2.5（Flare / Sunburst）
+// 使用 auto / xhigh / max；两者共用同一个 quality 字段。
+export const IMAGE_STUDIO_QUALITIES = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export type ImageQuality = (typeof IMAGE_STUDIO_QUALITIES)[number]
 export type ImageBackground = 'auto' | 'opaque' | 'transparent'
 export type ImageStudioProvider = 'openai' | 'gemini' | 'grok' | 'sensenova'
 
@@ -325,7 +328,7 @@ function normalizeCapabilities(value: unknown): ImageStudioCapabilitiesResponse 
         aspect_ratios: stringArray(model?.aspect_ratios ?? model?.aspectRatios),
         image_sizes: stringArray(model?.image_sizes ?? model?.imageSizes),
         resolutions: stringArray(model?.resolutions),
-        qualities: enumArray(model?.qualities, ['auto', 'low', 'medium', 'high'] as const),
+        qualities: enumArray(model?.qualities, IMAGE_STUDIO_QUALITIES),
         backgrounds: enumArray(model?.backgrounds, ['auto', 'opaque', 'transparent'] as const),
         output_formats: enumArray(model?.output_formats ?? model?.outputFormats, ['png', 'jpeg', 'webp'] as const),
         max_images: maxImages,
