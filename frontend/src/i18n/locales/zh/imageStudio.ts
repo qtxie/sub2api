@@ -50,6 +50,8 @@ export default {
     qualityLow: '低',
     qualityMedium: '中',
     qualityHigh: '高',
+    qualityXhigh: '超高',
+    qualityMax: '最高',
     background: '背景',
     backgroundAuto: '自动',
     backgroundOpaque: '不透明',

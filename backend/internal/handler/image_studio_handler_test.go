@@ -125,6 +125,101 @@ func TestImageStudioGenerateUsesSupportedGPTImage2Payload(t *testing.T) {
 	require.Equal(t, float64(4), upstreamBody["n"])
 }
 
+func TestImageStudioGenerateForwardsSelectedGPTImage25Model(t *testing.T) {
+	// 每个模型搭配自己合法的 quality 档位，顺带覆盖 2.5 不再接受 low/medium/high。
+	qualities := map[string]string{
+		imageStudioModel:           "high",
+		imageStudioModel25Flare:    "xhigh",
+		imageStudioModel25Sunburst: "max",
+	}
+	for _, model := range []string{imageStudioModel, imageStudioModel25Flare, imageStudioModel25Sunburst} {
+		t.Run(model, func(t *testing.T) {
+			var upstreamBody map[string]any
+			handler := &ImageStudioHandler{
+				apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+				cfg:     &config.Config{Server: config.ServerConfig{Host: "0.0.0.0", Port: 8080}},
+			}
+			handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`)),
+				}, nil
+			})}
+
+			body, err := json.Marshal(map[string]any{
+				"api_key_id":    7,
+				"model":         model,
+				"prompt":        "draw a lighthouse",
+				"size":          "1024x1024",
+				"quality":       qualities[model],
+				"background":    "opaque",
+				"output_format": "png",
+				"n":             1,
+			})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			require.Equal(t, model, upstreamBody["model"])
+			require.Equal(t, qualities[model], upstreamBody["quality"])
+		})
+	}
+}
+
+func TestImageStudioGenerateRejectsLegacyQualityOnGPTImage25(t *testing.T) {
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+		httpClient: &http.Client{Transport: imageStudioRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("invalid quality reached the gateway")
+			return nil, nil
+		})},
+		cfg: &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+	}
+	for _, model := range []string{imageStudioModel25Flare, imageStudioModel25Sunburst} {
+		t.Run(model, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"api_key_id": 7, "model": model, "prompt": "draw a lighthouse", "quality": "medium",
+			})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
+		})
+	}
+}
+
+func TestImageStudioPricingAcceptsGPTImage25Models(t *testing.T) {
+	handler := &ImageStudioHandler{
+		apiKeys:       imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+		pricingQuoter: imageStudioQuoterStub{price: 0.25},
+	}
+	for _, model := range []string{imageStudioModel25Flare, imageStudioModel25Sunburst} {
+		t.Run(model, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"api_key_id": 7, "model": model})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/pricing", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			var payload struct {
+				Data imageStudioPricingResponse `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &payload))
+			require.Equal(t, model, payload.Data.Model)
+			require.Len(t, payload.Data.Prices, 8)
+		})
+	}
+}
+
 func TestImageStudioGenerateRejectsOversizedRequestBeforeGateway(t *testing.T) {
 	handler := &ImageStudioHandler{
 		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
@@ -334,10 +429,23 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 		{
 			provider: service.PlatformOpenAI, defaultModel: imageStudioModel,
 			assert: func(t *testing.T, capabilities imageStudioCapabilitiesResponse) {
-				require.Len(t, capabilities.Models, 1)
-				model := capabilities.Models[0]
-				require.Equal(t, []string{"auto", "opaque", "transparent"}, model.Backgrounds)
-				require.Equal(t, imageStudioOpenAIMaxInputImages, model.MaxInputImages)
+				require.Len(t, capabilities.Models, 3)
+				require.Equal(t,
+					[]string{imageStudioModel, imageStudioModel25Flare, imageStudioModel25Sunburst},
+					[]string{capabilities.Models[0].ID, capabilities.Models[1].ID, capabilities.Models[2].ID})
+				for _, model := range capabilities.Models {
+					require.Equal(t, []string{"auto", "opaque", "transparent"}, model.Backgrounds)
+					require.Equal(t, []string{"png", "jpeg", "webp"}, model.OutputFormats)
+					require.Equal(t, imageStudioOpenAIMaxOutputCount, model.MaxImages)
+					require.Equal(t, imageStudioOpenAIMaxInputImages, model.MaxInputImages)
+					require.True(t, model.SupportsCustomSize)
+				}
+				require.Equal(t, "GPT Image 2.5 Flare", capabilities.Models[1].Label)
+				require.Equal(t, "GPT Image 2.5 Sunburst", capabilities.Models[2].Label)
+				// 2.5 使用 auto / xhigh / max，而不是 2 的 low / medium / high。
+				require.Equal(t, []string{"auto", "low", "medium", "high"}, capabilities.Models[0].Qualities)
+				require.Equal(t, []string{"auto", "xhigh", "max"}, capabilities.Models[1].Qualities)
+				require.Equal(t, []string{"auto", "xhigh", "max"}, capabilities.Models[2].Qualities)
 			},
 		},
 	}

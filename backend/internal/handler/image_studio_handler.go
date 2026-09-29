@@ -25,6 +25,8 @@ import (
 
 const (
 	imageStudioModel                  = "gpt-image-2"
+	imageStudioModel25Flare           = "gpt-image-2.5-flare"
+	imageStudioModel25Sunburst        = "gpt-image-2.5-sunburst"
 	imageStudioDefaultGeminiModel     = "gemini-3.1-flash-image"
 	imageStudioDefaultGrokModel       = "grok-imagine-image-2.0"
 	imageStudioDefaultSensenovaModel  = "sensenova-u1.5-lite"
@@ -48,7 +50,7 @@ const (
 var (
 	imageStudioPricingSizes = []string{"1024x1024", "1536x1024", "1024x1536", "2048x2048", "2048x1152", "1152x2048", "3840x2160", "2160x3840"}
 	// SenseNova 官方建议分辨率（2K/4K），另支持 32 倍数自定义尺寸（512–4096，比例≤3:1）。
-	imageStudioSensenovaSizes = []string{"1024x1024", "2048x2048", "2720x1536", "1536x2720", "1664x2496", "2496x1664", "4096x4096"}
+	imageStudioSensenovaSizes      = []string{"1024x1024", "2048x2048", "2720x1536", "1536x2720", "1664x2496", "2496x1664", "4096x4096"}
 	errImageStudioResponseTooLarge = errors.New("image gateway response is too large")
 )
 
@@ -149,13 +151,11 @@ type imageStudioPricingResponse struct {
 var imageStudioCapabilities = map[string]imageStudioCapabilitiesResponse{
 	service.PlatformOpenAI: {
 		Provider: service.PlatformOpenAI, DefaultModel: imageStudioModel,
-		Models: []imageStudioModelCapability{{
-			ID: imageStudioModel, Label: "GPT Image 2",
-			AspectRatios: []string{}, ImageSizes: imageStudioPricingSizes, Resolutions: []string{},
-			Qualities: []string{"auto", "low", "medium", "high"}, MaxImages: imageStudioOpenAIMaxOutputCount,
-			SupportsCustomSize: true, OutputFormats: []string{"png", "jpeg", "webp"}, Backgrounds: []string{"auto", "opaque", "transparent"},
-			MaxInputImages: imageStudioOpenAIMaxInputImages,
-		}},
+		Models: []imageStudioModelCapability{
+			imageStudioOpenAIImageCapability(imageStudioModel, "GPT Image 2", imageStudioGPTImage2Qualities()),
+			imageStudioOpenAIImageCapability(imageStudioModel25Flare, "GPT Image 2.5 Flare", imageStudioGPTImage25Qualities()),
+			imageStudioOpenAIImageCapability(imageStudioModel25Sunburst, "GPT Image 2.5 Sunburst", imageStudioGPTImage25Qualities()),
+		},
 	},
 	service.PlatformGemini: {
 		Provider: service.PlatformGemini, DefaultModel: imageStudioDefaultGeminiModel,
@@ -214,6 +214,31 @@ var imageStudioCapabilities = map[string]imageStudioCapabilitiesResponse{
 			},
 		},
 	},
+}
+
+// imageStudioGPTImage2Qualities 是 GPT Image 2 支持的 quality 档位。
+func imageStudioGPTImage2Qualities() []string {
+	return []string{"auto", "low", "medium", "high"}
+}
+
+// imageStudioGPTImage25Qualities 是 GPT Image 2.5（Flare / Sunburst）支持的
+// quality 档位，与 GPT Image 2 的 low / medium / high 不同。
+func imageStudioGPTImage25Qualities() []string {
+	return []string{"auto", "xhigh", "max"}
+}
+
+// imageStudioOpenAIImageCapability 描述 OpenAI 生图模型的面板能力。GPT Image 2
+// 与 2.5（Flare / Sunburst）共用同一套尺寸、背景与输出格式约束，仅模型 ID、展示
+// 名与 quality 档位不同：2.5 的 quality 取值为 auto / xhigh / max，而 2 使用
+// auto / low / medium / high（见 README「OpenAI 图片模型」）。
+func imageStudioOpenAIImageCapability(id, label string, qualities []string) imageStudioModelCapability {
+	return imageStudioModelCapability{
+		ID: id, Label: label,
+		AspectRatios: []string{}, ImageSizes: imageStudioPricingSizes, Resolutions: []string{},
+		Qualities: qualities, MaxImages: imageStudioOpenAIMaxOutputCount,
+		SupportsCustomSize: true, OutputFormats: []string{"png", "jpeg", "webp"}, Backgrounds: []string{"auto", "opaque", "transparent"},
+		MaxInputImages: imageStudioOpenAIMaxInputImages,
+	}
 }
 
 func (input *imageStudioGenerationRequest) UnmarshalJSON(data []byte) error {
@@ -780,7 +805,7 @@ func imageStudioPricingOptions(provider string, capability imageStudioModelCapab
 
 func (h *ImageStudioHandler) generateImageStudioOpenAI(c *gin.Context, apiKey *service.APIKey, input imageStudioGenerationRequest) {
 	payload := map[string]any{
-		"model":         imageStudioModel,
+		"model":         input.Model,
 		"prompt":        input.Prompt,
 		"n":             input.OutputCount,
 		"stream":        true,

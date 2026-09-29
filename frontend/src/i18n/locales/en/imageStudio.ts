@@ -50,6 +50,8 @@ export default {
     qualityLow: 'Low',
     qualityMedium: 'Medium',
     qualityHigh: 'High',
+    qualityXhigh: 'Extra high',
+    qualityMax: 'Max',
     background: 'Background',
     backgroundAuto: 'Auto',
     backgroundOpaque: 'Opaque',
