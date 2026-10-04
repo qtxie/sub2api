@@ -116,6 +116,8 @@ func DetectModelPlatform(model string) (string, bool) {
 			return PlatformMiniMax, true
 		case "sensenova", "sensetime":
 			return PlatformSensenova, true
+		case "typesafe", "jev":
+			return PlatformTypeSafe, true
 		}
 		if rest != "" {
 			normalized = strings.TrimPrefix(rest, "models/")
@@ -159,6 +161,8 @@ func DetectModelPlatform(model string) (string, bool) {
 		return PlatformMiniMax, true
 	case strings.HasPrefix(normalized, "sensenova-"):
 		return PlatformSensenova, true
+	case normalized == "jev-latest" || strings.HasPrefix(normalized, "jev-"):
+		return PlatformTypeSafe, true
 	default:
 		return "", false
 	}
@@ -206,7 +210,7 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 func isConcreteRequestPlatform(platform string) bool {
 	switch platform {
 	case PlatformAnthropic, PlatformOpenAI, PlatformGemini, PlatformAntigravity, PlatformGrok,
-		PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformSensenova, PlatformOpenCodeGo:
+		PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformSensenova, PlatformTypeSafe, PlatformOpenCodeGo:
 		return true
 	default:
 		return false
