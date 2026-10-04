@@ -80,8 +80,17 @@ type openAIFailbackConfig struct {
 	probation                 time.Duration
 	probeTimeout              time.Duration
 	productionSlowTTFT        time.Duration
+	productionSlowTripCount   int
 	maxTTFT                   time.Duration
 	minHealthyRequests        int
+}
+
+// slowTripCount 返回进入慢冷却所需的连续慢样本数，配置缺失/非法时回落到常量默认值。
+func (c openAIFailbackConfig) slowTripCount() int {
+	if c.productionSlowTripCount <= 0 {
+		return openAIFailbackProductionSlowTripCount
+	}
+	return c.productionSlowTripCount
 }
 
 func newOpenAIFailbackConfig(cfg config.GatewayOpenAISchedulerConfig) openAIFailbackConfig {
@@ -94,6 +103,7 @@ func newOpenAIFailbackConfig(cfg config.GatewayOpenAISchedulerConfig) openAIFail
 		probation:                 time.Duration(cfg.FailbackProbationSeconds) * time.Second,
 		probeTimeout:              time.Duration(cfg.FailbackProbeTimeoutSeconds) * time.Second,
 		productionSlowTTFT:        time.Duration(cfg.FailbackProductionSlowTTFTMs) * time.Millisecond,
+		productionSlowTripCount:   cfg.FailbackProductionSlowTripCount,
 		maxTTFT:                   time.Duration(cfg.FailbackMaxTTFTMs) * time.Millisecond,
 		minHealthyRequests:        cfg.FailbackMinHealthyRequests,
 	}
@@ -553,6 +563,12 @@ func (c *openAIFailbackController) recordProductionResult(
 
 		if !exists {
 			if productionSlow {
+				// tripCount 为 1 时首个慢样本就必须立刻冷却：若仍只写
+				// SlowObservation，首次不会触发、要等第二个慢样本才冷却，
+				// 与配置的"连续 1 次"语义不符。
+				if c.cfg.slowTripCount() <= 1 {
+					return c.cooldownState(0, now, openAIFailbackProductionSlow), true
+				}
 				return openAIFailbackState{
 					Phase:               openAIFailbackPhaseSlowObservation,
 					ConsecutiveSlowTTFT: 1,
@@ -570,7 +586,7 @@ func (c *openAIFailbackController) recordProductionResult(
 			}
 			current.ConsecutiveSlowTTFT++
 			current.UpdatedAtUnixMilli = now.UnixMilli()
-			if current.ConsecutiveSlowTTFT >= openAIFailbackProductionSlowTripCount {
+			if current.ConsecutiveSlowTTFT >= c.cfg.slowTripCount() {
 				return c.cooldownState(0, now, openAIFailbackProductionSlow), true
 			}
 			return current, true
@@ -581,7 +597,7 @@ func (c *openAIFailbackController) recordProductionResult(
 		if firstTokenMS != nil && time.Duration(*firstTokenMS)*time.Millisecond > c.cfg.maxTTFT {
 			current.ConsecutiveSlowTTFT++
 			current.UpdatedAtUnixMilli = now.UnixMilli()
-			if current.ConsecutiveSlowTTFT < openAIFailbackProductionSlowTripCount {
+			if current.ConsecutiveSlowTTFT < c.cfg.slowTripCount() {
 				return current, true
 			}
 			level := 0

@@ -1483,6 +1483,10 @@ type GatewayOpenAISchedulerConfig struct {
 	// FailbackProductionSlowTTFTMs is the per-request production TTFT that marks
 	// an otherwise successful account/model as degraded for subsequent routing.
 	FailbackProductionSlowTTFTMs int `mapstructure:"failback_production_slow_ttft_ms"`
+	// FailbackProductionSlowTripCount is how many consecutive slow production
+	// samples are required before the account/model enters a slow cooldown.
+	// 1 makes a single slow sample trip immediately.
+	FailbackProductionSlowTripCount int `mapstructure:"failback_production_slow_trip_count"`
 	// FailbackMaxTTFTMs is the maximum healthy probe and probation TTFT.
 	FailbackMaxTTFTMs int `mapstructure:"failback_max_ttft_ms"`
 	// FailbackMinHealthyRequests is the number of successful production requests
@@ -2834,6 +2838,8 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.openai_scheduler.failback_probation_seconds", 300)
 	viper.SetDefault("gateway.openai_scheduler.failback_probe_timeout_seconds", 20)
 	viper.SetDefault("gateway.openai_scheduler.failback_production_slow_ttft_ms", 30000)
+	// 与 service.openAIFailbackProductionSlowTripCount 默认值保持一致。
+	viper.SetDefault("gateway.openai_scheduler.failback_production_slow_trip_count", 3)
 	viper.SetDefault("gateway.openai_scheduler.failback_max_ttft_ms", 20000)
 	viper.SetDefault("gateway.openai_scheduler.failback_min_healthy_requests", 3)
 	viper.SetDefault("gateway.soft_model_mapping.sticky_enabled", true)
@@ -3875,6 +3881,9 @@ func (c *Config) Validate() error {
 			failback.FailbackProbeTimeoutSeconds <= 0 || failback.FailbackProductionSlowTTFTMs <= 0 ||
 			failback.FailbackMaxTTFTMs <= 0 || failback.FailbackMinHealthyRequests <= 0 {
 			return fmt.Errorf("gateway.openai_scheduler failback durations, probe failure threshold, TTFT, and healthy request count must be positive; max cooldown must be at least the default")
+		}
+		if failback.FailbackProductionSlowTripCount <= 0 {
+			return fmt.Errorf("gateway.openai_scheduler.failback_production_slow_trip_count must be positive")
 		}
 		if failback.FailbackProductionSlowTTFTMs < failback.FailbackMaxTTFTMs {
 			return fmt.Errorf("gateway.openai_scheduler.failback_production_slow_ttft_ms must be greater than or equal to failback_max_ttft_ms")

@@ -198,6 +198,44 @@ func openAIAccountScheduleModel(c *gin.Context, account *service.Account, forwar
 	return service.ResolveOpenAIAccountUpstreamModelForRequest(account, forwardModel, requireCompact)
 }
 
+// openAIUpstreamAttributableStatus 判断 err 是否代表一次【上游可归责】的失败，
+// 是则返回上游状态码。客户端断开本身不算：StatusCode < 400 表示没有真实上游
+// 状态（自身取消、连接中断等），不能记到账号头上。
+func openAIUpstreamAttributableStatus(err error) (int, bool) {
+	var failoverErr *service.UpstreamFailoverError
+	if !errors.As(err, &failoverErr) || failoverErr == nil {
+		return 0, false
+	}
+	if failoverErr.StatusCode < http.StatusBadRequest || !failoverErr.ShouldReportAccountScheduleFailure() {
+		return 0, false
+	}
+	return failoverErr.StatusCode, true
+}
+
+// reportOpenAIGoneAccountFailure 在"客户端已断开、请求无法继续换号重试"的分支
+// 补记上游可归责失败，避免坏账号长期拿不到失败记录。
+//
+// 客户端断开本身不是上游的错：用户主动取消一次健康请求时惩罚上游账号会把好
+// 账号挤出调度（与 openAIWSIngressEndedByClient 同一条规则：cancelled client
+// context 是 bug 的信号，不是账号的信号）。因此这里只在错误确实来自上游可归责
+// 状态时上报——必须是 *service.UpstreamFailoverError 且 StatusCode >= 400
+// （524/5xx/429 等真实上游状态码），纯 context.Canceled 或无状态码的错误一律跳过。
+//
+// 缺这一步的后果很具体：上游 524 到达与客户端超时几乎同时发生时，请求总是先
+// 命中"客户端已断开"分支直接 return，跳过 ReportOpenAIAccountScheduleFailure，
+// 于是长期 524 的账号永远不记失败、一直占据最高优先级被反复选中，持续制造
+// "上游照常计费、平台零 usage 可记"（2026-10-04 单日 39 例，全部集中在两个账号）。
+func (h *OpenAIGatewayHandler) reportOpenAIGoneAccountFailure(account *service.Account, user *service.User, model string, err error) {
+	if h == nil || h.gatewayService == nil || account == nil || err == nil {
+		return
+	}
+	statusCode, ok := openAIUpstreamAttributableStatus(err)
+	if !ok {
+		return
+	}
+	h.gatewayService.ReportOpenAIAccountScheduleFailure(account, user, model, statusCode, err)
+}
+
 func resolveOpenAIMessagesDispatchMappedModel(c *gin.Context, apiKey *service.APIKey, requestedModel string) string {
 	if apiKey == nil || apiKey.Group == nil {
 		return ""
@@ -982,6 +1020,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					zap.Int64("account_id", account.ID),
 					zap.Error(err),
 				)
+				h.reportOpenAIGoneAccountFailure(account, apiKey.User, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), err)
 				submitResponsesUsage(result)
 				return
 			}
@@ -990,6 +1029,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					zap.Int64("account_id", account.ID),
 					zap.Error(err),
 				)
+				h.reportOpenAIGoneAccountFailure(account, apiKey.User, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), err)
 				submitResponsesUsage(result)
 				return
 			}
@@ -1007,6 +1047,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 						)
+						h.reportOpenAIGoneAccountFailure(account, apiKey.User, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, nil), err)
 						return
 					}
 					if !openAIForwardMayFailover(c, writerSizeBeforeForward, failoverErr) {
@@ -1626,6 +1667,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 						)
+						h.reportOpenAIGoneAccountFailure(account, apiKey.User, openAIAccountScheduleModel(c, account, currentRoutingModel, false, nil), err)
 						return
 					}
 					if c.Writer.Size() != writerSizeBeforeForward {
@@ -1690,6 +1732,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					)
 					// 断开排水期间上游已计量的 usage 必须入账（此前直接 return 丢弃，
 					// payg 上游照常计费而平台漏记）。
+					h.reportOpenAIGoneAccountFailure(account, apiKey.User, openAIAccountScheduleModel(c, account, currentRoutingModel, false, result), err)
 					submitMessagesUsage(result)
 					return
 				}
