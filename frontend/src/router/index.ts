@@ -189,7 +189,7 @@ const routes: RouteRecordRaw[] = [
   // ==================== User Routes ====================
   {
     path: '/',
-    redirect: '/home'
+    redirect: '/login'
   },
   {
     path: '/dashboard',
@@ -883,7 +883,7 @@ router.beforeEach(async (to, _from, next) => {
             ? authStore.isAdmin
               ? '/admin/dashboard'
               : '/dashboard'
-            : '/home'
+            : '/login'
         )
         return
       }
