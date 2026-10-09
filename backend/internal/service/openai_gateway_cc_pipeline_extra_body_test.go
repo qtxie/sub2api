@@ -47,6 +47,64 @@ func TestGetOpenAIExtraBody(t *testing.T) {
 	})
 }
 
+func TestNormalizeExtraBodyCredentials(t *testing.T) {
+	require.NoError(t, NormalizeExtraBodyCredentials(nil))
+	require.NoError(t, NormalizeExtraBodyCredentials(map[string]any{}))
+	require.NoError(t, NormalizeExtraBodyCredentials(map[string]any{"api_key": "sk-test"}))
+	require.NoError(t, NormalizeExtraBodyCredentials(map[string]any{
+		openAIExtraBodyCredentialKey: map[string]any{"thinking": map[string]any{"type": "enabled"}},
+	}))
+	// 空对象等价不注入，放行（前端清空输入即提交空对象或删除该键）。
+	require.NoError(t, NormalizeExtraBodyCredentials(map[string]any{openAIExtraBodyCredentialKey: map[string]any{}}))
+
+	// 非对象值必须拒绝，避免静默失效。
+	require.Error(t, NormalizeExtraBodyCredentials(map[string]any{openAIExtraBodyCredentialKey: "enabled"}))
+	require.Error(t, NormalizeExtraBodyCredentials(map[string]any{openAIExtraBodyCredentialKey: 1}))
+	require.Error(t, NormalizeExtraBodyCredentials(map[string]any{openAIExtraBodyCredentialKey: []any{"x"}}))
+
+	// strip_reasoning_effort 必须是布尔值。
+	require.NoError(t, NormalizeExtraBodyCredentials(map[string]any{openAIStripReasoningEffortCredentialKey: true}))
+	require.NoError(t, NormalizeExtraBodyCredentials(map[string]any{openAIStripReasoningEffortCredentialKey: false}))
+	require.Error(t, NormalizeExtraBodyCredentials(map[string]any{openAIStripReasoningEffortCredentialKey: "yes"}))
+}
+
+func TestStripAccountReasoningEffort(t *testing.T) {
+	base := []byte(`{"model":"Ling-3.1-flash","reasoning_effort":"medium","temperature":0.5}`)
+
+	t.Run("flag_on_strips_field", func(t *testing.T) {
+		account := &Account{Credentials: map[string]any{openAIStripReasoningEffortCredentialKey: true}}
+		got := stripAccountReasoningEffort(account, base)
+		require.False(t, gjson.GetBytes(got, "reasoning_effort").Exists())
+		require.Equal(t, "Ling-3.1-flash", gjson.GetBytes(got, "model").String())
+		require.Equal(t, 0.5, gjson.GetBytes(got, "temperature").Float())
+	})
+
+	t.Run("flag_off_unchanged", func(t *testing.T) {
+		account := &Account{Credentials: map[string]any{openAIStripReasoningEffortCredentialKey: false}}
+		require.Equal(t, string(base), string(stripAccountReasoningEffort(account, base)))
+	})
+
+	t.Run("nil_account_unchanged", func(t *testing.T) {
+		require.Equal(t, string(base), string(stripAccountReasoningEffort(nil, base)))
+	})
+
+	t.Run("field_absent_unchanged", func(t *testing.T) {
+		account := &Account{Credentials: map[string]any{openAIStripReasoningEffortCredentialKey: true}}
+		body := []byte(`{"model":"m","temperature":0.5}`)
+		require.Equal(t, string(body), string(stripAccountReasoningEffort(account, body)))
+	})
+
+	t.Run("strip_then_inject_explicit_value_wins", func(t *testing.T) {
+		// 出站顺序：先剥离后注入——extra_body 显式写入的 reasoning_effort 优先。
+		account := &Account{Credentials: map[string]any{
+			openAIStripReasoningEffortCredentialKey: true,
+			openAIExtraBodyCredentialKey:            map[string]any{"reasoning_effort": "high"},
+		}}
+		got := applyAccountExtraBody(account, stripAccountReasoningEffort(account, base))
+		require.Equal(t, "high", gjson.GetBytes(got, "reasoning_effort").String())
+	})
+}
+
 func TestApplyAccountExtraBody(t *testing.T) {
 	base := []byte(`{"model":"Ling-3.1-flash","reasoning_effort":"medium","temperature":0.5}`)
 
@@ -100,13 +158,16 @@ func TestApplyAccountExtraBody(t *testing.T) {
 func TestForwardResponses_ExtraBodyInjectedIntoChatCompletionsUpstream(t *testing.T) {
 	responsesBody := []byte(`{"model":"Ling-3.1-flash","stream":false,"input":"hi","reasoning":{"effort":"medium"}}`)
 
-	newExtraBodyAccount := func(extra map[string]any) *Account {
+	newExtraBodyAccountWithStrip := func(extra map[string]any, strip bool) *Account {
 		creds := map[string]any{
 			"api_key":  "sk-test",
 			"base_url": "http://upstream.example",
 		}
 		if extra != nil {
 			creds[openAIExtraBodyCredentialKey] = extra
+		}
+		if strip {
+			creds[openAIStripReasoningEffortCredentialKey] = true
 		}
 		return &Account{
 			ID:       76,
@@ -120,6 +181,9 @@ func TestForwardResponses_ExtraBodyInjectedIntoChatCompletionsUpstream(t *testin
 			Status:      StatusActive,
 			Schedulable: true,
 		}
+	}
+	newExtraBodyAccount := func(extra map[string]any) *Account {
+		return newExtraBodyAccountWithStrip(extra, false)
 	}
 
 	newTestService := func(upstream *httpUpstreamRecorder) *OpenAIGatewayService {
@@ -167,5 +231,17 @@ func TestForwardResponses_ExtraBodyInjectedIntoChatCompletionsUpstream(t *testin
 		_, err := newTestService(upstream).Forward(context.Background(), c, account, body)
 		require.NoError(t, err)
 		require.Equal(t, 1.0, gjson.GetBytes(upstream.lastBody, "temperature").Float())
+	})
+
+	t.Run("strip_flag_removes_reasoning_effort_upstream", func(t *testing.T) {
+		c := newDeepSeekChatFallbackContext(t, responsesBody)
+		upstream := newOKChatCompletionsUpstream("rid_extra_body_strip", deepSeekChatFallbackOKBody)
+		account := newExtraBodyAccountWithStrip(nil, true)
+
+		_, err := newTestService(upstream).Forward(context.Background(), c, account, responsesBody)
+		require.NoError(t, err)
+		// 客户端发了 reasoning.effort（桥接为 reasoning_effort），但剥离开关生效。
+		require.False(t, gjson.GetBytes(upstream.lastBody, "reasoning_effort").Exists())
+		require.Equal(t, "Ling-3.1-flash", gjson.GetBytes(upstream.lastBody, "model").String())
 	})
 }

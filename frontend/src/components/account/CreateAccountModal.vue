@@ -1937,6 +1937,36 @@
           </div>
         </div>
 
+        <!-- Extra Body Section（出站 CC body 附加字段，协议差异补齐） -->
+        <div
+          v-if="isExtraBodyCapable(form.platform, 'apikey')"
+          class="border-t border-gray-200 pt-4 dark:border-dark-600"
+        >
+          <label class="input-label">{{ t('admin.accounts.extraBody.title') }}</label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.extraBody.hint') }}
+          </p>
+          <textarea
+            v-model="extraBodyInput"
+            class="input mt-2 font-mono text-xs"
+            rows="4"
+            data-testid="extra-body-input"
+            :placeholder="t('admin.accounts.extraBody.placeholder')"
+          />
+          <label class="mt-3 flex cursor-pointer items-start gap-2">
+            <input
+              v-model="stripReasoningEffortEnabled"
+              type="checkbox"
+              class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500 dark:bg-dark-700"
+              data-testid="strip-reasoning-effort-toggle"
+            />
+            <span>
+              <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.extraBody.stripLabel') }}</span>
+              <span class="block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.extraBody.stripHint') }}</span>
+            </span>
+          </label>
+        </div>
+
       </div>
 
       <!-- Bedrock credentials (only for Anthropic Bedrock type) -->
@@ -4049,7 +4079,10 @@ import {
   defaultProviderProtocolRules,
   isCNProviderPlatform,
   isHeaderOverrideCapable,
+  isExtraBodyCapable,
+  parseExtraBodyJson,
   SENSENOVA_BASE_URL,
+  STRIP_REASONING_EFFORT_CREDENTIAL_KEY,
   isMultiProtocolApiKeyPlatform,
   providerAccountModes,
   providerModeLabel,
@@ -4541,6 +4574,12 @@ const selectedErrorCodes = ref<number[]>([])
 const customErrorCodeInput = ref<number | null>(null)
 const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
+
+// 账号级出站 extra_body（CC 协议差异补齐，见 backend applyAccountExtraBody）。
+// 空文本 = 不设置；非空必须是合法 JSON 对象，否则提交时报错。
+const extraBodyInput = ref('')
+// 出站剥离 reasoning_effort 开关（供不认该字段的上游）。
+const stripReasoningEffortEnabled = ref(false)
 
 // Grok OAuth：自定义上游地址（base_url 仅改写转发端点，OAuth 授权/刷新不受影响）
 const grokOAuthCustomBaseUrlEnabled = ref(false)
@@ -5078,6 +5117,8 @@ watch(
     // 避免上一平台的配置行被提交到新平台账号
     headerOverrideEnabled.value = false
     headerOverrideRows.value = []
+    extraBodyInput.value = ''
+    stripReasoningEffortEnabled.value = false
     openAIImagesUrlToB64JsonEnabled.value = false
     grokOAuthCustomBaseUrlEnabled.value = false
     grokOAuthBaseUrl.value = ''
@@ -5510,6 +5551,8 @@ const resetForm = () => {
   customErrorCodeInput.value = null
   headerOverrideEnabled.value = false
   headerOverrideRows.value = []
+  extraBodyInput.value = ''
+  stripReasoningEffortEnabled.value = false
   openAIImagesUrlToB64JsonEnabled.value = false
   grokOAuthCustomBaseUrlEnabled.value = false
   grokOAuthBaseUrl.value = ''
@@ -6034,6 +6077,21 @@ const handleSubmit = async () => {
       }
     }
     applyHeaderOverride(credentials, headerOverrideEnabled.value, headerOverrideRows.value, 'create')
+  }
+
+  // extra_body 出站附加字段 + reasoning_effort 剥离开关（仅在本平台支持时写入）
+  if (isExtraBodyCapable(form.platform, 'apikey')) {
+    const parsedExtraBody = parseExtraBodyJson(extraBodyInput.value)
+    if (parsedExtraBody === null) {
+      appStore.showError(t('admin.accounts.extraBody.invalid'))
+      return
+    }
+    if (parsedExtraBody !== undefined) {
+      credentials.extra_body = parsedExtraBody
+    }
+    if (stripReasoningEffortEnabled.value) {
+      credentials[STRIP_REASONING_EFFORT_CREDENTIAL_KEY] = true
+    }
   }
 
   applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')

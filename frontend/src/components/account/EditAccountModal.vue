@@ -791,6 +791,33 @@
         </div>
       </div>
 
+      <!-- Extra Body Section（出站 CC body 附加字段，协议差异补齐） -->
+      <div v-if="extraBodyCapable" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <label class="input-label">{{ t('admin.accounts.extraBody.title') }}</label>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          {{ t('admin.accounts.extraBody.hint') }}
+        </p>
+        <textarea
+          v-model="extraBodyInput"
+          class="input mt-2 font-mono text-xs"
+          rows="4"
+          data-testid="extra-body-input"
+          :placeholder="t('admin.accounts.extraBody.placeholder')"
+        />
+        <label class="mt-3 flex cursor-pointer items-start gap-2">
+          <input
+            v-model="stripReasoningEffortEnabled"
+            type="checkbox"
+            class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500 dark:bg-dark-700"
+            data-testid="strip-reasoning-effort-toggle"
+          />
+          <span>
+            <span class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.accounts.extraBody.stripLabel') }}</span>
+            <span class="block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.extraBody.stripHint') }}</span>
+          </span>
+        </label>
+      </div>
+
       <!-- OpenAI/Grok OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
       <div
         v-if="(account.platform === 'openai' || account.platform === 'grok') && account.type === 'oauth'"
@@ -3223,6 +3250,10 @@ import {
   resolveOpenCodeAccountMode,
   isCustomGrokBaseUrl,
   isHeaderOverrideCapable,
+  isExtraBodyCapable,
+  parseExtraBodyJson,
+  serializeExtraBody,
+  STRIP_REASONING_EFFORT_CREDENTIAL_KEY,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
   cnSupportsNativeResponses,
@@ -3648,6 +3679,16 @@ const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 
 const headerOverrideCapable = computed(
   () => !!props.account && isHeaderOverrideCapable(props.account.platform, props.account.type)
+)
+
+// 账号级出站 extra_body（CC 协议差异补齐，见 backend applyAccountExtraBody）。
+// 空文本 = 清除；非空必须是合法 JSON 对象，否则提交时报错。
+const extraBodyInput = ref('')
+// 出站剥离 reasoning_effort 开关（供不认该字段的上游）。
+const stripReasoningEffortEnabled = ref(false)
+
+const extraBodyCapable = computed(
+  () => !!props.account && isExtraBodyCapable(props.account.platform, props.account.type)
 )
 
 // Grok OAuth 自定义上游地址（仅转发端点；OAuth 授权/令牌刷新不受影响）
@@ -4437,6 +4478,15 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     headerOverrideRows.value = splitHeaderOverridesObject(
       overrideCreds[HEADER_OVERRIDES_CREDENTIAL_KEY]
     )
+  }
+
+  // Load extra_body state for eligible account platforms/types
+  extraBodyInput.value = ''
+  stripReasoningEffortEnabled.value = false
+  if (newAccount.credentials && isExtraBodyCapable(newAccount.platform, newAccount.type)) {
+    const extraBodyCreds = newAccount.credentials as Record<string, unknown>
+    extraBodyInput.value = serializeExtraBody(extraBodyCreds.extra_body)
+    stripReasoningEffortEnabled.value = extraBodyCreds[STRIP_REASONING_EFFORT_CREDENTIAL_KEY] === true
   }
 
   // Load Grok OAuth custom upstream URL state（存储的官方地址视同未定制）
@@ -5399,6 +5449,27 @@ const handleSubmit = async () => {
       }
 
       applySoftModelMappingCredentials(newCredentials)
+
+      // extra_body 出站附加字段 + reasoning_effort 剥离开关（仅在本平台支持时
+      // 处理，避免覆盖通过 API 配置在不支持平台上的既有值）
+      if (extraBodyCapable.value) {
+        const parsedExtraBody = parseExtraBodyJson(extraBodyInput.value)
+        if (parsedExtraBody === null) {
+          appStore.showError(t('admin.accounts.extraBody.invalid'))
+          return
+        }
+        if (parsedExtraBody === undefined) {
+          delete newCredentials.extra_body
+        } else {
+          newCredentials.extra_body = parsedExtraBody
+        }
+        if (stripReasoningEffortEnabled.value) {
+          newCredentials[STRIP_REASONING_EFFORT_CREDENTIAL_KEY] = true
+        } else {
+          delete newCredentials[STRIP_REASONING_EFFORT_CREDENTIAL_KEY]
+        }
+      }
+
       updatePayload.credentials = newCredentials
     } else if (props.account.type === 'upstream') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}

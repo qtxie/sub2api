@@ -17,6 +17,9 @@ import {
   defaultCNBaseUrl,
   defaultOpenCodeProtocolRules,
   isCustomGrokBaseUrl,
+  isExtraBodyCapable,
+  parseExtraBodyJson,
+  serializeExtraBody,
   resolveOpenCodeAccountMode,
   isHeaderOverrideCapable,
   GROK_BASE_URL_PRESETS,
@@ -575,5 +578,56 @@ describe('Codex subscription analytics labels', () => {
     ['unknown', 'Account'], ['promax', 'Pro 500']
   ])('groups %s without changing its status label', (sku, label) => {
     expect(openAIPlanTypeLabel(sku, 'analytics')).toBe(label)
+  })
+})
+
+describe('extra_body 出站附加字段', () => {
+  describe('parseExtraBodyJson', () => {
+    it('parses valid JSON objects', () => {
+      expect(parseExtraBodyJson('{"thinking":{"type":"enabled"}}')).toEqual({
+        thinking: { type: 'enabled' }
+      })
+      expect(parseExtraBodyJson('  {}  ')).toEqual({})
+    })
+
+    it('treats blank text as clear (undefined)', () => {
+      expect(parseExtraBodyJson('')).toBeUndefined()
+      expect(parseExtraBodyJson('   ')).toBeUndefined()
+    })
+
+    it('rejects non-JSON and non-object payloads', () => {
+      expect(parseExtraBodyJson('enabled')).toBeNull()
+      expect(parseExtraBodyJson('{"a":1,}')).toBeNull()
+      expect(parseExtraBodyJson('[1,2]')).toBeNull()
+      expect(parseExtraBodyJson('"str"')).toBeNull()
+      expect(parseExtraBodyJson('null')).toBeNull()
+    })
+  })
+
+  describe('serializeExtraBody', () => {
+    it('pretty-prints stored objects', () => {
+      const text = serializeExtraBody({ thinking: { type: 'enabled' } })
+      expect(JSON.parse(text)).toEqual({ thinking: { type: 'enabled' } })
+    })
+
+    it('returns empty string for missing/invalid values', () => {
+      expect(serializeExtraBody(undefined)).toBe('')
+      expect(serializeExtraBody('oops')).toBe('')
+      expect(serializeExtraBody([1])).toBe('')
+    })
+  })
+
+  describe('isExtraBodyCapable', () => {
+    it('allows apikey accounts on openai/anthropic/CN platforms', () => {
+      expect(isExtraBodyCapable('openai', 'apikey')).toBe(true)
+      expect(isExtraBodyCapable('anthropic', 'apikey')).toBe(true)
+      expect(isExtraBodyCapable('kimi', 'apikey')).toBe(true)
+    })
+
+    it('rejects oauth and unrelated platforms', () => {
+      expect(isExtraBodyCapable('openai', 'oauth')).toBe(false)
+      expect(isExtraBodyCapable('grok', 'apikey')).toBe(false)
+      expect(isExtraBodyCapable('gemini', 'apikey')).toBe(false)
+    })
   })
 })

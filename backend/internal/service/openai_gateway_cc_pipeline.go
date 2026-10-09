@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
@@ -166,6 +167,24 @@ func (s *OpenAIGatewayService) resolveCCFallbackTarget(ctx context.Context, acco
 	return apiKey, targetURL, nil
 }
 
+// stripAccountReasoningEffort 按账号开关（credentials["strip_reasoning_effort"]）
+// 从出站 CC body 删除 reasoning_effort 字段。供不认该字段、可能报错或产生意外
+// 行为的上游使用（与 applyAccountExtraBody 的注入互补）。字段不存在时字节不变；
+// 删除失败 fail-open 原样返回。
+func stripAccountReasoningEffort(account *Account, body []byte) []byte {
+	if !account.ShouldStripReasoningEffort() || len(body) == 0 {
+		return body
+	}
+	if !gjson.GetBytes(body, "reasoning_effort").Exists() {
+		return body
+	}
+	updated, err := sjson.DeleteBytes(body, "reasoning_effort")
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
 // applyAccountExtraBody 把账号配置的 extra_body 附加字段合并进出站 CC body
 // （credentials["extra_body"]，JSON 对象）。用于协议差异补齐：部分上游不认
 // OpenAI 标准的 reasoning_effort，只认自有非标字段（如 Ling / Kimi / GLM 的
@@ -179,6 +198,9 @@ func (s *OpenAIGatewayService) resolveCCFallbackTarget(ctx context.Context, acco
 //     （原生 CC 直转 / Responses→CC 回退 / messages→CC 回退）；passthrough
 //     路径不经过此处，保持"仅替换认证"契约。
 //   - 单键写失败仅跳过该键（fail-open），不阻断转发。
+//
+// 与 stripAccountReasoningEffort 的执行顺序：先剥离后注入，extra_body 里显式
+// 写入的 reasoning_effort 值优先于剥离开关（显式声明 > 粗粒度开关）。
 //
 // 注意：注入发生在各 forwarder 的 service_tier 提取之后（传输层最后一步），
 // 通过 extra_body 注入 service_tier 不会参与计费档位判定；影响计费的字段
@@ -224,7 +246,9 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 字段，上游 400 "The `reasoning_content` in the thinking mode must be
 	// passed back to the API"。在共用出站点补空格占位，真实明文不覆盖。
 	body = ensureDeepSeekChatReasoningPlaceholders(account, body)
-	// 账号级 extra_body 注入（传输层最后一步，语义见 applyAccountExtraBody）。
+	// 账号级出站策略：先剥离 reasoning_effort（strip_reasoning_effort 开关），
+	// 再注入 extra_body 附加字段——extra_body 显式声明的值优先于剥离开关。
+	body = stripAccountReasoningEffort(account, body)
 	body = applyAccountExtraBody(account, body)
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(body))

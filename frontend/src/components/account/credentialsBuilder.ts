@@ -689,3 +689,49 @@ export function applyPlanType(
   }
   return credentials
 }
+
+// ========== 账号级出站 extra_body（CC 协议差异补齐） ==========
+// 后端在 sendCCUpstreamRequest 出站点把 credentials["extra_body"]（JSON 对象）
+// 的顶层键覆盖合并进上游 Chat Completions 请求体，用于给不认 reasoning_effort、
+// 只认自有非标字段（如 Ling/Kimi/GLM 的 thinking: {"type":"enabled"}）的上游
+// 补齐协议差异。见 backend applyAccountExtraBody。
+
+/** 出站剥离 reasoning_effort 开关的凭据键（供不认该字段的上游）。 */
+export const STRIP_REASONING_EFFORT_CREDENTIAL_KEY = 'strip_reasoning_effort'
+
+/**
+ * 判断账号是否支持 extra_body 出站附加字段。
+ * 与后端注入作用面一致：openai / anthropic / 多协议国产平台的 apikey 账号。
+ */
+export function isExtraBodyCapable(platform: string, type: string): boolean {
+  if (platform === 'anthropic' || platform === 'openai' || isMultiProtocolApiKeyPlatform(platform)) {
+    return type === 'apikey'
+  }
+  return false
+}
+
+/**
+ * 解析 extra_body 输入文本。三态返回：
+ *   - Record 对象：合法配置，写 credentials.extra_body
+ *   - undefined：空文本，清除该键
+ *   - null：非法（非 JSON / 非对象），调用方应报错并阻止提交
+ */
+export function parseExtraBodyJson(text: string): Record<string, unknown> | null | undefined {
+  const trimmed = (text || '').trim()
+  if (!trimmed) return undefined
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch {
+    // fallthrough to null
+  }
+  return null
+}
+
+/** extra_body 对象 → 编辑框显示文本（pretty JSON）；非法/缺省返回空串 */
+export function serializeExtraBody(value: unknown): string {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
+  return JSON.stringify(value, null, 2)
+}
