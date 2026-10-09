@@ -882,8 +882,10 @@ export default {
         'When enabled, warmup requests like title generation will return mock responses without consuming upstream tokens',
       extraBody: {
         title: 'Extra Body (outbound)',
-        hint: 'Top-level fields merged into the upstream Chat Completions request body (JSON object; same-name fields override client/gateway values). For upstreams that ignore reasoning_effort but require their own fields (e.g. thinking: {"type":"enabled"}). Leave empty to disable.',
-        placeholder: '{\n  "thinking": { "type": "enabled" }\n}',
+        // Braces are vue-i18n escape literals ({'{'}) — a raw "{...}" is parsed as
+        // an interpolation placeholder and throws SyntaxError at render time.
+        hint: "Top-level fields merged into the upstream Chat Completions request body (JSON object; same-name fields override client/gateway values). For upstreams that ignore reasoning_effort but require their own fields (e.g. thinking: {'{'}\"type\":\"enabled\"{'}'}). Leave empty to disable.",
+        placeholder: "{'{'}\n  \"thinking\": {'{'}\"type\":\"enabled\"{'}'}\n{'}'}",
         invalid: 'Extra body must be a valid JSON object',
         stripLabel: 'Strip reasoning_effort field',
         stripHint: 'When checked, reasoning_effort is removed from the upstream request body (some upstreams reject or misbehave on this field). If reasoning_effort is explicitly set in the JSON above, that value wins.'

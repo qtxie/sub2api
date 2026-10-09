@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest'
+import { createParser } from '@intlify/message-compiler'
 
 import en from '../locales/en'
 import zh from '../locales/zh'
 
 type LocaleValue = Record<string, unknown>
+
+function collectLeafMessages(value: unknown, prefix = ''): Array<[string, string]> {
+  if (typeof value === 'string') {
+    return prefix ? [[prefix, value]] : []
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return []
+  }
+  return Object.entries(value as LocaleValue).flatMap(([key, child]) =>
+    collectLeafMessages(child, prefix ? `${prefix}.${key}` : key)
+  )
+}
 
 function flattenLeafKeys(value: unknown, prefix = ''): string[] {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -81,6 +94,23 @@ describe('locale key completeness', () => {
       })
       expect(emptyKeys, `${locale} has empty or non-string messages`).toEqual([])
     }
+  })
+
+  // A raw "{...}" inside a message is parsed by vue-i18n as an interpolation
+  // placeholder; invalid ones throw SyntaxError during render and take down the
+  // whole component subtree (e.g. the account edit dialog). Braces that should be
+  // rendered literally must be escaped as {'{'} / {'}'}.
+  it('keeps every locale message parseable by the vue-i18n message compiler', () => {
+    const failures: string[] = []
+    for (const [locale, messages] of Object.entries({ en, zh })) {
+      for (const [key, message] of collectLeafMessages(messages)) {
+        const parser = createParser({
+          onError: (error) => failures.push(`${locale}.${key}: ${error.message}`)
+        })
+        parser.parse(message)
+      }
+    }
+    expect(failures).toEqual([])
   })
 
   it('contains every statically referenced production key', () => {

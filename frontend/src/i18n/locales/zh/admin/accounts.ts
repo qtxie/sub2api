@@ -984,8 +984,10 @@ export default {
       interceptWarmupRequestsDesc: '启用后，标题生成等预热请求将返回 mock 响应，不消耗上游 token',
       extraBody: {
         title: '出站附加字段 (extra_body)',
-        hint: '转发到上游 Chat Completions 时合并进请求体的顶层字段（JSON 对象，同名字段覆盖客户端/网关值）。用于上游不认 reasoning_effort、只认自有字段（如 thinking: {"type":"enabled"}）的场景；留空表示不注入。',
-        placeholder: '{\n  "thinking": { "type": "enabled" }\n}',
+        // 花括号必须写成 vue-i18n 转义字面量（{'{'}）：裸 "{...}" 会被当作插值占位符，
+        // 渲染时抛 SyntaxError（曾导致编辑弹窗整体渲染失败）。
+        hint: "转发到上游 Chat Completions 时合并进请求体的顶层字段（JSON 对象，同名字段覆盖客户端/网关值）。用于上游不认 reasoning_effort、只认自有字段（如 thinking: {'{'}\"type\":\"enabled\"{'}'}）的场景；留空表示不注入。",
+        placeholder: "{'{'}\n  \"thinking\": {'{'}\"type\":\"enabled\"{'}'}\n{'}'}",
         invalid: '出站附加字段必须是合法的 JSON 对象',
         stripLabel: '移除 reasoning_effort 字段',
         stripHint: '勾选后转发给上游的请求体不再携带 reasoning_effort（部分上游不认该字段会报错或产生意外行为）。若在上方 JSON 中显式写入 reasoning_effort，以 JSON 为准。'
