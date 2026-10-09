@@ -1425,6 +1425,23 @@ func (a *Account) GetOpenAIBaseURL() string {
 	return "https://api.openai.com"
 }
 
+// openAIExtraBodyCredentialKey 存储账号级出站 body 附加字段配置（credentials["extra_body"]）。
+const openAIExtraBodyCredentialKey = "extra_body"
+
+// GetOpenAIExtraBody 返回账号配置的出站 Chat Completions body 附加字段。
+// 存储于 credentials["extra_body"]，必须是 JSON 对象；缺失 / 非对象 / 空对象返回 nil。
+// 合并语义见 applyAccountExtraBody（openai_gateway_cc_pipeline.go）。
+func (a *Account) GetOpenAIExtraBody() map[string]any {
+	if a == nil {
+		return nil
+	}
+	extra, ok := a.Credentials[openAIExtraBodyCredentialKey].(map[string]any)
+	if !ok || len(extra) == 0 {
+		return nil
+	}
+	return extra
+}
+
 // GetAccountMode 返回国产供应商账号的接入模式（payg / coding）；非国产供应商或未设置时
 // 返回空串。存储于 credentials["account_mode"]。
 func (a *Account) GetAccountMode() string {

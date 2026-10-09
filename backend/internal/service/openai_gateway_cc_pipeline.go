@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -165,6 +166,42 @@ func (s *OpenAIGatewayService) resolveCCFallbackTarget(ctx context.Context, acco
 	return apiKey, targetURL, nil
 }
 
+// applyAccountExtraBody 把账号配置的 extra_body 附加字段合并进出站 CC body
+// （credentials["extra_body"]，JSON 对象）。用于协议差异补齐：部分上游不认
+// OpenAI 标准的 reasoning_effort，只认自有非标字段（如 Ling / Kimi / GLM 的
+// thinking: {"type":"enabled"}），而 Responses→CC 桥接的结构体重建会丢掉这类
+// 客户端字段，此时可由管理员在账号上显式声明。
+//
+// 语义：
+//   - 对 body 顶层按键覆盖写入（sjson.SetBytes），同名字段覆盖客户端/桥接值；
+//     未配置时字节不变。重复执行幂等（failover 重试同账号重发同 body）。
+//   - 在 sendCCUpstreamRequest 出站点生效，覆盖三条 CC forwarder
+//     （原生 CC 直转 / Responses→CC 回退 / messages→CC 回退）；passthrough
+//     路径不经过此处，保持"仅替换认证"契约。
+//   - 单键写失败仅跳过该键（fail-open），不阻断转发。
+//
+// 注意：注入发生在各 forwarder 的 service_tier 提取之后（传输层最后一步），
+// 通过 extra_body 注入 service_tier 不会参与计费档位判定；影响计费的字段
+// 应由客户端或协议转换显式提供。
+func applyAccountExtraBody(account *Account, body []byte) []byte {
+	if account == nil || len(body) == 0 {
+		return body
+	}
+	extraBody := account.GetOpenAIExtraBody()
+	if extraBody == nil {
+		return body
+	}
+	updated := body
+	for key, value := range extraBody {
+		next, err := sjson.SetBytes(updated, key, value)
+		if err != nil {
+			continue
+		}
+		updated = next
+	}
+	return updated
+}
+
 // sendCCUpstreamRequest 构建并发送 CC 上游请求：分离的上游 context、OpenAI HTTP
 // profile、标准头（含流式 Accept 切换）、客户端 header 白名单透传、自定义 UA 与
 // 账号级 header 覆写，最后经代理发出。传输层失败（DNS/TCP/TLS，无 HTTP 响应）
@@ -187,6 +224,8 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 字段，上游 400 "The `reasoning_content` in the thinking mode must be
 	// passed back to the API"。在共用出站点补空格占位，真实明文不覆盖。
 	body = ensureDeepSeekChatReasoningPlaceholders(account, body)
+	// 账号级 extra_body 注入（传输层最后一步，语义见 applyAccountExtraBody）。
+	body = applyAccountExtraBody(account, body)
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(body))
 	releaseUpstreamCtx()
