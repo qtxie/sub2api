@@ -34,6 +34,9 @@ jobs:
           echo "extra_tag=${EXTRA_TAG}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
 
+      # QEMU is only needed for the runtime stage of the non-native arch.
+      # The Dockerfile builds frontend/backend on $BUILDPLATFORM and cross
+      # compiles the Go binary to $TARGETARCH, so the toolchains stay native.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -53,7 +56,10 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          platforms: linux/amd64
+          # Multi-arch manifest list: docker pull resolves the host arch.
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
             ${{ steps.image.outputs.name }}:${{ steps.image.outputs.extra_tag }}
             ${{ steps.image.outputs.name }}:${{ steps.image.outputs.short_sha }}
@@ -61,3 +67,13 @@ jobs:
           build-args: |
             VERSION=patched-${{ steps.image.outputs.short_sha }}
             COMMIT=${{ github.sha }}
+
+      - name: Verify published platforms
+        shell: bash
+        run: |
+          IMAGE="${{ steps.image.outputs.name }}:${{ steps.image.outputs.short_sha }}"
+          docker buildx imagetools inspect "$IMAGE"
+          for arch in amd64 arm64; do
+            docker buildx imagetools inspect "$IMAGE" \
+              | grep -q "linux/${arch}" || { echo "missing linux/${arch} in ${IMAGE}"; exit 1; }
+          done
