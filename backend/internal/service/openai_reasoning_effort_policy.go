@@ -551,18 +551,24 @@ func ApplyReasoningEffortPolicy(body []byte, maxEffort string, mappings []Reason
 	return result, changed, nil
 }
 
-func applyOpenAIWSReasoningEffortPolicy(payload []byte, hooks *OpenAIWSIngressHooks) ([]byte, error) {
-	if hooks == nil || (hooks.MaxReasoningEffort == "" && len(hooks.ReasoningEffortMappings) == 0) {
-		return payload, nil
+// applyOpenAIWSReasoningEffortPolicy 对入站 WS turn payload 应用组级 effort
+// 策略；组策略之后再叠加账号级 effort 覆写（credentials
+// ["reasoning_effort_override"]），保证账号配置为出站最终值。
+func applyOpenAIWSReasoningEffortPolicy(payload []byte, hooks *OpenAIWSIngressHooks, account *Account) ([]byte, error) {
+	normalized := payload
+	if hooks != nil && (hooks.MaxReasoningEffort != "" || len(hooks.ReasoningEffortMappings) > 0) {
+		capped, changed, err := ApplyOpenAIReasoningEffortPolicy(payload, hooks.MaxReasoningEffort, hooks.ReasoningEffortMappings, hooks.MaxReasoningEffortOverLimit)
+		if err != nil {
+			return payload, err
+		}
+		if changed {
+			normalized = capped
+		}
 	}
-	capped, changed, err := ApplyOpenAIReasoningEffortPolicy(payload, hooks.MaxReasoningEffort, hooks.ReasoningEffortMappings, hooks.MaxReasoningEffortOverLimit)
-	if err != nil {
-		return payload, err
+	if overrideBody, overridden := applyAccountReasoningEffortOverride(account, normalized); overridden {
+		normalized = overrideBody
 	}
-	if changed {
-		return capped, nil
-	}
-	return payload, nil
+	return normalized, nil
 }
 
 // ApplyOpenAIReasoningEffortPolicy is retained for OpenAI forwarding callers.

@@ -1034,6 +1034,13 @@ func (s *OpenAIGatewayService) forwardOnce(ctx context.Context, c *gin.Context, 
 		return nil, wsErr
 	}
 
+	// 账号级 effort 覆写（仅 Responses 协议路径）：在提取计费用 effort 之前收敛
+	// body，使计费/用量日志与实际出站值一致（与 messages / chat_completions 向
+	// Responses 上游转换路径的同步改写同口径）。WS 分支在上面已返回，不受影响；
+	// buildUpstreamRequest 出站点还会再覆写一次（幂等），作为其余调用方的收口。
+	if overrideBody, overridden := applyAccountReasoningEffortOverride(account, body); overridden {
+		body = overrideBody
+	}
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：此处 reqModel 已被 mapping 重写为 billingModel。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, reqModel)
@@ -1429,6 +1436,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// DeepSeek / Kimi 原生 Responses 端点为无状态实现：强制 store=false、清除
 	// previous_response_id，避免携带状态字段被上游拒绝。
 	body = normalizeDeepSeekResponsesRequestBody(account, body)
+
+	// 账号级 effort 覆写（credentials["reasoning_effort_override"]）：出站点
+	// 收口，覆盖客户端请求与协议转换产生的 effort，保证本账号发往上游的 effort
+	// 恒为配置值。仅 Responses 协议路径生效（CC 出站不经此处）；passthrough 路径
+	// 不经此处，保持"仅替换认证"契约。
+	body, _ = applyAccountReasoningEffortOverride(account, body)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {

@@ -332,6 +332,16 @@ func (s *OpenAIGatewayService) forwardAsAnthropicOnce(
 				responsesReq.Reasoning.Effort = gjson.GetBytes(responsesBody, "reasoning.effort").String()
 			}
 		}
+		// 账号级 effort 覆写：组策略之后收口，出站 body 与计费用结构体同步改写。
+		if overrideBody, overridden := applyAccountReasoningEffortOverride(account, responsesBody); overridden {
+			responsesBody = overrideBody
+			if effort := gjson.GetBytes(responsesBody, "reasoning.effort").String(); effort != "" {
+				if responsesReq.Reasoning == nil {
+					responsesReq.Reasoning = &apicompat.ResponsesReasoning{}
+				}
+				responsesReq.Reasoning.Effort = effort
+			}
+		}
 	}
 
 	// 4c. Apply OpenAI fast policy (may filter service_tier or block the request).

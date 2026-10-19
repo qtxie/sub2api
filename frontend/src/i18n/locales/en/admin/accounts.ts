@@ -906,7 +906,11 @@ export default {
         placeholder: "{'{'}\n  \"thinking\": {'{'}\"type\":\"enabled\"{'}'}\n{'}'}",
         invalid: 'Extra body must be a valid JSON object',
         stripLabel: 'Strip reasoning_effort field',
-        stripHint: 'When checked, reasoning_effort is removed from the upstream request body (some upstreams reject or misbehave on this field). If reasoning_effort is explicitly set in the JSON above, that value wins.'
+        stripHint: 'When checked, reasoning_effort is removed from the upstream request body (some upstreams reject or misbehave on this field). If reasoning_effort is explicitly set in the JSON above, that value wins.',
+        effortOverrideLabel: 'Effort override',
+        effortOverrideHint:
+          'Force the reasoning effort this account sends upstream, overriding the client-requested level. Applies only on Responses-protocol forwarding (Chat Completions forwarding is not overridden). Only rewrites effort fields already present in the request (reasoning_effort / reasoning.effort / output_config.effort); requests without an effort keep the upstream default. To inject an effort when the client omits it, use the extra body JSON above instead.',
+        effortOverrideNone: 'No override (use client-requested level)'
       },
       headerOverride: {
         title: 'Header Override',

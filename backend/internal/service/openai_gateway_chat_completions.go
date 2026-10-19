@@ -263,6 +263,19 @@ func (s *OpenAIGatewayService) forwardAsChatCompletionsOnce(
 		}
 	}
 
+	// 账号级 effort 覆写（credentials["reasoning_effort_override"]）：协议转换后
+	// 收口，出站 body 与计费用结构体同步改写（buildUpstreamRequest 出站点还会
+	// 再覆写一次，幂等）。
+	if overrideBody, overridden := applyAccountReasoningEffortOverride(account, responsesBody); overridden {
+		responsesBody = overrideBody
+		if effort := gjson.GetBytes(responsesBody, "reasoning.effort").String(); effort != "" {
+			if responsesReq.Reasoning == nil {
+				responsesReq.Reasoning = &apicompat.ResponsesReasoning{}
+			}
+			responsesReq.Reasoning.Effort = effort
+		}
+	}
+
 	logFields := []zap.Field{
 		zap.Int64("account_id", account.ID),
 		zap.String("original_model", originalModel),

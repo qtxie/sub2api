@@ -21,6 +21,8 @@ func (a *Account) ShouldStripReasoningEffort() bool {
 //     空对象放行（accessor 对空对象返回 nil，等价不注入），其余非对象值拒绝——
 //     避免静默失效让管理员误以为配置已生效。
 //   - credentials["strip_reasoning_effort"]：若提供必须是布尔值。
+//   - credentials["reasoning_effort_override"]（见 applyAccountReasoningEffortOverride）：
+//     若提供必须是受支持的 effort 值（minimal/low/medium/high/xhigh/max）或空串。
 //
 // 供账号创建/更新/批量更新的保存路径调用；credentials 未携带相关字段时为 no-op。
 func NormalizeExtraBodyCredentials(credentials map[string]any) error {
@@ -40,5 +42,5 @@ func NormalizeExtraBodyCredentials(credentials map[string]any) error {
 				"strip_reasoning_effort must be a boolean")
 		}
 	}
-	return nil
+	return normalizeReasoningEffortOverrideCredential(credentials)
 }

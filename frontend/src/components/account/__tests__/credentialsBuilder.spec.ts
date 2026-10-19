@@ -20,6 +20,10 @@ import {
   isExtraBodyCapable,
   parseExtraBodyJson,
   serializeExtraBody,
+  applyReasoningEffortOverride,
+  isReasoningEffortOverrideCapable,
+  parseReasoningEffortOverride,
+  REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY,
   resolveOpenCodeAccountMode,
   isHeaderOverrideCapable,
   GROK_BASE_URL_PRESETS,
@@ -628,6 +632,70 @@ describe('extra_body 出站附加字段', () => {
       expect(isExtraBodyCapable('openai', 'oauth')).toBe(false)
       expect(isExtraBodyCapable('grok', 'apikey')).toBe(false)
       expect(isExtraBodyCapable('gemini', 'apikey')).toBe(false)
+    })
+  })
+})
+
+describe('reasoning_effort_override 出站 effort 覆写', () => {
+  describe('isReasoningEffortOverrideCapable', () => {
+    it('allows openai apikey accounts only', () => {
+      expect(isReasoningEffortOverrideCapable('openai', 'apikey')).toBe(true)
+    })
+
+    it('rejects other platforms and oauth accounts', () => {
+      expect(isReasoningEffortOverrideCapable('openai', 'oauth')).toBe(false)
+      expect(isReasoningEffortOverrideCapable('anthropic', 'apikey')).toBe(false)
+      expect(isReasoningEffortOverrideCapable('kimi', 'apikey')).toBe(false)
+      expect(isReasoningEffortOverrideCapable('grok', 'apikey')).toBe(false)
+    })
+  })
+
+  describe('parseReasoningEffortOverride', () => {
+    it('returns canonical values', () => {
+      expect(parseReasoningEffortOverride('minimal')).toBe('minimal')
+      expect(parseReasoningEffortOverride('low')).toBe('low')
+      expect(parseReasoningEffortOverride('medium')).toBe('medium')
+      expect(parseReasoningEffortOverride('high')).toBe('high')
+      expect(parseReasoningEffortOverride('xhigh')).toBe('xhigh')
+      expect(parseReasoningEffortOverride('max')).toBe('max')
+    })
+
+    it('normalizes case and whitespace', () => {
+      expect(parseReasoningEffortOverride(' HIGH ')).toBe('high')
+    })
+
+    it('returns empty string for missing/invalid values', () => {
+      expect(parseReasoningEffortOverride(undefined)).toBe('')
+      expect(parseReasoningEffortOverride(null)).toBe('')
+      expect(parseReasoningEffortOverride('')).toBe('')
+      expect(parseReasoningEffortOverride('  ')).toBe('')
+      expect(parseReasoningEffortOverride('super')).toBe('')
+      expect(parseReasoningEffortOverride(true)).toBe('')
+      expect(parseReasoningEffortOverride(3)).toBe('')
+    })
+  })
+
+  describe('applyReasoningEffortOverride', () => {
+    it('writes canonical value to credentials', () => {
+      const credentials: Record<string, unknown> = {}
+      applyReasoningEffortOverride(credentials, 'high')
+      expect(credentials[REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY]).toBe('high')
+    })
+
+    it('removes the key for empty/invalid values', () => {
+      const credentials: Record<string, unknown> = {
+        [REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY]: 'high'
+      }
+      applyReasoningEffortOverride(credentials, '')
+      expect(REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY in credentials).toBe(false)
+      applyReasoningEffortOverride(credentials, 'super')
+      expect(REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY in credentials).toBe(false)
+    })
+
+    it('does not touch other credential keys', () => {
+      const credentials: Record<string, unknown> = { api_key: 'sk-test' }
+      applyReasoningEffortOverride(credentials, 'max')
+      expect(credentials.api_key).toBe('sk-test')
     })
   })
 })

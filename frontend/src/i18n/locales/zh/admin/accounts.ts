@@ -1008,7 +1008,11 @@ export default {
         placeholder: "{'{'}\n  \"thinking\": {'{'}\"type\":\"enabled\"{'}'}\n{'}'}",
         invalid: '出站附加字段必须是合法的 JSON 对象',
         stripLabel: '移除 reasoning_effort 字段',
-        stripHint: '勾选后转发给上游的请求体不再携带 reasoning_effort（部分上游不认该字段会报错或产生意外行为）。若在上方 JSON 中显式写入 reasoning_effort，以 JSON 为准。'
+        stripHint: '勾选后转发给上游的请求体不再携带 reasoning_effort（部分上游不认该字段会报错或产生意外行为）。若在上方 JSON 中显式写入 reasoning_effort，以 JSON 为准。',
+        effortOverrideLabel: 'Effort 覆写',
+        effortOverrideHint:
+          '强制本账号发往上游的 reasoning effort 恒为所选档位，无视客户端请求的档位。仅 Responses 协议转发路径生效（Chat Completions 协议转发不覆写）。只覆写请求中已携带的 effort 字段（reasoning_effort / reasoning.effort / output_config.effort）；客户端未携带时保持上游默认（需要注入请用上方 extra_body 显式写入）。',
+        effortOverrideNone: '不覆写（使用客户端请求的档位）'
       },
       headerOverride: {
         title: '请求头覆写',

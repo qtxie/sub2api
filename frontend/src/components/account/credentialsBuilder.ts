@@ -735,3 +735,56 @@ export function serializeExtraBody(value: unknown): string {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
   return JSON.stringify(value, null, 2)
 }
+
+// ========== 账号级出站 effort 覆写（OpenAI 账号） ==========
+// 后端在 Responses 协议转发路径的出站点（buildUpstreamRequest）把请求体中已存在
+// 的 effort 字段（reasoning_effort / reasoning.effort / output_config.effort）
+// 改写为 credentials["reasoning_effort_override"] 配置值，无视客户端请求的档位。
+// Chat Completions 协议转发不覆写。见 backend applyAccountReasoningEffortOverride。
+
+/** 出站 effort 覆写的凭据键（仅 OpenAI 账号）。 */
+export const REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY = 'reasoning_effort_override'
+
+/** 受支持的 effort 覆写值（与分组 effort 策略的 OpenAI 取值集合一致）。 */
+export const reasoningEffortOverrideValues = [
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const
+
+/**
+ * 判断账号是否支持 effort 覆写配置：仅 OpenAI API Key 账号（Responses 协议转发
+ * 路径生效；OAuth Codex 账号可经 API 配置同名凭据键，前端不暴露）。
+ */
+export function isReasoningEffortOverrideCapable(platform: string, type: string): boolean {
+  return platform === 'openai' && type === 'apikey'
+}
+
+/** 凭据值 → 规范化选项值；缺失/非法/空值返回 ''（不覆写）。 */
+export function parseReasoningEffortOverride(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const normalized = value.trim().toLowerCase()
+  return reasoningEffortOverrideValues.some((allowed) => allowed === normalized)
+    ? normalized
+    : ''
+}
+
+/**
+ * 把 effort 覆写选择写入凭据：非空设置、空串删除该键（不覆写）。
+ * 直接修改传入对象并返回。
+ */
+export function applyReasoningEffortOverride(
+  credentials: Record<string, unknown>,
+  override: string
+): Record<string, unknown> {
+  const normalized = parseReasoningEffortOverride(override)
+  if (normalized) {
+    credentials[REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY] = normalized
+  } else {
+    delete credentials[REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY]
+  }
+  return credentials
+}

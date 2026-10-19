@@ -2085,6 +2085,27 @@
               <span class="block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.extraBody.stripHint') }}</span>
             </span>
           </label>
+
+          <!-- Effort 覆写（仅 OpenAI 账号）：发往上游的 effort 恒为所选档位 -->
+          <div v-if="reasoningEffortOverrideCapable" class="mt-3">
+            <label class="input-label mb-0">{{ t('admin.accounts.extraBody.effortOverrideLabel') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.extraBody.effortOverrideHint') }}
+            </p>
+            <select
+              v-model="reasoningEffortOverride"
+              class="input mt-2 w-52 text-sm"
+              data-testid="reasoning-effort-override-select"
+            >
+              <option
+                v-for="option in reasoningEffortOverrideOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+          </div>
         </div>
 
       </div>
@@ -4243,6 +4264,9 @@ import {
   parseExtraBodyJson,
   SENSENOVA_BASE_URL,
   STRIP_REASONING_EFFORT_CREDENTIAL_KEY,
+  applyReasoningEffortOverride,
+  isReasoningEffortOverrideCapable,
+  reasoningEffortOverrideValues,
   isMultiProtocolApiKeyPlatform,
   providerAccountModes,
   providerModeLabel,
@@ -4744,6 +4768,15 @@ const headerOverrideRows = ref<HeaderOverrideRow[]>([])
 const extraBodyInput = ref('')
 // 出站剥离 reasoning_effort 开关（供不认该字段的上游）。
 const stripReasoningEffortEnabled = ref(false)
+// 出站 effort 覆写（仅 OpenAI API Key 账号）：'' = 不覆写。
+const reasoningEffortOverride = ref('')
+const reasoningEffortOverrideCapable = computed(
+  () => isReasoningEffortOverrideCapable(form.platform, 'apikey')
+)
+const reasoningEffortOverrideOptions = computed(() => [
+  { value: '', label: t('admin.accounts.extraBody.effortOverrideNone') },
+  ...reasoningEffortOverrideValues.map((value) => ({ value, label: value }))
+])
 
 // Grok OAuth：自定义上游地址（base_url 仅改写转发端点，OAuth 授权/刷新不受影响）
 const grokOAuthCustomBaseUrlEnabled = ref(false)
@@ -5312,6 +5345,7 @@ watch(
     headerOverrideRows.value = []
     extraBodyInput.value = ''
     stripReasoningEffortEnabled.value = false
+    reasoningEffortOverride.value = ''
     openAIImagesUrlToB64JsonEnabled.value = false
     grokOAuthCustomBaseUrlEnabled.value = false
     grokOAuthBaseUrl.value = ''
@@ -5751,6 +5785,7 @@ const resetForm = () => {
   headerOverrideRows.value = []
   extraBodyInput.value = ''
   stripReasoningEffortEnabled.value = false
+  reasoningEffortOverride.value = ''
   openAIImagesUrlToB64JsonEnabled.value = false
   grokOAuthCustomBaseUrlEnabled.value = false
   grokOAuthBaseUrl.value = ''
@@ -6307,7 +6342,8 @@ const handleSubmit = async () => {
     applyHeaderOverride(credentials, headerOverrideEnabled.value, headerOverrideRows.value, 'create')
   }
 
-  // extra_body 出站附加字段 + reasoning_effort 剥离开关（仅在本平台支持时写入）
+  // extra_body 出站附加字段 + reasoning_effort 剥离开关 + effort 覆写
+  // （仅在本平台支持时写入）
   if (isExtraBodyCapable(form.platform, 'apikey')) {
     const parsedExtraBody = parseExtraBodyJson(extraBodyInput.value)
     if (parsedExtraBody === null) {
@@ -6319,6 +6355,9 @@ const handleSubmit = async () => {
     }
     if (stripReasoningEffortEnabled.value) {
       credentials[STRIP_REASONING_EFFORT_CREDENTIAL_KEY] = true
+    }
+    if (reasoningEffortOverrideCapable.value) {
+      applyReasoningEffortOverride(credentials, reasoningEffortOverride.value)
     }
   }
 

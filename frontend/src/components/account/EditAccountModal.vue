@@ -858,6 +858,27 @@
             <span class="block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.extraBody.stripHint') }}</span>
           </span>
         </label>
+
+        <!-- Effort 覆写（仅 OpenAI 账号）：发往上游的 effort 恒为所选档位 -->
+        <div v-if="reasoningEffortOverrideCapable" class="mt-3">
+          <label class="input-label mb-0">{{ t('admin.accounts.extraBody.effortOverrideLabel') }}</label>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.extraBody.effortOverrideHint') }}
+          </p>
+          <select
+            v-model="reasoningEffortOverride"
+            class="input mt-2 w-52 text-sm"
+            data-testid="reasoning-effort-override-select"
+          >
+            <option
+              v-for="option in reasoningEffortOverrideOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+        </div>
       </div>
 
       <!-- OpenAI/Grok OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
@@ -3362,6 +3383,11 @@ import {
   parseExtraBodyJson,
   serializeExtraBody,
   STRIP_REASONING_EFFORT_CREDENTIAL_KEY,
+  REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY,
+  applyReasoningEffortOverride,
+  isReasoningEffortOverrideCapable,
+  parseReasoningEffortOverride,
+  reasoningEffortOverrideValues,
   splitHeaderOverridesObject,
   validateHeaderOverrideRows,
   cnSupportsNativeResponses,
@@ -3804,10 +3830,21 @@ const headerOverrideCapable = computed(
 const extraBodyInput = ref('')
 // 出站剥离 reasoning_effort 开关（供不认该字段的上游）。
 const stripReasoningEffortEnabled = ref(false)
+// 出站 effort 覆写（仅 OpenAI 账号）：'' = 不覆写。
+const reasoningEffortOverride = ref('')
 
 const extraBodyCapable = computed(
   () => !!props.account && isExtraBodyCapable(props.account.platform, props.account.type)
 )
+
+const reasoningEffortOverrideCapable = computed(
+  () =>
+    !!props.account && isReasoningEffortOverrideCapable(props.account.platform, props.account.type)
+)
+const reasoningEffortOverrideOptions = computed(() => [
+  { value: '', label: t('admin.accounts.extraBody.effortOverrideNone') },
+  ...reasoningEffortOverrideValues.map((value) => ({ value, label: value }))
+])
 
 // Grok OAuth 自定义上游地址（仅转发端点；OAuth 授权/令牌刷新不受影响）
 const grokOAuthCustomBaseUrlEnabled = ref(false)
@@ -4620,10 +4657,16 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   // Load extra_body state for eligible account platforms/types
   extraBodyInput.value = ''
   stripReasoningEffortEnabled.value = false
+  reasoningEffortOverride.value = ''
   if (newAccount.credentials && isExtraBodyCapable(newAccount.platform, newAccount.type)) {
     const extraBodyCreds = newAccount.credentials as Record<string, unknown>
     extraBodyInput.value = serializeExtraBody(extraBodyCreds.extra_body)
     stripReasoningEffortEnabled.value = extraBodyCreds[STRIP_REASONING_EFFORT_CREDENTIAL_KEY] === true
+    if (isReasoningEffortOverrideCapable(newAccount.platform, newAccount.type)) {
+      reasoningEffortOverride.value = parseReasoningEffortOverride(
+        extraBodyCreds[REASONING_EFFORT_OVERRIDE_CREDENTIAL_KEY]
+      )
+    }
   }
 
   // Load Grok OAuth custom upstream URL state（存储的官方地址视同未定制）
@@ -5615,8 +5658,8 @@ const handleSubmit = async () => {
 
       applySoftModelMappingCredentials(newCredentials)
 
-      // extra_body 出站附加字段 + reasoning_effort 剥离开关（仅在本平台支持时
-      // 处理，避免覆盖通过 API 配置在不支持平台上的既有值）
+      // extra_body 出站附加字段 + reasoning_effort 剥离开关 + effort 覆写
+      // （仅在本平台支持时处理，避免覆盖通过 API 配置在不支持平台上的既有值）
       if (extraBodyCapable.value) {
         const parsedExtraBody = parseExtraBodyJson(extraBodyInput.value)
         if (parsedExtraBody === null) {
@@ -5632,6 +5675,9 @@ const handleSubmit = async () => {
           newCredentials[STRIP_REASONING_EFFORT_CREDENTIAL_KEY] = true
         } else {
           delete newCredentials[STRIP_REASONING_EFFORT_CREDENTIAL_KEY]
+        }
+        if (reasoningEffortOverrideCapable.value) {
+          applyReasoningEffortOverride(newCredentials, reasoningEffortOverride.value)
         }
       }
 
