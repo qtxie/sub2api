@@ -147,6 +147,10 @@ func (s *GatewayService) forwardBedrock(
 	if reqStream {
 		streamResult, err := s.handleBedrockStreamingResponse(ctx, resp, c, account, startTime, reqModel)
 		if err != nil {
+			// 流中断时保留已观测到的 usage 与错误一起返回，handler 照常提交 usage 记录。
+			if partial := partialStreamUsageResult(c, resp, streamResult, reqModel, mappedModel, startTime, err); partial != nil {
+				return partial, err
+			}
 			return nil, err
 		}
 		usage = streamResult.usage
@@ -267,7 +271,7 @@ func (s *GatewayService) executeBedrockUpstream(
 
 // handleBedrockUpstreamErrors 处理 Bedrock 上游 4xx/5xx 错误（failover + 错误响应）。
 // requestedModel 是客户端请求的模型名；账号状态按模型隔离时使用调度器的模型键
-// （account.GetMappedModel 的结果），而不是发往上游的 Bedrock 模型 ID，
+// （bedrockSchedulingModelKey 的结果），而不是发往上游的 Bedrock 模型 ID，
 // 否则模型级冷却会写到调度器不会读取的键上。
 func (s *GatewayService) handleBedrockUpstreamErrors(
 	ctx context.Context,
@@ -276,11 +280,15 @@ func (s *GatewayService) handleBedrockUpstreamErrors(
 	account *Account,
 	requestedModel string,
 ) (*ForwardResult, error) {
-	// 调度器读取的模型键是账号映射后的模型名，不是上游 Bedrock 模型 ID。
-	modelKey := account.GetMappedModel(requestedModel)
+	// 调度器读取的模型键是账号映射后的模型名（渠道映射改写时优先取选号模型），不是上游 Bedrock 模型 ID。
+	modelKey := bedrockSchedulingModelKey(ctx, account, requestedModel)
 	respBody, _ := s.readUpstreamErrorBody(resp)
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	// 内容过滤由请求内容决定，换号结果相同：不换号，按普通错误返回客户端。
+	if resp.StatusCode >= http.StatusInternalServerError && isBedrockContentFilterError(resp.StatusCode, respBody) {
+		return s.handleErrorResponse(ctx, resp, c, account, modelKey)
+	}
 	if shouldTriggerModelFallback(ctx, s.settingService, account, requestedModel, resp.StatusCode, respBody) {
 		if s.rateLimitService != nil {
 			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, requestedModel)
