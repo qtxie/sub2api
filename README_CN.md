@@ -749,9 +749,8 @@ go generate ./cmd/server
 
 支持 `gpt-image-2.6-flare`、`gpt-image-2.6-sunburst`，以及 `gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` 和 2.5 的 `2026-09-08` 日期快照，可通过 `/v1/images/generations`、`/v1/images/edits` 调用。保留显式 `complexity`（`low` / `medium` / `high`）；省略时不注入默认值。`quality`、自定义尺寸和图片 usage 明细保持透传。
 
-控制台「图像工作室」的 OpenAI 分组可直接在模型下拉中选择 `gpt-image-2`、`gpt-image-2.5-flare` 与 `gpt-image-2.5-sunburst`，默认模型为 `gpt-image-2.5-flare`。选择 2.5 模型时质量档位切换为 `auto` / `xhigh` / `max`（2 使用 `auto` / `low` / `medium` / `high`），其余尺寸、背景、输出格式与参考图约束与 `gpt-image-2` 一致。已保存过 `gpt-image-2` 偏好的用户不受影响，可随时切回。
+控制台「图像工作室」的 OpenAI 分组可直接在模型下拉中选择 `gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.6-flare` 与 `gpt-image-2.6-sunburst`，默认模型为 `gpt-image-2.6-flare`。选择 2.5 模型时质量档位切换为 `auto` / `xhigh` / `max`（2 与 2.6 使用 `auto` / `low` / `medium` / `high`），其余尺寸、背景、输出格式与参考图约束与 `gpt-image-2` 一致。已保存过旧模型偏好的用户不受影响，可随时切回。
 
-OAuth / Setup Token 图片请求使用 Responses 主控模型调用 `image_generation` 工具，默认主控为 `gpt-5.6-luna`。可设置 `SUB2API_IMAGES_MAIN_MODEL` 切换为账号支持的文本模型；Docker Compose 用户修改 `.env` 后执行 `docker compose up -d` 重建容器。该配置不会替换所选图片模型，也不会覆盖 `/v1/responses` 请求中已经提供的文本主控模型。
 OAuth / Setup Token 的 1.5、2、2.5 和 2.6 图片请求使用 Codex 原生 Images 端点。旧模型遇到端点 404 / 405 时仍可回退到 Responses；2.6 不回退，避免桥接层忽略图片模型或注入不支持的 `complexity`。其余模型继续通过 Responses 的 `image_generation` 工具调用，默认文本主控为 `gpt-5.6-luna`，可设置 `SUB2API_IMAGES_MAIN_MODEL` 切换。该配置仅影响 Responses 桥接。
 
 原生端点保留 JSON / multipart 编辑的 `markup`（图片 URL 或上传文件）、GIF 帧参数及 SVG author 参数；`response_format=url` 使用上游实际输出格式的 MIME。GIF / SVG 可用性和参数生效情况由上游账号权限及端点决定，转发支持不代表上游一定输出该格式。若编辑端点对流式请求返回完整 JSON，网关会转换为完成事件并保留 usage。

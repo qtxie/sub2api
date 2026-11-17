@@ -109,7 +109,7 @@ func TestImageStudioGenerateUsesSupportedGPTImage2Payload(t *testing.T) {
 	})}
 
 	recorder := httptest.NewRecorder()
-	// 显式指定 gpt-image-2：OpenAI 分组默认已是 2.5 Flare，该用例覆盖 legacy 模型。
+	// 显式指定 gpt-image-2：OpenAI 分组默认已是 2.6 Flare，该用例覆盖 legacy 模型。
 	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewBufferString(`{
 		"api_key_id":7,"model":"gpt-image-2","prompt":"draw a lighthouse","size":"3840x2160","quality":"high",
 		"background":"transparent","output_format":"webp","n":4
@@ -132,8 +132,10 @@ func TestImageStudioGenerateForwardsSelectedGPTImage25Model(t *testing.T) {
 		imageStudioModel:           "high",
 		imageStudioModel25Flare:    "xhigh",
 		imageStudioModel25Sunburst: "max",
+		imageStudioModel26Flare:    "medium",
+		imageStudioModel26Sunburst: "high",
 	}
-	for _, model := range []string{imageStudioModel, imageStudioModel25Flare, imageStudioModel25Sunburst} {
+	for _, model := range []string{imageStudioModel, imageStudioModel25Flare, imageStudioModel25Sunburst, imageStudioModel26Flare, imageStudioModel26Sunburst} {
 		t.Run(model, func(t *testing.T) {
 			var upstreamBody map[string]any
 			handler := &ImageStudioHandler{
@@ -172,7 +174,7 @@ func TestImageStudioGenerateForwardsSelectedGPTImage25Model(t *testing.T) {
 	}
 }
 
-func TestImageStudioGenerateDefaultsToGPTImage25Flare(t *testing.T) {
+func TestImageStudioGenerateDefaultsToGPTImage26Flare(t *testing.T) {
 	var upstreamBody map[string]any
 	handler := &ImageStudioHandler{
 		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
@@ -194,7 +196,7 @@ func TestImageStudioGenerateDefaultsToGPTImage25Flare(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.Equal(t, imageStudioDefaultOpenAIModel, upstreamBody["model"])
-	require.Equal(t, imageStudioModel25Flare, upstreamBody["model"])
+	require.Equal(t, imageStudioModel26Flare, upstreamBody["model"])
 	require.Equal(t, "auto", upstreamBody["quality"])
 }
 
@@ -227,7 +229,7 @@ func TestImageStudioPricingAcceptsGPTImage25Models(t *testing.T) {
 		apiKeys:       imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
 		pricingQuoter: imageStudioQuoterStub{price: 0.25},
 	}
-	for _, model := range []string{imageStudioModel25Flare, imageStudioModel25Sunburst} {
+	for _, model := range []string{imageStudioModel25Flare, imageStudioModel25Sunburst, imageStudioModel26Flare, imageStudioModel26Sunburst} {
 		t.Run(model, func(t *testing.T) {
 			body, err := json.Marshal(map[string]any{"api_key_id": 7, "model": model})
 			require.NoError(t, err)
@@ -456,10 +458,10 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 		{
 			provider: service.PlatformOpenAI, defaultModel: imageStudioDefaultOpenAIModel,
 			assert: func(t *testing.T, capabilities imageStudioCapabilitiesResponse) {
-				require.Len(t, capabilities.Models, 3)
+				require.Len(t, capabilities.Models, 5)
 				require.Equal(t,
-					[]string{imageStudioModel, imageStudioModel25Flare, imageStudioModel25Sunburst},
-					[]string{capabilities.Models[0].ID, capabilities.Models[1].ID, capabilities.Models[2].ID})
+					[]string{imageStudioModel, imageStudioModel25Flare, imageStudioModel25Sunburst, imageStudioModel26Flare, imageStudioModel26Sunburst},
+					[]string{capabilities.Models[0].ID, capabilities.Models[1].ID, capabilities.Models[2].ID, capabilities.Models[3].ID, capabilities.Models[4].ID})
 				for _, model := range capabilities.Models {
 					require.Equal(t, []string{"auto", "opaque", "transparent"}, model.Backgrounds)
 					require.Equal(t, []string{"png", "jpeg", "webp"}, model.OutputFormats)
@@ -469,10 +471,15 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 				}
 				require.Equal(t, "GPT Image 2.5 Flare", capabilities.Models[1].Label)
 				require.Equal(t, "GPT Image 2.5 Sunburst", capabilities.Models[2].Label)
+				require.Equal(t, "GPT Image 2.6 Flare", capabilities.Models[3].Label)
+				require.Equal(t, "GPT Image 2.6 Sunburst", capabilities.Models[4].Label)
 				// 2.5 使用 auto / xhigh / max，而不是 2 的 low / medium / high。
 				require.Equal(t, []string{"auto", "low", "medium", "high"}, capabilities.Models[0].Qualities)
 				require.Equal(t, []string{"auto", "xhigh", "max"}, capabilities.Models[1].Qualities)
 				require.Equal(t, []string{"auto", "xhigh", "max"}, capabilities.Models[2].Qualities)
+				// 2.6 沿用经典档位，细粒度档位由 complexity 控制。
+				require.Equal(t, []string{"auto", "low", "medium", "high"}, capabilities.Models[3].Qualities)
+				require.Equal(t, []string{"auto", "low", "medium", "high"}, capabilities.Models[4].Qualities)
 			},
 		},
 	}

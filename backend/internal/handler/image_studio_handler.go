@@ -27,9 +27,11 @@ const (
 	imageStudioModel           = "gpt-image-2"
 	imageStudioModel25Flare    = "gpt-image-2.5-flare"
 	imageStudioModel25Sunburst = "gpt-image-2.5-sunburst"
-	// imageStudioDefaultOpenAIModel 是 OpenAI 分组的默认生图模型。2.5 Flare 与
-	// gpt-image-2 能力一致但质量更好，因此作为面板默认；gpt-image-2 仍可选。
-	imageStudioDefaultOpenAIModel     = imageStudioModel25Flare
+	imageStudioModel26Flare    = "gpt-image-2.6-flare"
+	imageStudioModel26Sunburst = "gpt-image-2.6-sunburst"
+	// imageStudioDefaultOpenAIModel 是 OpenAI 分组的默认生图模型。2.6 Flare 与
+	// gpt-image-2 / 2.5 能力一致但质量更好，因此作为面板默认；其余模型仍可选。
+	imageStudioDefaultOpenAIModel     = imageStudioModel26Flare
 	imageStudioDefaultGeminiModel     = "gemini-3.1-flash-image"
 	imageStudioDefaultGrokModel       = "grok-imagine-image-2.0"
 	imageStudioDefaultSensenovaModel  = "sensenova-u1.5-lite"
@@ -158,6 +160,8 @@ var imageStudioCapabilities = map[string]imageStudioCapabilitiesResponse{
 			imageStudioOpenAIImageCapability(imageStudioModel, "GPT Image 2", imageStudioGPTImage2Qualities()),
 			imageStudioOpenAIImageCapability(imageStudioModel25Flare, "GPT Image 2.5 Flare", imageStudioGPTImage25Qualities()),
 			imageStudioOpenAIImageCapability(imageStudioModel25Sunburst, "GPT Image 2.5 Sunburst", imageStudioGPTImage25Qualities()),
+			imageStudioOpenAIImageCapability(imageStudioModel26Flare, "GPT Image 2.6 Flare", imageStudioGPTImage26Qualities()),
+			imageStudioOpenAIImageCapability(imageStudioModel26Sunburst, "GPT Image 2.6 Sunburst", imageStudioGPTImage26Qualities()),
 		},
 	},
 	service.PlatformGemini: {
@@ -230,10 +234,18 @@ func imageStudioGPTImage25Qualities() []string {
 	return []string{"auto", "xhigh", "max"}
 }
 
-// imageStudioOpenAIImageCapability 描述 OpenAI 生图模型的面板能力。GPT Image 2
-// 与 2.5（Flare / Sunburst）共用同一套尺寸、背景与输出格式约束，仅模型 ID、展示
-// 名与 quality 档位不同：2.5 的 quality 取值为 auto / xhigh / max，而 2 使用
-// auto / low / medium / high（见 README「OpenAI 图片模型」）。
+// imageStudioGPTImage26Qualities 是 GPT Image 2.6（Flare / Sunburst）支持的
+// quality 档位。2.6 沿用经典档位（上游 2.6 链路测试以 medium 为例透传），
+// 细粒度档位由 complexity 控制（low / medium / high，透传不注入默认值）。
+func imageStudioGPTImage26Qualities() []string {
+	return []string{"auto", "low", "medium", "high"}
+}
+
+// imageStudioOpenAIImageCapability 描述 OpenAI 生图模型的面板能力。GPT Image 2、
+// 2.5（Flare / Sunburst）与 2.6（Flare / Sunburst）共用同一套尺寸、背景与输出
+// 格式约束，仅模型 ID、展示名与 quality 档位不同：2.5 的 quality 取值为
+// auto / xhigh / max，而 2 与 2.6 使用 auto / low / medium / high
+// （见 README「OpenAI 图片模型」）。
 func imageStudioOpenAIImageCapability(id, label string, qualities []string) imageStudioModelCapability {
 	return imageStudioModelCapability{
 		ID: id, Label: label,
