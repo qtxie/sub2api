@@ -3,7 +3,7 @@ import { sanitizeImageStudioSource } from '@/utils/imageStudioGallery'
 
 const imageGenerationTimeoutMs = 10 * 60 * 1000
 
-export type ImageOutputFormat = 'png' | 'jpeg' | 'webp'
+export type ImageOutputFormat = 'png' | 'jpeg' | 'webp' | 'gif'
 // GPT Image 2 使用 auto / low / medium / high，GPT Image 2.5（Flare / Sunburst）
 // 使用 auto / xhigh / max；两者共用同一个 quality 字段。
 export const IMAGE_STUDIO_QUALITIES = ['auto', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -29,6 +29,9 @@ export interface OpenAIImageStudioGenerationRequest extends ImageStudioGeneratio
   quality: ImageQuality
   background: ImageBackground
   output_format: ImageOutputFormat
+  // GIF 帧参数：仅 output_format 为 gif 时发送（GPT Image 2.6），0/缺省表示交给上游默认。
+  frame_count?: number
+  frame_duration_ms?: number
   n: number
 }
 
@@ -330,7 +333,7 @@ function normalizeCapabilities(value: unknown): ImageStudioCapabilitiesResponse 
         resolutions: stringArray(model?.resolutions),
         qualities: enumArray(model?.qualities, IMAGE_STUDIO_QUALITIES),
         backgrounds: enumArray(model?.backgrounds, ['auto', 'opaque', 'transparent'] as const),
-        output_formats: enumArray(model?.output_formats ?? model?.outputFormats, ['png', 'jpeg', 'webp'] as const),
+        output_formats: enumArray(model?.output_formats ?? model?.outputFormats, ['png', 'jpeg', 'webp', 'gif'] as const),
         max_images: maxImages,
         max_input_images: maxInputImages,
         supports_custom_size: model?.supports_custom_size === true || model?.supportsCustomSize === true
@@ -349,11 +352,12 @@ function normalizeCapabilities(value: unknown): ImageStudioCapabilitiesResponse 
 
 function normalizeMimeType(mimeType: string, outputFormat: string): string {
   const normalized = mimeType.toLowerCase() === 'image/jpg' ? 'image/jpeg' : mimeType.toLowerCase()
-  if (['image/png', 'image/jpeg', 'image/webp'].includes(normalized)) return normalized
+  if (['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(normalized)) return normalized
   const format = outputFormat.toLowerCase()
   if (format === 'jpg' || format === 'jpeg') return 'image/jpeg'
   if (format === 'webp') return 'image/webp'
   if (format === 'png') return 'image/png'
+  if (format === 'gif') return 'image/gif'
   return ''
 }
 

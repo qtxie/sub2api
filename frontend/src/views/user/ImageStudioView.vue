@@ -196,6 +196,42 @@
               </div>
             </fieldset>
 
+            <fieldset v-if="showGifFrameControls" class="control-group min-w-0">
+              <legend class="control-label">{{ t('imageStudio.gifFrameSettings') }}</legend>
+              <div class="custom-size-editor">
+                <label class="custom-size-field" for="image-studio-frame-count">
+                  <span>{{ t('imageStudio.frameCount') }}</span>
+                  <span class="dimension-input-shell">
+                    <input
+                      id="image-studio-frame-count"
+                      v-model.number="form.frameCount"
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputmode="numeric"
+                      @blur="normalizeFrameInput('frameCount')"
+                    />
+                    <small>fr</small>
+                  </span>
+                </label>
+                <label class="custom-size-field" for="image-studio-frame-duration">
+                  <span>{{ t('imageStudio.frameDuration') }}</span>
+                  <span class="dimension-input-shell">
+                    <input
+                      id="image-studio-frame-duration"
+                      v-model.number="form.frameDurationMS"
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputmode="numeric"
+                      @blur="normalizeFrameInput('frameDurationMS')"
+                    />
+                    <small>ms</small>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+
             <div v-if="maxImageCount > 1 && !(provider === 'grok' && hasSourceImages)" class="control-group count-control">
               <span class="control-label">{{ t('imageStudio.count') }}</span>
               <div class="stepper">
@@ -596,6 +632,8 @@ interface ImageGenerationSettings {
   quality: ImageQuality
   background: ImageBackground
   outputFormat: ImageOutputFormat
+  frameCount: number
+  frameDurationMS: number
   count: number
   expectedCount: number
   aspectToken: string
@@ -669,6 +707,8 @@ const form = reactive({
   quality: 'auto' as ImageQuality,
   background: 'auto' as ImageBackground,
   outputFormat: 'png' as ImageOutputFormat,
+  frameCount: 0,
+  frameDurationMS: 0,
   count: 1
 })
 
@@ -721,6 +761,7 @@ const backgroundOptions = computed(() => (selectedModelCapability.value?.backgro
 const outputFormats = computed(() => (selectedModelCapability.value?.output_formats || []).filter((format) => (
   form.background !== 'transparent' || format !== 'jpeg'
 )))
+const showGifFrameControls = computed(() => provider.value === 'openai' && form.outputFormat === 'gif')
 const maxImageCount = computed(() => provider.value === 'gemini' ? 1 : selectedModelCapability.value?.max_images || 1)
 const maxInputImageCount = computed(() => selectedModelCapability.value?.max_input_images || 0)
 const hasSourceImages = computed(() => sourceImages.value.length > 0)
@@ -888,6 +929,12 @@ function syncCustomSize() {
   form.size = `${customSize.width}x${customSize.height}`
 }
 
+// GIF 帧参数：留空或非法值归零（交由上游默认），正整数才随请求发送。
+function normalizeFrameInput(field: 'frameCount' | 'frameDurationMS') {
+  const value = Math.floor(Number(form[field]))
+  form[field] = Number.isFinite(value) && value >= 1 ? value : 0
+}
+
 function normalizeCustomDimension(axis: 'width' | 'height') {
   const otherAxis = axis === 'width' ? 'height' : 'width'
   const rawValue = Number(customSize[axis])
@@ -994,6 +1041,8 @@ function restoreSettings() {
     if (typeof saved.quality === 'string') form.quality = saved.quality as ImageQuality
     if (typeof saved.background === 'string') form.background = saved.background as ImageBackground
     if (typeof saved.outputFormat === 'string') form.outputFormat = saved.outputFormat as ImageOutputFormat
+    if (typeof saved.frameCount === 'number') form.frameCount = Math.max(0, Math.floor(saved.frameCount))
+    if (typeof saved.frameDurationMS === 'number') form.frameDurationMS = Math.max(0, Math.floor(saved.frameDurationMS))
     if (typeof saved.count === 'number') form.count = Math.max(1, saved.count)
   } catch {
     localStorage.removeItem(storageKey())
@@ -1249,7 +1298,7 @@ function resultSource(result: ImageStudioImage, snapshot: ImageGenerationSnapsho
     const fallbackMime = snapshot.provider === 'openai' || snapshot.provider === 'sensenova'
       ? `image/${snapshot.outputFormat}`
       : 'image/jpeg'
-    const mime = ['image/png', 'image/jpeg', 'image/webp'].includes(result.mime_type || '') ? result.mime_type! : fallbackMime
+    const mime = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(result.mime_type || '') ? result.mime_type! : fallbackMime
     return sanitizeImageStudioSource(`data:${mime};base64,${result.b64_json}`)
   }
   return sanitizeImageStudioSource(result.url)
@@ -1259,6 +1308,7 @@ function resultFormat(result: ImageStudioImage, snapshot: ImageGenerationSnapsho
   if (result.mime_type === 'image/jpeg') return 'jpeg'
   if (result.mime_type === 'image/webp') return 'webp'
   if (result.mime_type === 'image/png') return 'png'
+  if (result.mime_type === 'image/gif') return 'gif'
   return snapshot.provider === 'openai' || snapshot.provider === 'sensenova' ? snapshot.outputFormat : 'jpeg'
 }
 
@@ -1303,12 +1353,19 @@ function generationPayload(settings: ImageGenerationSettings): ImageStudioGenera
       n: settings.count
     }
   }
+  const gifFrames = settings.provider === 'openai' && settings.outputFormat === 'gif'
+    ? {
+        ...(settings.frameCount > 0 ? { frame_count: settings.frameCount } : {}),
+        ...(settings.frameDurationMS > 0 ? { frame_duration_ms: settings.frameDurationMS } : {})
+      }
+    : {}
   return {
     ...base,
     size: settings.size,
     quality: settings.quality,
     background: settings.background,
     output_format: settings.outputFormat,
+    ...gifFrames,
     n: settings.count
   }
 }
@@ -1333,6 +1390,8 @@ function captureGenerationSnapshot(): ImageGenerationSnapshot | null {
     quality: form.quality,
     background: form.background,
     outputFormat: form.outputFormat,
+    frameCount: form.frameCount,
+    frameDurationMS: form.frameDurationMS,
     count: forcedSingleCount ? 1 : form.count,
     expectedCount: forcedSingleCount ? 1 : form.count,
     aspectToken: provider.value === 'openai' || sensenovaSingle ? form.size : effectiveAspectRatio,

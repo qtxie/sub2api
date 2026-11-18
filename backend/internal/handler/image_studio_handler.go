@@ -86,19 +86,21 @@ func NewImageStudioHandler(apiKeys *service.APIKeyService, openAI *service.OpenA
 }
 
 type imageStudioGenerationRequest struct {
-	APIKeyID      int64                    `json:"api_key_id"`
-	Model         string                   `json:"model"`
-	Prompt        string                   `json:"prompt"`
-	Size          string                   `json:"size"`
-	AspectRatio   string                   `json:"aspect_ratio"`
-	ImageSize     string                   `json:"image_size"`
-	Resolution    string                   `json:"resolution"`
-	Quality       string                   `json:"quality"`
-	Background    string                   `json:"background"`
-	OutputFormat  string                   `json:"output_format"`
-	OutputCount   int                      `json:"n"`
-	SourceImages  []imageStudioSourceImage `json:"source_images"`
-	presentFields map[string]bool
+	APIKeyID       int64                    `json:"api_key_id"`
+	Model          string                   `json:"model"`
+	Prompt         string                   `json:"prompt"`
+	Size           string                   `json:"size"`
+	AspectRatio    string                   `json:"aspect_ratio"`
+	ImageSize      string                   `json:"image_size"`
+	Resolution     string                   `json:"resolution"`
+	Quality        string                   `json:"quality"`
+	Background     string                   `json:"background"`
+	OutputFormat   string                   `json:"output_format"`
+	FrameCount     int                      `json:"frame_count"`
+	FrameDurationMS int                     `json:"frame_duration_ms"`
+	OutputCount    int                      `json:"n"`
+	SourceImages   []imageStudioSourceImage `json:"source_images"`
+	presentFields  map[string]bool
 }
 
 type imageStudioSourceImage struct {
@@ -157,11 +159,11 @@ var imageStudioCapabilities = map[string]imageStudioCapabilitiesResponse{
 	service.PlatformOpenAI: {
 		Provider: service.PlatformOpenAI, DefaultModel: imageStudioDefaultOpenAIModel,
 		Models: []imageStudioModelCapability{
-			imageStudioOpenAIImageCapability(imageStudioModel, "GPT Image 2", imageStudioGPTImage2Qualities()),
-			imageStudioOpenAIImageCapability(imageStudioModel25Flare, "GPT Image 2.5 Flare", imageStudioGPTImage25Qualities()),
-			imageStudioOpenAIImageCapability(imageStudioModel25Sunburst, "GPT Image 2.5 Sunburst", imageStudioGPTImage25Qualities()),
-			imageStudioOpenAIImageCapability(imageStudioModel26Flare, "GPT Image 2.6 Flare", imageStudioGPTImage26Qualities()),
-			imageStudioOpenAIImageCapability(imageStudioModel26Sunburst, "GPT Image 2.6 Sunburst", imageStudioGPTImage26Qualities()),
+			imageStudioOpenAIImageCapability(imageStudioModel, "GPT Image 2", imageStudioGPTImage2Qualities(), imageStudioGPTImageLegacyOutputFormats()),
+			imageStudioOpenAIImageCapability(imageStudioModel25Flare, "GPT Image 2.5 Flare", imageStudioGPTImage25Qualities(), imageStudioGPTImageLegacyOutputFormats()),
+			imageStudioOpenAIImageCapability(imageStudioModel25Sunburst, "GPT Image 2.5 Sunburst", imageStudioGPTImage25Qualities(), imageStudioGPTImageLegacyOutputFormats()),
+			imageStudioOpenAIImageCapability(imageStudioModel26Flare, "GPT Image 2.6 Flare", imageStudioGPTImage26Qualities(), imageStudioGPTImage26OutputFormats()),
+			imageStudioOpenAIImageCapability(imageStudioModel26Sunburst, "GPT Image 2.6 Sunburst", imageStudioGPTImage26Qualities(), imageStudioGPTImage26OutputFormats()),
 		},
 	},
 	service.PlatformGemini: {
@@ -241,17 +243,29 @@ func imageStudioGPTImage26Qualities() []string {
 	return []string{"auto", "low", "medium", "high"}
 }
 
+// imageStudioGPTImageLegacyOutputFormats 是 GPT Image 2 / 2.5 支持的输出格式。
+func imageStudioGPTImageLegacyOutputFormats() []string {
+	return []string{"png", "jpeg", "webp"}
+}
+
+// imageStudioGPTImage26OutputFormats 是 GPT Image 2.6 支持的输出格式。
+// 2.6 原生支持 GIF 动图输出（配合 frame_count / frame_duration_ms 帧参数）；
+// 实际产出以上游账号权限与端点为准。
+func imageStudioGPTImage26OutputFormats() []string {
+	return []string{"png", "jpeg", "webp", "gif"}
+}
+
 // imageStudioOpenAIImageCapability 描述 OpenAI 生图模型的面板能力。GPT Image 2、
-// 2.5（Flare / Sunburst）与 2.6（Flare / Sunburst）共用同一套尺寸、背景与输出
-// 格式约束，仅模型 ID、展示名与 quality 档位不同：2.5 的 quality 取值为
-// auto / xhigh / max，而 2 与 2.6 使用 auto / low / medium / high
-// （见 README「OpenAI 图片模型」）。
-func imageStudioOpenAIImageCapability(id, label string, qualities []string) imageStudioModelCapability {
+// 2.5（Flare / Sunburst）与 2.6（Flare / Sunburst）共用同一套尺寸、背景约束，
+// 仅模型 ID、展示名、quality 档位与输出格式不同：2.5 的 quality 取值为
+// auto / xhigh / max，而 2 与 2.6 使用 auto / low / medium / high；2.6 额外
+// 支持 GIF 输出（见 README「OpenAI 图片模型」）。
+func imageStudioOpenAIImageCapability(id, label string, qualities, outputFormats []string) imageStudioModelCapability {
 	return imageStudioModelCapability{
 		ID: id, Label: label,
 		AspectRatios: []string{}, ImageSizes: imageStudioPricingSizes, Resolutions: []string{},
 		Qualities: qualities, MaxImages: imageStudioOpenAIMaxOutputCount,
-		SupportsCustomSize: true, OutputFormats: []string{"png", "jpeg", "webp"}, Backgrounds: []string{"auto", "opaque", "transparent"},
+		SupportsCustomSize: true, OutputFormats: outputFormats, Backgrounds: []string{"auto", "opaque", "transparent"},
 		MaxInputImages: imageStudioOpenAIMaxInputImages,
 	}
 }
@@ -561,6 +575,21 @@ func validateImageStudioInput(input imageStudioGenerationRequest, provider strin
 		if input.Background == "transparent" && input.OutputFormat == "jpeg" {
 			return "Transparent backgrounds require PNG or WebP output"
 		}
+		// 帧参数仅 GIF 输出有意义（GPT Image 2.6）；其他格式下显式拒绝，避免静默丢弃。
+		for _, frameField := range []struct {
+			name  string
+			value int
+		}{{"frame_count", input.FrameCount}, {"frame_duration_ms", input.FrameDurationMS}} {
+			if !input.fieldWasProvided(frameField.name) {
+				continue
+			}
+			if input.OutputFormat != "gif" {
+				return fmt.Sprintf("Field %q is only supported for GIF output", frameField.name)
+			}
+			if frameField.value < 1 {
+				return fmt.Sprintf("Field %q must be a positive integer", frameField.name)
+			}
+		}
 	case service.PlatformGemini:
 		if !imageStudioOptionAllowed(input.AspectRatio, capability.AspectRatios...) {
 			return "Unsupported image aspect ratio"
@@ -745,6 +774,10 @@ func (input imageStudioGenerationRequest) fieldWasProvided(field string) bool {
 		return input.Background != ""
 	case "output_format":
 		return input.OutputFormat != ""
+	case "frame_count":
+		return input.FrameCount != 0
+	case "frame_duration_ms":
+		return input.FrameDurationMS != 0
 	case "n":
 		return input.OutputCount != 0
 	case "source_images":
@@ -828,6 +861,15 @@ func (h *ImageStudioHandler) generateImageStudioOpenAI(c *gin.Context, apiKey *s
 		"quality":       input.Quality,
 		"background":    input.Background,
 		"output_format": input.OutputFormat,
+	}
+	// GIF 帧参数由上游决定取值范围；面板只做正整数校验，这里原样透传。
+	if input.OutputFormat == "gif" {
+		if input.FrameCount > 0 {
+			payload["frame_count"] = input.FrameCount
+		}
+		if input.FrameDurationMS > 0 {
+			payload["frame_duration_ms"] = input.FrameDurationMS
+		}
 	}
 	path := "/v1/images/generations"
 	if len(input.SourceImages) > 0 {

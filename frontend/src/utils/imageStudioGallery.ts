@@ -57,7 +57,8 @@ const userCreatedAtIndexName = 'userCreatedAt'
 const recordVersionIndexName = 'recordVersion'
 const migrationMarkerKey = 'archive-schema-v4'
 const archiveOperationLockName = 'sub2api-image-studio-archive-schema-v4'
-const safeDataMimes = ['image/png', 'image/jpeg', 'image/webp'] as const
+// gif 仅作为输出展示/归档；参考图（source images）仍限 PNG/JPEG/WebP。
+const safeDataMimes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
 const thumbnailMaxEdge = 360
 const thumbnailMaxBytes = 256 * 1024
 const thumbnailInputMaxBytes = 64 * 1024 * 1024
@@ -938,6 +939,10 @@ function hasRasterSignature(parsed: RasterDataURL): boolean {
   }
   if (parsed.mimeType === 'image/jpeg') {
     return prefix.length >= 3 && byte(0) === 0xff && byte(1) === 0xd8 && byte(2) === 0xff
+  }
+  if (parsed.mimeType === 'image/gif') {
+    // GIF87a / GIF89a 魔数。
+    return prefix.length >= 6 && prefix.slice(0, 3) === 'GIF'
   }
   return prefix.length >= 12 && prefix.slice(0, 4) === 'RIFF' && prefix.slice(8, 12) === 'WEBP'
 }

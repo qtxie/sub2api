@@ -282,6 +282,36 @@ describe('ImageStudioView', () => {
     }), expect.any(AbortSignal))
   })
 
+  it('offers GIF output with frame params for GPT Image 2.6', async () => {
+    getCapabilities.mockImplementation(async () => ({
+      provider: 'openai', default_model: 'gpt-image-2.6-flare',
+      models: [{
+        id: 'gpt-image-2.6-flare', label: 'GPT Image 2.6 Flare', aspect_ratios: [], image_sizes: ['1024x1024'],
+        resolutions: [], qualities: ['auto', 'low', 'medium', 'high'], backgrounds: ['auto', 'opaque', 'transparent'],
+        output_formats: ['png', 'jpeg', 'webp', 'gif'], max_images: 4, max_input_images: 4, supports_custom_size: true
+      }]
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.findAll('.segmented-control.compact button').map((button) => button.text()))
+      .toEqual(['PNG', 'JPEG', 'WEBP', 'GIF'])
+    await wrapper.findAll('.segmented-control.compact button')[3].trigger('click')
+    expect(wrapper.get('#image-studio-frame-count').exists()).toBe(true)
+    await wrapper.get('#image-studio-frame-count').setValue('4')
+    await wrapper.get('#image-studio-frame-duration').setValue('120')
+    await wrapper.get('#image-studio-prompt').setValue('a bouncing lighthouse')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gpt-image-2.6-flare',
+      output_format: 'gif',
+      frame_count: 4,
+      frame_duration_ms: 120
+    }), expect.any(AbortSignal))
+  })
+
   it('renders only Gemini-supported controls and sends an Interactions payload', async () => {
     const wrapper = mountView()
     await flushPromises()

@@ -224,6 +224,60 @@ func TestImageStudioGenerateRejectsLegacyQualityOnGPTImage25(t *testing.T) {
 	}
 }
 
+func TestImageStudioGenerateForwardsGIFFrameParams(t *testing.T) {
+	var upstreamBody map[string]any
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+		cfg:     &config.Config{Server: config.ServerConfig{Host: "0.0.0.0", Port: 8080}},
+	}
+	handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"aGVsbG8="}]}`)),
+		}, nil
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewBufferString(`{
+		"api_key_id":7,"model":"gpt-image-2.6-flare","prompt":"draw a lighthouse","size":"1024x1024","quality":"auto",
+		"background":"auto","output_format":"gif","frame_count":4,"frame_duration_ms":120,"n":1
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, "gif", upstreamBody["output_format"])
+	require.Equal(t, float64(4), upstreamBody["frame_count"])
+	require.Equal(t, float64(120), upstreamBody["frame_duration_ms"])
+}
+
+func TestImageStudioGenerateRejectsFrameParamsOutsideGIF(t *testing.T) {
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+		httpClient: &http.Client{Transport: imageStudioRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("frame params reached the gateway outside GIF output")
+			return nil, nil
+		})},
+		cfg: &config.Config{Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080}},
+	}
+	for _, tc := range []struct{ name, body string }{
+		{"non-gif format", `{"api_key_id":7,"model":"gpt-image-2.6-flare","prompt":"draw","size":"1024x1024","output_format":"png","frame_count":4}`},
+		{"zero frame count", `{"api_key_id":7,"model":"gpt-image-2.6-flare","prompt":"draw","size":"1024x1024","output_format":"gif","frame_count":0}`},
+		{"negative frame duration", `{"api_key_id":7,"model":"gpt-image-2.6-flare","prompt":"draw","size":"1024x1024","output_format":"gif","frame_duration_ms":-100}`},
+		{"legacy model", `{"api_key_id":7,"model":"gpt-image-2.5-flare","prompt":"draw","size":"1024x1024","output_format":"gif","frame_count":4}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewBufferString(tc.body))
+			request.Header.Set("Content-Type", "application/json")
+			imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+			require.Equal(t, http.StatusBadRequest, recorder.Code, recorder.Body.String())
+		})
+	}
+}
+
 func TestImageStudioPricingAcceptsGPTImage25Models(t *testing.T) {
 	handler := &ImageStudioHandler{
 		apiKeys:       imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
@@ -464,11 +518,16 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 					[]string{capabilities.Models[0].ID, capabilities.Models[1].ID, capabilities.Models[2].ID, capabilities.Models[3].ID, capabilities.Models[4].ID})
 				for _, model := range capabilities.Models {
 					require.Equal(t, []string{"auto", "opaque", "transparent"}, model.Backgrounds)
-					require.Equal(t, []string{"png", "jpeg", "webp"}, model.OutputFormats)
 					require.Equal(t, imageStudioOpenAIMaxOutputCount, model.MaxImages)
 					require.Equal(t, imageStudioOpenAIMaxInputImages, model.MaxInputImages)
 					require.True(t, model.SupportsCustomSize)
 				}
+				// 仅 2.6 支持 GIF 输出（帧参数随 GIF 一并透传）。
+				require.Equal(t, []string{"png", "jpeg", "webp"}, capabilities.Models[0].OutputFormats)
+				require.Equal(t, []string{"png", "jpeg", "webp"}, capabilities.Models[1].OutputFormats)
+				require.Equal(t, []string{"png", "jpeg", "webp"}, capabilities.Models[2].OutputFormats)
+				require.Equal(t, []string{"png", "jpeg", "webp", "gif"}, capabilities.Models[3].OutputFormats)
+				require.Equal(t, []string{"png", "jpeg", "webp", "gif"}, capabilities.Models[4].OutputFormats)
 				require.Equal(t, "GPT Image 2.5 Flare", capabilities.Models[1].Label)
 				require.Equal(t, "GPT Image 2.5 Sunburst", capabilities.Models[2].Label)
 				require.Equal(t, "GPT Image 2.6 Flare", capabilities.Models[3].Label)

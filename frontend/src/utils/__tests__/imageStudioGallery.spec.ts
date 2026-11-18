@@ -43,6 +43,9 @@ describe('sanitizeImageStudioSource', () => {
     expect(sanitizeImageStudioSource('https://images.example.test/result.png')).toBe('https://images.example.test/result.png')
     expect(sanitizeImageStudioSource('data:image/png;base64,aGVsbG8=')).toBe('data:image/png;base64,aGVsbG8=')
     expect(sanitizeImageStudioSource('data:image/webp;base64,YQ==')).toBe('data:image/webp;base64,YQ==')
+    // GPT Image 2.6 的 GIF 输出以 image/gif data URL 进入画廊。
+    expect(sanitizeImageStudioSource('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'))
+      .toBe('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
   })
 
   it('rejects executable and unsupported image sources', () => {
