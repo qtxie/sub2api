@@ -249,17 +249,18 @@ func imageStudioGPTImageLegacyOutputFormats() []string {
 }
 
 // imageStudioGPTImage26OutputFormats 是 GPT Image 2.6 支持的输出格式。
-// 2.6 原生支持 GIF 动图输出（配合 frame_count / frame_duration_ms 帧参数）；
+// 2.6 原生支持 GIF 动图输出（配合 frame_count / frame_duration_ms 帧参数）
+// 与 SVG 矢量输出（svg author 参数可选，省略时由上游默认决定）；
 // 实际产出以上游账号权限与端点为准。
 func imageStudioGPTImage26OutputFormats() []string {
-	return []string{"png", "jpeg", "webp", "gif"}
+	return []string{"png", "jpeg", "webp", "gif", "svg"}
 }
 
 // imageStudioOpenAIImageCapability 描述 OpenAI 生图模型的面板能力。GPT Image 2、
 // 2.5（Flare / Sunburst）与 2.6（Flare / Sunburst）共用同一套尺寸、背景约束，
 // 仅模型 ID、展示名、quality 档位与输出格式不同：2.5 的 quality 取值为
 // auto / xhigh / max，而 2 与 2.6 使用 auto / low / medium / high；2.6 额外
-// 支持 GIF 输出（见 README「OpenAI 图片模型」）。
+// 支持 GIF 与 SVG 输出（见 README「OpenAI 图片模型」）。
 func imageStudioOpenAIImageCapability(id, label string, qualities, outputFormats []string) imageStudioModelCapability {
 	return imageStudioModelCapability{
 		ID: id, Label: label,

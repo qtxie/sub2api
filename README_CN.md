@@ -749,7 +749,7 @@ go generate ./cmd/server
 
 支持 `gpt-image-2.6-flare`、`gpt-image-2.6-sunburst`，以及 `gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` 和 2.5 的 `2026-09-08` 日期快照，可通过 `/v1/images/generations`、`/v1/images/edits` 调用。保留显式 `complexity`（`low` / `medium` / `high`）；省略时不注入默认值。`quality`、自定义尺寸和图片 usage 明细保持透传。
 
-控制台「图像工作室」的 OpenAI 分组可直接在模型下拉中选择 `gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.6-flare` 与 `gpt-image-2.6-sunburst`，默认模型为 `gpt-image-2.6-flare`。选择 2.5 模型时质量档位切换为 `auto` / `xhigh` / `max`（2 与 2.6 使用 `auto` / `low` / `medium` / `high`），其余尺寸、背景与参考图约束与 `gpt-image-2` 一致。2.6 额外支持 GIF 输出：面板可设置帧数（`frame_count`）与帧间隔（`frame_duration_ms`），留空时由上游默认决定；GIF / SVG 等格式的实际可用性由上游账号权限及端点决定。已保存过旧模型偏好的用户不受影响，可随时切回。
+控制台「图像工作室」的 OpenAI 分组可直接在模型下拉中选择 `gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2.6-flare` 与 `gpt-image-2.6-sunburst`，默认模型为 `gpt-image-2.6-flare`。选择 2.5 模型时质量档位切换为 `auto` / `xhigh` / `max`（2 与 2.6 使用 `auto` / `low` / `medium` / `high`），其余尺寸、背景与参考图约束与 `gpt-image-2` 一致。2.6 额外支持 GIF 与 SVG 输出：面板可设置 GIF 的帧数（`frame_count`）与帧间隔（`frame_duration_ms`），留空时由上游默认决定，SVG 的 author 参数（`svg.model` / `svg.reasoning.effort`）不传由上游默认决定；GIF / SVG 等格式的实际可用性由上游账号权限及端点决定，SVG 在画廊中以图片方式静态渲染、不执行内嵌脚本。已保存过旧模型偏好的用户不受影响，可随时切回。
 
 OAuth / Setup Token 的 1.5、2、2.5 和 2.6 图片请求使用 Codex 原生 Images 端点。旧模型遇到端点 404 / 405 时仍可回退到 Responses；2.6 不回退，避免桥接层忽略图片模型或注入不支持的 `complexity`。其余模型继续通过 Responses 的 `image_generation` 工具调用，默认文本主控为 `gpt-5.6-luna`，可设置 `SUB2API_IMAGES_MAIN_MODEL` 切换。该配置仅影响 Responses 桥接。
 

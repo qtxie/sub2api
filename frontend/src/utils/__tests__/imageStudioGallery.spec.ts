@@ -50,9 +50,15 @@ describe('sanitizeImageStudioSource', () => {
 
   it('rejects executable and unsupported image sources', () => {
     expect(sanitizeImageStudioSource('javascript:alert(1)')).toBe('')
-    expect(sanitizeImageStudioSource('data:image/svg+xml;base64,PHN2Zz4=')).toBe('')
     expect(sanitizeImageStudioSource('data:text/html;base64,PGgxPkJvb208L2gxPg==')).toBe('')
     expect(sanitizeImageStudioSource('https://user:secret@example.test/image.png')).toBe('')
+  })
+
+  it('accepts GPT Image 2.6 GIF / SVG output data URLs', () => {
+    expect(sanitizeImageStudioSource('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'))
+      .toBe('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
+    expect(sanitizeImageStudioSource('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='))
+      .toBe('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=')
   })
 })
 
@@ -152,7 +158,40 @@ describe('createImageStudioThumbnail', () => {
     expect(close).toHaveBeenCalledTimes(1)
   })
 
+  it('decodes SVG via the Image fallback when createImageBitmap rejects', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('SVG bitmap unsupported')))
+    class FakeImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      naturalWidth = 720
+      naturalHeight = 360
+      width = 720
+      height = 360
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.())
+      }
+    }
+    vi.stubGlobal('Image', FakeImage)
+    vi.stubGlobal('URL', Object.assign(class {}, {
+      createObjectURL: vi.fn(() => 'blob:mock'),
+      revokeObjectURL: vi.fn()
+    }))
+    const drawImage = vi.fn()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      clearRect: vi.fn(),
+      drawImage
+    } as unknown as CanvasRenderingContext2D)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation((callback, mimeType) => {
+      callback(new Blob([new Uint8Array([82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80])], { type: mimeType || 'image/png' }))
+    })
+
+    const thumbnail = await createImageStudioThumbnail('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=')
+
+    expect(thumbnail).toBe(webpThumbnail)
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 360, 180)
+  })
+
   it('rejects unsafe input before attempting to decode it', async () => {
-    await expect(createImageStudioThumbnail('data:image/svg+xml;base64,PHN2Zz4=')).rejects.toThrow('Unsafe image source')
+    await expect(createImageStudioThumbnail('data:text/html;base64,PGgxPkJvb208L2gxPg==')).rejects.toThrow('Unsafe image source')
   })
 })

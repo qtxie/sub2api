@@ -57,8 +57,8 @@ const userCreatedAtIndexName = 'userCreatedAt'
 const recordVersionIndexName = 'recordVersion'
 const migrationMarkerKey = 'archive-schema-v4'
 const archiveOperationLockName = 'sub2api-image-studio-archive-schema-v4'
-// gif 仅作为输出展示/归档；参考图（source images）仍限 PNG/JPEG/WebP。
-const safeDataMimes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const
+// gif / svg 仅作为输出展示/归档（svg 以 <img> 渲染不执行脚本）；参考图（source images）仍限 PNG/JPEG/WebP。
+const safeDataMimes = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'] as const
 const thumbnailMaxEdge = 360
 const thumbnailMaxBytes = 256 * 1024
 const thumbnailInputMaxBytes = 64 * 1024 * 1024
@@ -944,6 +944,10 @@ function hasRasterSignature(parsed: RasterDataURL): boolean {
     // GIF87a / GIF89a 魔数。
     return prefix.length >= 6 && prefix.slice(0, 3) === 'GIF'
   }
+  if (parsed.mimeType === 'image/svg+xml') {
+    // SVG 以 "<"（XML 声明或标签）开头，允许前导空白与 BOM。
+    return prefix.replace(/^\uFEFF?\s+/, '').startsWith('<')
+  }
   return prefix.length >= 12 && prefix.slice(0, 4) === 'RIFF' && prefix.slice(8, 12) === 'WEBP'
 }
 
@@ -995,8 +999,12 @@ async function loadThumbnailSource(blob: Blob): Promise<{
   close: () => void
 }> {
   if (typeof createImageBitmap === 'function') {
-    const bitmap = await createImageBitmap(blob)
-    return { image: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() }
+    try {
+      const bitmap = await createImageBitmap(blob)
+      return { image: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() }
+    } catch {
+      // SVG Blob 在部分浏览器不被 createImageBitmap 支持，回落到 <img> 解码（渲染静态首帧）。
+    }
   }
 
   const url = URL.createObjectURL(blob)

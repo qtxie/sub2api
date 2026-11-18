@@ -312,6 +312,36 @@ describe('ImageStudioView', () => {
     }), expect.any(AbortSignal))
   })
 
+  it('offers SVG output for GPT Image 2.6 and maps the result MIME', async () => {
+    getCapabilities.mockImplementation(async () => ({
+      provider: 'openai', default_model: 'gpt-image-2.6-sunburst',
+      models: [{
+        id: 'gpt-image-2.6-sunburst', label: 'GPT Image 2.6 Sunburst', aspect_ratios: [], image_sizes: ['1024x1024'],
+        resolutions: [], qualities: ['auto', 'low', 'medium', 'high'], backgrounds: ['auto', 'opaque', 'transparent'],
+        output_formats: ['png', 'jpeg', 'webp', 'gif', 'svg'], max_images: 4, max_input_images: 4, supports_custom_size: true
+      }]
+    }))
+    generateImage.mockReset().mockResolvedValue({
+      data: [{ b64_json: 'PHN2Zz48L3N2Zz4=', mime_type: 'image/svg+xml' }]
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.findAll('.segmented-control.compact button').map((button) => button.text()))
+      .toEqual(['PNG', 'JPEG', 'WEBP', 'GIF', 'SVG'])
+    await wrapper.findAll('.segmented-control.compact button')[4].trigger('click')
+    await wrapper.get('#image-studio-prompt').setValue('a neon skyline')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(generateImage).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'gpt-image-2.6-sunburst',
+      output_format: 'svg'
+    }), expect.any(AbortSignal))
+    expect(wrapper.get('.gallery-item img').attributes('src'))
+      .toBe('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=')
+  })
+
   it('renders only Gemini-supported controls and sends an Interactions payload', async () => {
     const wrapper = mountView()
     await flushPromises()

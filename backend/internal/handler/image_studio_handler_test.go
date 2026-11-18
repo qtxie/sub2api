@@ -278,6 +278,35 @@ func TestImageStudioGenerateRejectsFrameParamsOutsideGIF(t *testing.T) {
 	}
 }
 
+func TestImageStudioGenerateForwardsSVGOutputFormat(t *testing.T) {
+	var upstreamBody map[string]any
+	handler := &ImageStudioHandler{
+		apiKeys: imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
+		cfg:     &config.Config{Server: config.ServerConfig{Host: "0.0.0.0", Port: 8080}},
+	}
+	handler.httpClient = &http.Client{Transport: imageStudioRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&upstreamBody))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"created":1,"data":[{"b64_json":"PHN2Zz4="}]}`)),
+		}, nil
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/generations", bytes.NewBufferString(`{
+		"api_key_id":7,"model":"gpt-image-2.6-sunburst","prompt":"draw a lighthouse","size":"1024x1024","quality":"auto",
+		"background":"auto","output_format":"svg","n":1
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	imageStudioTestRouter(handler).ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	require.Equal(t, "svg", upstreamBody["output_format"])
+	require.NotContains(t, upstreamBody, "frame_count")
+	require.NotContains(t, upstreamBody, "svg")
+}
+
 func TestImageStudioPricingAcceptsGPTImage25Models(t *testing.T) {
 	handler := &ImageStudioHandler{
 		apiKeys:       imageStudioKeyLoaderStub{key: eligibleImageStudioKey(42)},
@@ -522,12 +551,12 @@ func TestImageStudioCapabilitiesAreProviderSpecific(t *testing.T) {
 					require.Equal(t, imageStudioOpenAIMaxInputImages, model.MaxInputImages)
 					require.True(t, model.SupportsCustomSize)
 				}
-				// 仅 2.6 支持 GIF 输出（帧参数随 GIF 一并透传）。
+				// 仅 2.6 支持 GIF / SVG 输出（帧参数随 GIF 一并透传，svg author 参数可选）。
 				require.Equal(t, []string{"png", "jpeg", "webp"}, capabilities.Models[0].OutputFormats)
 				require.Equal(t, []string{"png", "jpeg", "webp"}, capabilities.Models[1].OutputFormats)
 				require.Equal(t, []string{"png", "jpeg", "webp"}, capabilities.Models[2].OutputFormats)
-				require.Equal(t, []string{"png", "jpeg", "webp", "gif"}, capabilities.Models[3].OutputFormats)
-				require.Equal(t, []string{"png", "jpeg", "webp", "gif"}, capabilities.Models[4].OutputFormats)
+				require.Equal(t, []string{"png", "jpeg", "webp", "gif", "svg"}, capabilities.Models[3].OutputFormats)
+				require.Equal(t, []string{"png", "jpeg", "webp", "gif", "svg"}, capabilities.Models[4].OutputFormats)
 				require.Equal(t, "GPT Image 2.5 Flare", capabilities.Models[1].Label)
 				require.Equal(t, "GPT Image 2.5 Sunburst", capabilities.Models[2].Label)
 				require.Equal(t, "GPT Image 2.6 Flare", capabilities.Models[3].Label)

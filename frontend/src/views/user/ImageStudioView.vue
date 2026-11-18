@@ -1296,12 +1296,17 @@ function elapsedForJob(job: ImageGenerationJob): number {
 function resultSource(result: ImageStudioImage, snapshot: ImageGenerationSnapshot): string {
   if (result.b64_json) {
     const fallbackMime = snapshot.provider === 'openai' || snapshot.provider === 'sensenova'
-      ? `image/${snapshot.outputFormat}`
+      ? resultSnapshotMime(snapshot.outputFormat)
       : 'image/jpeg'
-    const mime = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(result.mime_type || '') ? result.mime_type! : fallbackMime
+    const mime = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml'].includes(result.mime_type || '') ? result.mime_type! : fallbackMime
     return sanitizeImageStudioSource(`data:${mime};base64,${result.b64_json}`)
   }
   return sanitizeImageStudioSource(result.url)
+}
+
+// outputFormat → data URL MIME；SVG 不是 image/svg，注意别拼错。
+function resultSnapshotMime(format: ImageOutputFormat): string {
+  return format === 'svg' ? 'image/svg+xml' : `image/${format}`
 }
 
 function resultFormat(result: ImageStudioImage, snapshot: ImageGenerationSnapshot): ImageOutputFormat {
@@ -1309,6 +1314,7 @@ function resultFormat(result: ImageStudioImage, snapshot: ImageGenerationSnapsho
   if (result.mime_type === 'image/webp') return 'webp'
   if (result.mime_type === 'image/png') return 'png'
   if (result.mime_type === 'image/gif') return 'gif'
+  if (result.mime_type === 'image/svg+xml') return 'svg'
   return snapshot.provider === 'openai' || snapshot.provider === 'sensenova' ? snapshot.outputFormat : 'jpeg'
 }
 
