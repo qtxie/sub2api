@@ -960,6 +960,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 
 		// Forward request
+		// 每轮尝试都从干净的 cyber 标记开始：只有最终落地的那次命中才应被
+		// recordCyberPolicyIfMarked 审计/计费，重试过程中的命中不应重复落库。
+		clearCyberPolicyAttemptState(c, false)
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 		// 用扣除非语义心跳字节的口径快照：心跳注释不构成语义响应，
@@ -1093,7 +1096,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					if c.Writer.Written() {
 						streamStarted = true
 					}
-					if failoverErr.ShouldReportAccountScheduleFailure() {
+					if failoverErr.ShouldReportAccountScheduleFailure() && !service.IsCyberPolicyFailoverError(failoverErr) {
 						h.gatewayService.ReportOpenAIAccountScheduleFailure(account, apiKey.User, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, nil), failoverErr.StatusCode, err)
 					}
 					if !failoverErr.ShouldRetryNextAccount() {
@@ -1867,6 +1870,19 @@ func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, 
 	if failoverErr != nil && failoverErr.IsCredentialFailure() {
 		status, message := credentialFailoverClientResponse(failoverErr)
 		h.anthropicStreamingAwareError(c, status, "api_error", message, streamStarted)
+		return
+	}
+	if failoverErr != nil && service.IsCyberPolicyFailoverError(failoverErr) {
+		message := strings.TrimSpace(failoverErr.ClientMessage)
+		if message == "" {
+			message = "Request blocked by upstream cyber-security policy"
+		}
+		service.SetOpsUpstreamError(c, failoverErr.StatusCode, message, "")
+		status := failoverErr.ClientStatusCode
+		if status <= 0 {
+			status = http.StatusBadRequest
+		}
+		h.anthropicStreamingAwareError(c, status, "permission_error", message, streamStarted)
 		return
 	}
 	if failoverErr != nil && failoverErr.IsOpenAICapacityShed() && strings.TrimSpace(failoverErr.ClientMessage) != "" {
@@ -3903,6 +3919,26 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		}
 		service.SetOpsUpstreamError(c, failoverErr.StatusCode, message, "")
 		h.handleStreamingAwareErrorWithCode(c, status, "upstream_error", service.OpenAIImagesInsufficientBalanceCode, message, streamStarted, false)
+		return
+	}
+	if service.IsCyberPolicyFailoverError(failoverErr) {
+		message := strings.TrimSpace(failoverErr.ClientMessage)
+		if message == "" {
+			message = "Request blocked by upstream cyber-security policy"
+		}
+		service.SetOpsUpstreamError(c, failoverErr.StatusCode, message, "")
+		if streamStarted || failoverErr.ClientStatusCode == http.StatusOK {
+			if !streamStarted {
+				c.Header("Content-Type", "text/event-stream")
+			}
+			writeResponsesFailedSSE(c, "upstream_error", "cyber_policy", message)
+			return
+		}
+		status := failoverErr.ClientStatusCode
+		if status <= 0 {
+			status = http.StatusBadRequest
+		}
+		service.WriteOpenAIUpstreamClientError(c, status, failoverErr.ResponseBody, message)
 		return
 	}
 	if failoverErr.IsCredentialFailure() {

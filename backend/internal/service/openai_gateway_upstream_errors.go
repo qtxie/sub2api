@@ -593,27 +593,18 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	body := s.readUpstreamErrorBody(resp)
 	body = s.redactAgentIdentitySensitiveBody(ctx, account, body)
 
-	// cyber_policy 硬阻断：透传上游原始错误体给客户端（不重包成通用 502），不冷却账号。
-	// 当前请求恒透传（需求1）；标记供 handler 事后写风控/邮件。400 cyber 不可 failover
-	// （shouldFailoverUpstreamError(400)=false），故走到此处即可安全早返回。
-	if hit, code, cyberMsg := detectOpenAICyberPolicy(body); hit {
+	// cyber_policy 硬阻断：不立即回写客户端，而是作为可降级错误返回。
+	// 同账号 fallback 模型 / 跨账号 failover 全部耗尽后，handler 会用这里携带的
+	// 原始 body/message 原样回写；命中后异步完成审计与计费。
+	if hit, _, cyberMsg := detectOpenAICyberPolicy(body); hit {
 		MarkOpsCyberPolicy(c, CyberPolicyMark{
-			Code:           code,
+			Code:           "cyber_policy",
 			Message:        cyberMsg,
 			Body:           truncateString(string(body), 4096),
 			UpstreamStatus: resp.StatusCode,
 		})
 		setOpsUpstreamError(c, resp.StatusCode, cyberMsg, truncateString(string(body), 2048))
-		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-		contentType := resp.Header.Get("Content-Type")
-		if contentType == "" {
-			contentType = "application/json"
-		}
-		c.Data(resp.StatusCode, contentType, body)
-		if cyberMsg == "" {
-			return nil, fmt.Errorf("openai cyber_policy: %d", resp.StatusCode)
-		}
-		return nil, fmt.Errorf("openai cyber_policy: %s", cyberMsg)
+		return nil, newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, cyberMsg)
 	}
 	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)
@@ -844,27 +835,18 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	body := s.readUpstreamErrorBody(resp)
 	body = s.redactAgentIdentitySensitiveBody(context.Background(), account, body)
 
-	// cyber_policy：兼容路径（Chat Completions / Anthropic）以各自格式回写错误，
-	// 不原样透传 responses 格式的 cyber body（否则对下游格式不合法）。cyber 是上游网络
-	// 安全策略拦截，不冷却账号，故标记后直接以兼容格式回写错误并返回，跳过下方
-	// handleOpenAIAccountUpstreamError（避免自定义 temp-unschedulable 规则误冷却）。
-	if hit, code, cyberMsg := detectOpenAICyberPolicy(body); hit {
+	// cyber_policy：兼容路径（Chat Completions / Anthropic）同样先返回可降级错误，
+	// 由 handler 在同账号 fallback 模型 / 跨账号 failover 耗尽后按各自格式回写。
+	// cyber 是内容级拦截，不冷却账号，故跳过 handleOpenAIAccountUpstreamError。
+	if hit, _, cyberMsg := detectOpenAICyberPolicy(body); hit {
 		MarkOpsCyberPolicy(c, CyberPolicyMark{
-			Code:           code,
+			Code:           "cyber_policy",
 			Message:        cyberMsg,
 			Body:           truncateString(string(body), 4096),
 			UpstreamStatus: resp.StatusCode,
 		})
 		setOpsUpstreamError(c, resp.StatusCode, cyberMsg, truncateString(string(body), 2048))
-		clientMsg := cyberMsg
-		if clientMsg == "" {
-			clientMsg = "Request blocked by upstream cyber-security policy"
-		}
-		writeError(c, resp.StatusCode, "invalid_request_error", clientMsg)
-		if cyberMsg == "" {
-			return nil, fmt.Errorf("openai cyber_policy: %d", resp.StatusCode)
-		}
-		return nil, fmt.Errorf("openai cyber_policy: %s", cyberMsg)
+		return nil, newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, cyberMsg)
 	}
 	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)

@@ -589,10 +589,19 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningAndTimeout(ct
 				// 再打 cyber 标记，否则 mark 记到的是解析前的 0，导致流式 cyber 按 0 token 计费
 				// 而漏记真实用量。对齐 WS V2 / Chat 流式路径（均先解析 usage 再 Mark）。
 				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
-				if hit, code, msg := detectOpenAICyberPolicy(dataBytes); hit {
+				if hit, _, msg := detectOpenAICyberPolicy(dataBytes); hit {
 					cyberHit = true
+					// 客户端尚未收到任何语义字节时，把 cyber 阻断转成可降级错误：
+					// 先在同账号换模型，再按正常 failover 流程换账号。已有输出时
+					// 无法在同一条 SSE 流上重放，维持原有的原样透传行为。
+					if !clientOutputAlreadyStarted && OpenAICompactKeepaliveAdjustedWrittenSize(c) == 0 {
+						setOpsUpstreamError(c, http.StatusOK, msg, truncateString(string(dataBytes), 2048))
+						streamEarlyErr = newOpenAICyberPolicyFailoverError(http.StatusOK, resp.Header, dataBytes, msg)
+						suppressCurrentEvent = true
+						return
+					}
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
-						Code:           code,
+						Code:           "cyber_policy",
 						Message:        msg,
 						Body:           truncateString(string(dataBytes), 4096),
 						UpstreamStatus: http.StatusOK,

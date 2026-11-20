@@ -826,3 +826,103 @@ func TestIsUpstreamModelUnavailableErrorRejectsTransientFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestCyberPolicyFailoverErrorMetadata(t *testing.T) {
+	body := []byte(`{"error":{"code":"cyber_policy","message":"blocked"}}`)
+	err := newOpenAICyberPolicyFailoverError(http.StatusBadRequest, nil, body, "blocked")
+	if !IsCyberPolicyFailoverError(err) {
+		t.Fatal("expected cyber policy failover error")
+	}
+	var failoverErr *UpstreamFailoverError
+	if !errors.As(err, &failoverErr) {
+		t.Fatal("expected UpstreamFailoverError")
+	}
+	if failoverErr.Reason != GatewayFailureReasonCyberPolicy ||
+		failoverErr.NextAccountAction != NextAccountRetry ||
+		!failoverErr.AccountStateHandled || failoverErr.SafeToFailoverAfterWrite {
+		t.Fatalf("unexpected cyber failover metadata: %#v", failoverErr)
+	}
+	if failoverErr.ClientMessage != "blocked" || string(failoverErr.ResponseBody) != string(body) {
+		t.Fatalf("original upstream message/body not preserved: %#v", failoverErr)
+	}
+	if IsCyberPolicyFailoverError(errors.New("ordinary error")) {
+		t.Fatal("ordinary error must not be classified as cyber")
+	}
+}
+
+func TestCyberPolicyRetriesSameAccountModelsThenSucceeds(t *testing.T) {
+	ctx := context.Background()
+	// No global fallback switch: account-level soft mapping alone must be enough.
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"soft_model_mapping": map[string]any{"model-a": "model-b"},
+		},
+	}
+	c := &gin.Context{}
+	var attempts []string
+	result, err := service.forwardWithSameAccountModelFallback(ctx, c, account, []byte(`{"model":"model-a"}`), func(attemptBody []byte) (*OpenAIForwardResult, error) {
+		model := gjson.GetBytes(attemptBody, "model").String()
+		attempts = append(attempts, model)
+		if model == "model-a" {
+			MarkOpsCyberPolicy(c, CyberPolicyMark{Message: "intermediate cyber hit", UpstreamStatus: http.StatusBadRequest})
+			return nil, newOpenAICyberPolicyFailoverError(http.StatusBadRequest, nil, []byte(`{"error":{"code":"cyber_policy","message":"blocked"}}`), "blocked")
+		}
+		return &OpenAIForwardResult{Model: model, UpstreamModel: model}, nil
+	})
+	if err != nil {
+		t.Fatalf("forwardWithSameAccountModelFallback() error = %v", err)
+	}
+	if want := []string{"model-a", "model-b"}; !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	if result == nil || result.Model != "model-a" || result.UpstreamModel != "model-b" {
+		t.Fatalf("result = %#v, want requested model-a served by model-b", result)
+	}
+	if GetOpsCyberPolicy(c) != nil {
+		t.Fatal("intermediate cyber mark must be cleared after a successful fallback model")
+	}
+}
+
+func TestCyberPolicyAllModelsBlockedReturnsFailoverError(t *testing.T) {
+	ctx := context.Background()
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{
+		SettingKeyEnableModelFallback:  "true",
+		SettingKeyFallbackModelsOpenAI: `["model-b"]`,
+	}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+	account := &Account{ID: 42, Platform: PlatformOpenAI}
+	var attempts []string
+	_, err := service.forwardWithSameAccountModelFallback(ctx, &gin.Context{}, account, []byte(`{"model":"model-a"}`), func(attemptBody []byte) (*OpenAIForwardResult, error) {
+		model := gjson.GetBytes(attemptBody, "model").String()
+		attempts = append(attempts, model)
+		return nil, newOpenAICyberPolicyFailoverError(http.StatusBadRequest, nil, []byte(`{"error":{"code":"cyber_policy","message":"blocked"}}`), "blocked")
+	})
+	if want := []string{"model-a", "model-b"}; !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	if !IsCyberPolicyFailoverError(err) {
+		t.Fatalf("error = %v, want cyber failover error after all models were blocked", err)
+	}
+	var failoverErr *UpstreamFailoverError
+	_ = errors.As(err, &failoverErr)
+	if failoverErr.ClientMessage != "blocked" || failoverErr.NextAccountAction != NextAccountRetry {
+		t.Fatalf("final cyber error lost client message or account failover: %#v", failoverErr)
+	}
+}
+
+func TestCyberPolicyWithoutFallbackDoesNotRetryModel(t *testing.T) {
+	settings := NewSettingService(&gatewayTTLSettingRepo{data: map[string]string{}}, nil)
+	service := &OpenAIGatewayService{settingService: settings}
+	attempts := 0
+	_, err := service.forwardWithSameAccountModelFallback(context.Background(), &gin.Context{}, &Account{Platform: PlatformOpenAI}, []byte(`{"model":"model-a"}`), func([]byte) (*OpenAIForwardResult, error) {
+		attempts++
+		return nil, newOpenAICyberPolicyFailoverError(http.StatusBadRequest, nil, []byte(`{"error":{"code":"cyber_policy","message":"blocked"}}`), "blocked")
+	})
+	if attempts != 1 || !IsCyberPolicyFailoverError(err) {
+		t.Fatalf("attempts = %d, err = %v; want one attempt and cyber failover error", attempts, err)
+	}
+}

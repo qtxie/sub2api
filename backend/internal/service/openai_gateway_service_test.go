@@ -4085,9 +4085,13 @@ func TestHandleErrorResponseCyberPolicyPassthrough(t *testing.T) {
 	}
 	_, err := svc.handleErrorResponse(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "a"}, nil)
 	require.Error(t, err)
-	require.Equal(t, http.StatusBadRequest, rec.Code, "passthrough upstream 400, not rewrapped 502")
-	require.Contains(t, rec.Body.String(), "cyber_policy", "client sees original cyber body")
-	require.NotContains(t, rec.Body.String(), "Upstream request failed", "must not 502-rewrap")
+	// Cyber is deferred so same-account model fallback and account failover can
+	// run first; the handler writes the original body once those are exhausted.
+	require.True(t, IsCyberPolicyFailoverError(err))
+	require.Zero(t, rec.Body.Len(), "no client response before fallback is exhausted")
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Contains(t, string(failoverErr.ResponseBody), "cyber_policy", "original cyber body preserved for final response")
 	mark := GetOpsCyberPolicy(c)
 	require.NotNil(t, mark)
 	require.Equal(t, http.StatusBadRequest, mark.UpstreamStatus)
@@ -4110,12 +4114,18 @@ func TestHandleCompatErrorResponseCyberPolicyEarlyReturn(t *testing.T) {
 	writeError := func(_ *gin.Context, statusCode int, errType, message string) {
 		gotStatus, gotType, gotMsg = statusCode, errType, message
 	}
-	// cyber 命中应早返回(写兼容错误 + 不冷却账号)，而非落到通用 "Upstream request failed"。
+	// Cyber is deferred: the compat handler writes nothing until model/account
+	// fallback is exhausted, and the original message rides in the error.
 	_, err := svc.handleCompatErrorResponse(resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "a"}, writeError)
 	require.Error(t, err)
-	require.Equal(t, http.StatusBadRequest, gotStatus)
-	require.Equal(t, "invalid_request_error", gotType)
-	require.Contains(t, gotMsg, "flagged for cyber policy")
-	require.NotContains(t, gotMsg, "Upstream request failed")
+	require.True(t, IsCyberPolicyFailoverError(err))
+	require.Equal(t, 0, gotStatus, "compat error writer must not run before fallback is exhausted")
+	require.Empty(t, gotType)
+	require.Empty(t, gotMsg)
+	require.Zero(t, rec.Body.Len(), "no client response before fallback is exhausted")
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Contains(t, failoverErr.ClientMessage, "flagged for cyber policy")
+	require.NotContains(t, failoverErr.ClientMessage, "Upstream request failed")
 	require.NotNil(t, GetOpsCyberPolicy(c))
 }

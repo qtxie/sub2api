@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -13,11 +14,50 @@ import (
 // handler 在 Forward 返回后读取以触发风控记录、邮件与 tokens=0 用量行。
 const opsCyberPolicyKey = "ops_cyber_policy"
 
-// errOpenAICyberPolicyForwarded 表示 cyber_policy 已按当前端点格式透传给客户端
-// （error 已写出/下发）。compat 路径 ForwardAsChatCompletions / ForwardAsAnthropic 出口
-// 据此丢弃 result 并返回该哨兵，使 handler 落入 tokens=0 免费用量行（对齐 /v1/responses），
-// 既不计费、也不 failover、不重复写响应。
+// errOpenAICyberPolicyForwarded is retained for the compat paths that still
+// hand a cyber block straight to the client. HTTP Responses paths now defer
+// the block as a recoverable failover error (see GatewayFailureReasonCyberPolicy)
+// so same-account model fallback and account failover can be attempted first.
 var errOpenAICyberPolicyForwarded = errors.New("openai cyber_policy forwarded to client")
+
+// GatewayFailureReasonCyberPolicy marks an upstream cyber-security rejection
+// that is eligible for same-account model fallback and then account failover.
+// It stays a distinct reason so account-health and moderation handling can
+// tell a content-level block apart from transport or capacity failures.
+const GatewayFailureReasonCyberPolicy = GatewayFailureReason("cyber_policy")
+
+// newOpenAICyberPolicyFailoverError defers the client response: the original
+// upstream body/message ride along so the handler can still pass the exact
+// cyber rejection through once every configured model/account is exhausted.
+// Account state is left untouched because a content policy hit says nothing
+// about the health of the credential that received it.
+func newOpenAICyberPolicyFailoverError(statusCode int, headers http.Header, body []byte, message string) *UpstreamFailoverError {
+	if statusCode <= 0 {
+		statusCode = http.StatusBadRequest
+	}
+	var clonedHeaders http.Header
+	if headers != nil {
+		clonedHeaders = headers.Clone()
+	}
+	return &UpstreamFailoverError{
+		StatusCode:               statusCode,
+		ResponseBody:             append([]byte(nil), body...),
+		ResponseHeaders:          clonedHeaders,
+		Scope:                    GatewayFailureScopeRequest,
+		Reason:                   GatewayFailureReasonCyberPolicy,
+		NextAccountAction:        NextAccountRetry,
+		ClientStatusCode:         statusCode,
+		ClientMessage:            strings.TrimSpace(message),
+		SafeToFailoverAfterWrite: false,
+		AccountStateHandled:      true,
+	}
+}
+
+// IsCyberPolicyFailoverError reports whether err is a deferred cyber rejection.
+func IsCyberPolicyFailoverError(err error) bool {
+	var failoverErr *UpstreamFailoverError
+	return errors.As(err, &failoverErr) && failoverErr != nil && failoverErr.Reason == GatewayFailureReasonCyberPolicy
+}
 
 // CyberPolicyMark 记录一次 cyber_policy 硬阻断的上游证据。
 type CyberPolicyMark struct {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -102,6 +103,11 @@ func shouldRetryOpenAISameAccountModelFallback(
 	if failoverErr.Reason == GatewayFailureReasonPersistentTransport {
 		// A durable proxy, DNS, or routing failure can only recover on another account.
 		return false
+	}
+	if failoverErr.Reason == GatewayFailureReasonCyberPolicy {
+		// A content policy block is account-independent but can be model-specific.
+		// Try the configured same-account models before spending another account.
+		return hasSameAccountModelFallbackCandidates(ctx, settings, account, accountPlatformOrEmpty(account), requestedModel)
 	}
 	if IsModelUnavailableFailover(err) {
 		return hasSameAccountModelFallbackCandidates(ctx, settings, account, accountPlatformOrEmpty(account), requestedModel)
@@ -397,6 +403,20 @@ func (s *OpenAIGatewayService) forwardWithSameAccountModelFallback(
 			if !writeSafety.allowsModelRetry() ||
 				!shouldRetryOpenAISameAccountModelFallback(ctx, settings, account, requestedModel, lastErr) {
 				break
+			}
+			if IsCyberPolicyFailoverError(lastErr) {
+				// The previous model's cyber mark must not be audited/billed
+				// unless it is still the mark when Forward finally returns.
+				ClearOpsCyberPolicy(c)
+				retryAccountID := int64(0)
+				if account != nil {
+					retryAccountID = account.ID
+				}
+				slog.Warn("openai.cyber_policy_model_fallback",
+					"account_id", retryAccountID,
+					"from_model", requestedModel,
+					"to_model", strings.TrimSpace(candidate),
+				)
 			}
 		} else if index > 0 {
 			// Leading empty candidates were skipped; do not invent retries without a failure.
