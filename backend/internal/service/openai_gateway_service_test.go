@@ -4066,9 +4066,13 @@ func TestHandleStreamingResponseCyberPolicyMarks(t *testing.T) {
 	}
 	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Name: "a"}, time.Now(), "m", "m")
 	require.Error(t, err)
-	var fo *UpstreamFailoverError
-	require.False(t, errors.As(err, &fo))
-	require.NotNil(t, GetOpsCyberPolicy(c))
+	// 客户端尚未收到任何语义字节：cyber 阻断转成可降级 failover 错误（同账号换模型
+	// → 跨账号 failover），标记随行供最终落地那次命中审计/计费。
+	require.True(t, IsCyberPolicyFailoverError(err))
+	require.Zero(t, rec.Body.Len(), "no semantic bytes before failover")
+	mark := GetOpsCyberPolicy(c)
+	require.NotNil(t, mark)
+	require.Equal(t, "flagged", mark.Message)
 }
 
 func TestHandleErrorResponseCyberPolicyPassthrough(t *testing.T) {

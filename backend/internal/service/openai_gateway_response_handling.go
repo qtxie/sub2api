@@ -594,8 +594,26 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoningAndTimeout(ct
 					// 客户端尚未收到任何语义字节时，把 cyber 阻断转成可降级错误：
 					// 先在同账号换模型，再按正常 failover 流程换账号。已有输出时
 					// 无法在同一条 SSE 流上重放，维持原有的原样透传行为。
-					if !clientOutputAlreadyStarted && OpenAICompactKeepaliveAdjustedWrittenSize(c) == 0 {
+					// 判据是"线上无真实字节"：AdjustedWrittenSize 的 -1（未写出或仅
+					// 心跳注释）与 0（仅提交 SSE 响应头）都算干净，不能用 ==0——
+					// 那会让最常见的"尚未写出任何字节"(-1) 状态永远落到透传分支；
+					// 也不能复用 clientOutputAlreadyStarted（其内部 >=0 判定会把
+					// 0 状态误判为已开始输出）。
+					if !clientOutputStarted && OpenAICompactKeepaliveAdjustedWrittenSize(c) <= 0 {
 						setOpsUpstreamError(c, http.StatusOK, msg, truncateString(string(dataBytes), 2048))
+						// 与非流式路径（handleErrorResponse/handleCompatErrorResponse）及
+						// Chat/Messages/WS 流式路径对齐：命中即打标记。标记随 failover
+						// 逐轮 clear（handler clearCyberPolicyAttemptState / 同账号换模型
+						// ClearOpsCyberPolicy），只有最终落地的那次命中会被
+						// recordCyberPolicyIfMarked 审计/计费；重试成功则随成功路径清空。
+						MarkOpsCyberPolicy(c, CyberPolicyMark{
+							Code:           "cyber_policy",
+							Message:        msg,
+							Body:           truncateString(string(dataBytes), 4096),
+							UpstreamStatus: http.StatusOK,
+							UpstreamInTok:  usage.InputTokens,
+							UpstreamOutTok: usage.OutputTokens,
+						})
 						streamEarlyErr = newOpenAICyberPolicyFailoverError(http.StatusOK, resp.Header, dataBytes, msg)
 						suppressCurrentEvent = true
 						return

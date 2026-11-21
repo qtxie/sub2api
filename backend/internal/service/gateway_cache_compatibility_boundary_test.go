@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -74,7 +75,7 @@ func TestAnthropicConverterOutputCacheFields(t *testing.T) {
 				case "responses buffered":
 					result, err = service.handleAnthropicBufferedStreamingResponse(response, ctx, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now())
 				default:
-					result, err = service.handleAnthropicStreamingResponse(response, ctx, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now())
+					result, err = service.handleAnthropicStreamingResponse(context.Background(), response, ctx, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now())
 				}
 				var failoverErr *UpstreamFailoverError
 				if beforeOutput {
@@ -172,7 +173,7 @@ func TestResponsesTerminalUsageMatchesAnthropicOutput(t *testing.T) {
 			var result *OpenAIForwardResult
 			var err error
 			if stream {
-				result, err = service.handleAnthropicStreamingResponse(response, ctx, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now())
+				result, err = service.handleAnthropicStreamingResponse(context.Background(), response, ctx, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now())
 			} else {
 				result, err = service.handleAnthropicBufferedStreamingResponse(response, ctx, rawChatCompletionsTestAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", time.Now())
 			}

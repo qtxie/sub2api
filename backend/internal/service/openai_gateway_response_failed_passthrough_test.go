@@ -173,11 +173,19 @@ func TestResponsesStreamCyberPolicyPrecedesPassthroughRule(t *testing.T) {
 			err := tt.run(svc, c, resp, &Account{ID: 12, Platform: PlatformOpenAI, Type: AccountTypeOAuth})
 
 			require.Error(t, err)
-			var failoverErr *UpstreamFailoverError
-			require.False(t, errors.As(err, &failoverErr))
 			require.NotNil(t, GetOpsCyberPolicy(c))
-			require.NotEqual(t, http.StatusTeapot, rec.Code)
-			require.Contains(t, rec.Body.String(), "cyber_policy")
+			require.NotEqual(t, http.StatusTeapot, rec.Code, "cyber must precede the passthrough rule")
+			if tt.name == "passthrough" {
+				// 透传变体不在本次 cyber failover 化改造范围：保持原样透传。
+				var failoverErr *UpstreamFailoverError
+				require.False(t, errors.As(err, &failoverErr))
+				require.Contains(t, rec.Body.String(), "cyber_policy")
+			} else {
+				// native 变体在客户端尚未收到任何语义字节时把 cyber 阻断转成
+				// 可降级错误：同账号换模型 → 跨账号 failover 耗尽后才回写原始 body。
+				require.True(t, IsCyberPolicyFailoverError(err))
+				require.Zero(t, rec.Body.Len(), "no semantic bytes before failover")
+			}
 		})
 	}
 }
