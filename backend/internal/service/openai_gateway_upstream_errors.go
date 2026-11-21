@@ -606,6 +606,15 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		setOpsUpstreamError(c, resp.StatusCode, cyberMsg, truncateString(string(body), 2048))
 		return nil, newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, cyberMsg)
 	}
+	// 上游中转自身的 cyber 会话屏蔽（无 error.code，仅 message 可识别）：会话在
+	// "该中转"侧被禁，与账号健康无关，换号即可恢复。不能按普通 400（不可
+	// failover）把错误直接回传客户端（2026-11-21 09:31 线上事故：codex 下一轮
+	// 被 input.codes 的会话屏蔽 400 打断）。也不打 cyber 标记——非真实 cyber
+	// 命中，不进风控审计/计费，监控经由通用 ops 上游错误行可见。
+	if hit, blockMsg := detectOpenAIUpstreamSessionBlock(body); hit {
+		setOpsUpstreamError(c, resp.StatusCode, blockMsg, truncateString(string(body), 2048))
+		return nil, newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, blockMsg)
+	}
 	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)
 		setOpsUpstreamError(c, resp.StatusCode, clientMsg, truncateString(string(body), 2048))
@@ -847,6 +856,12 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		})
 		setOpsUpstreamError(c, resp.StatusCode, cyberMsg, truncateString(string(body), 2048))
 		return nil, newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, cyberMsg)
+	}
+	// 上游中转自身的 cyber 会话屏蔽：与 native 路径同理，换号即可恢复，
+	// 不打 cyber 标记（非真实 cyber 命中，不进风控审计/计费）。
+	if hit, blockMsg := detectOpenAIUpstreamSessionBlock(body); hit {
+		setOpsUpstreamError(c, resp.StatusCode, blockMsg, truncateString(string(body), 2048))
+		return nil, newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, blockMsg)
 	}
 	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)

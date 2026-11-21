@@ -4133,3 +4133,50 @@ func TestHandleCompatErrorResponseCyberPolicyEarlyReturn(t *testing.T) {
 	require.NotContains(t, failoverErr.ClientMessage, "Upstream request failed")
 	require.NotNil(t, GetOpsCyberPolicy(c))
 }
+
+// 上游中转（同为 sub2api）自身的 cyber 会话屏蔽 400：无 error.code，只能按
+// message 识别。必须转成可降级错误驱动跨账号 failover（2026-11-21 09:31 线上
+// 事故：codex 下一轮被 input.codes 的会话屏蔽 400 打断），且不打 cyber 标记
+// ——非真实 cyber 命中，不进风控审计/计费。
+func TestHandleErrorResponseUpstreamSessionBlockFailsOver(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &OpenAIGatewayService{cfg: &config.Config{}}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	blockBody := `{"error":{"message":"该会话已被网络安全策略屏蔽，请开启新会话 / This session is blocked by cyber-security policy, please start a new session","type":"upstream_error"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(blockBody)),
+	}
+	_, err := svc.handleErrorResponse(context.Background(), resp, c, &Account{ID: 58, Platform: PlatformOpenAI, Name: "a"}, nil)
+	require.Error(t, err)
+	require.True(t, IsCyberPolicyFailoverError(err), "relay session block must fail over, got %v", err)
+	require.Nil(t, GetOpsCyberPolicy(c), "not a real cyber hit: no audit mark / billing row")
+	require.Zero(t, rec.Body.Len(), "no client response before fallback is exhausted")
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Contains(t, failoverErr.ClientMessage, "please start a new session")
+	require.Contains(t, string(failoverErr.ResponseBody), "upstream_error", "original relay body preserved for final response")
+}
+
+func TestDetectOpenAIUpstreamSessionBlock(t *testing.T) {
+	bilingual := `{"error":{"message":"该会话已被网络安全策略屏蔽，请开启新会话 / This session is blocked by cyber-security policy, please start a new session","type":"upstream_error"}}`
+	hit, msg := detectOpenAIUpstreamSessionBlock([]byte(bilingual))
+	require.True(t, hit)
+	require.Contains(t, msg, "请开启新会话")
+
+	englishOnly := `{"error":{"message":"This session is blocked by cyber-security policy, please start a new session"}}`
+	hit, _ = detectOpenAIUpstreamSessionBlock([]byte(englishOnly))
+	require.True(t, hit, "relay versions emitting only the English half must still match")
+
+	// 真实 cyber 命中（内容被标记）走 error.code 路径，不得被 message 识别误捕
+	hit, _ = detectOpenAIUpstreamSessionBlock([]byte(`{"error":{"code":"cyber_policy","message":"This content was flagged for possible cybersecurity risk."}}`))
+	require.False(t, hit)
+
+	hit, _ = detectOpenAIUpstreamSessionBlock([]byte(`{"error":{"message":"invalid api key"}}`))
+	require.False(t, hit)
+	hit, _ = detectOpenAIUpstreamSessionBlock([]byte(`{"error":{"message":""}}`))
+	require.False(t, hit)
+}

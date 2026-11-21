@@ -145,3 +145,29 @@ func markOpenAICyberPolicyEvent(c *gin.Context, payload []byte, upstreamStatus i
 	MarkOpsCyberPolicy(c, mark)
 	return true
 }
+
+// 上游中转（同为 sub2api，如 input.codes）自身的 cyber 会话屏蔽（其 F5a）命中
+// 时的报错文案。中转没有 error.code，只能按 message 识别；中英两段都允许匹配，
+// 以免中转版本只回其一。
+const (
+	upstreamSessionBlockMarkerZh = "该会话已被网络安全策略屏蔽"
+	upstreamSessionBlockMarkerEn = "blocked by cyber-security policy, please start a new session"
+)
+
+// detectOpenAIUpstreamSessionBlock 识别上游中转的会话屏蔽 400（无 error.code，
+// 仅 message 可判）。会话在"该中转"侧被禁，与账号健康无关，换号即可恢复，
+// 故不应按普通 400（不可 failover）把错误直接回传客户端。
+func detectOpenAIUpstreamSessionBlock(payload []byte) (bool, string) {
+	msg := gjson.GetBytes(payload, "error.message").String()
+	if msg == "" {
+		msg = gjson.GetBytes(payload, "response.error.message").String()
+	}
+	if msg == "" {
+		return false, ""
+	}
+	if strings.Contains(msg, upstreamSessionBlockMarkerZh) ||
+		strings.Contains(strings.ToLower(msg), upstreamSessionBlockMarkerEn) {
+		return true, strings.TrimSpace(msg)
+	}
+	return false, ""
+}
