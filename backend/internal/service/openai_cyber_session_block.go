@@ -21,6 +21,11 @@ type CyberSessionBlockStore interface {
 	// lengths of the API key, or none when the source scope is inactive.
 	CyberSessionTranscriptLengths(ctx context.Context, apiKeyID int64, scopeKey string) ([]int, error)
 	FindCyberSessionBlocked(ctx context.Context, keys []string) (string, error)
+	// AddCyberSessionBlockedAccounts 记录"该会话在中转侧被会话屏蔽 400 拒绝过"
+	// 的账号（ cyber_session_relay_block:* 集合），供同会话后续请求在调度时排除。
+	AddCyberSessionBlockedAccounts(ctx context.Context, keys []string, accountID int64, ttl time.Duration) error
+	// FindCyberSessionBlockedAccounts 返回各会话 key 上记录过的账号 ID 并集。
+	FindCyberSessionBlockedAccounts(ctx context.Context, keys []string) ([]int64, error)
 }
 
 // CyberSessionBlock is one cyber hit to persist. Keys are exact block keys;
@@ -144,4 +149,38 @@ func (s *OpenAIGatewayService) FindCyberSessionBlockedForRequest(ctx context.Con
 		return ""
 	}
 	return key
+}
+
+// AddCyberSessionBlockedAccounts 记录"该会话被某上游账号以会话屏蔽 400 拒绝过"。
+// 与本实例的 F5a 会话屏蔽开关无关（中转侧的屏蔽不受我们的开关约束），TTL 由
+// 调用方传入（取 cyber_session_block_ttl_seconds，与中转默认屏蔽时长对齐）。
+func (s *OpenAIGatewayService) AddCyberSessionBlockedAccounts(ctx context.Context, keys []string, accountID int64, ttl time.Duration) {
+	if s == nil || accountID <= 0 || len(keys) == 0 || ttl <= 0 {
+		return
+	}
+	store := s.cyberSessionBlockStore()
+	if store == nil {
+		return
+	}
+	if err := store.AddCyberSessionBlockedAccounts(ctx, keys, accountID, ttl); err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "cyber relay session block write failed: err=%v", err)
+	}
+}
+
+// FindCyberSessionBlockedAccounts 返回该会话在各 key 上被中转拒绝过的账号并集；
+// 任何失败都 fail-open（返回空集，不阻塞调度）。
+func (s *OpenAIGatewayService) FindCyberSessionBlockedAccounts(ctx context.Context, keys []string) []int64 {
+	if s == nil || len(keys) == 0 {
+		return nil
+	}
+	store := s.cyberSessionBlockStore()
+	if store == nil {
+		return nil
+	}
+	ids, err := store.FindCyberSessionBlockedAccounts(ctx, keys)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_gateway", "cyber relay session block read failed: err=%v", err)
+		return nil
+	}
+	return ids
 }

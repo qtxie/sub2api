@@ -696,6 +696,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
 		return
 	}
+	// 本会话此前被中转会话屏蔽 400 拒绝过的账号：调度直接排除，避免每轮
+	// 都先撞一次再换号（TTL 与中转屏蔽时长对齐，过期自动恢复）。
+	cyberRelayBlockedAccountIDs := h.findCyberSessionBlockedAccountIDs(c, apiKey, sessionHashBody)
 	c.Request = c.Request.WithContext(service.WithOpenAIGuardianParentAffinity(
 		c.Request.Context(), c, sessionHashBody, reqModel,
 	))
@@ -706,6 +709,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	firstOutputTimeoutSwitchCount := 0
 	profitVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	for _, blockedID := range cyberRelayBlockedAccountIDs {
+		failedAccountIDs[blockedID] = struct{}{}
+	}
 	excludedBaseURLs := make(map[string]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -762,6 +768,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 
 		failedAccountIDs = make(map[int64]struct{})
+		for _, blockedID := range cyberRelayBlockedAccountIDs {
+			failedAccountIDs[blockedID] = struct{}{}
+		}
 		excludedBaseURLs = make(map[string]struct{})
 		sameAccountRetryCount = make(map[int64]int)
 		switchCount = 0
@@ -1085,6 +1094,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						)
 						h.reportOpenAIGoneAccountFailure(account, apiKey.User, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, nil), err)
 						return
+					}
+					if failoverErr.UpstreamSessionBlock {
+						// 中转会话屏蔽 400：记住"该会话 × 该账号"，同会话后续轮次
+						// 的调度直接排除（TTL 过期自动恢复），不再每轮先撞一次。
+						h.rememberCyberSessionBlockedAccount(c, apiKey, sessionHashBody, account.ID)
 					}
 					if !openAIForwardMayFailover(c, writerSizeBeforeForward, failoverErr) {
 						h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
@@ -1505,11 +1519,16 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatAnthropic) {
 		return
 	}
+	// 本会话此前被中转会话屏蔽 400 拒绝过的账号：调度直接排除（与 /responses 同理）。
+	cyberRelayBlockedAccountIDs := h.findCyberSessionBlockedAccountIDs(c, apiKey, body)
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	profitVetoCount := 0
 	failedAccountIDs := make(map[int64]struct{})
+	for _, blockedID := range cyberRelayBlockedAccountIDs {
+		failedAccountIDs[blockedID] = struct{}{}
+	}
 	excludedBaseURLs := make(map[string]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
@@ -1709,6 +1728,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						)
 						h.reportOpenAIGoneAccountFailure(account, apiKey.User, openAIAccountScheduleModel(c, account, currentRoutingModel, false, nil), err)
 						return
+					}
+					if failoverErr.UpstreamSessionBlock {
+						// 中转会话屏蔽 400：记住"该会话 × 该账号"（与 /responses 同理）。
+						h.rememberCyberSessionBlockedAccount(c, apiKey, body, account.ID)
 					}
 					if !openAIForwardMayFailover(c, writerSizeBeforeForward, failoverErr) {
 						h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
@@ -4700,6 +4723,44 @@ func buildCyberSessionBlock(apiKeyID int64, c *gin.Context, body []byte) service
 		block.ScopeKey = cyberSessionScopeKey(apiKeyID, c)
 	}
 	return block
+}
+
+// cyberSessionRelayBlockKey 只用显式会话信号（session_id 头 / prompt_cache_key）
+// 派生"会话 × 被中转拒绝"记忆 key：查找发生在每个请求的调度前，不能用需要
+// 解析全量 items 的 transcript key（F5a 的查找有 scope 激活门槛，这里没有）。
+func cyberSessionRelayBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
+	return service.CyberSessionExplicitBlockKey(apiKeyID, c, body)
+}
+
+// findCyberSessionBlockedAccountIDs 返回本会话此前被中转会话屏蔽 400 拒绝过的
+// 账号，供调度在 failedAccountIDs 里预先排除，避免每轮都先撞一次再换号。
+func (h *OpenAIGatewayHandler) findCyberSessionBlockedAccountIDs(c *gin.Context, apiKey *service.APIKey, body []byte) []int64 {
+	if h == nil || h.gatewayService == nil || apiKey == nil {
+		return nil
+	}
+	key := cyberSessionRelayBlockKey(apiKey.ID, c, body)
+	if key == "" {
+		return nil
+	}
+	return h.gatewayService.FindCyberSessionBlockedAccounts(c.Request.Context(), []string{key})
+}
+
+// rememberCyberSessionBlockedAccount 记录"该会话在该账号上被中转会话屏蔽 400
+// 拒绝过"；TTL 取 cyber_session_block_ttl_seconds（与中转默认屏蔽时长对齐）。
+// 与本实例的 F5a 开关无关——中转侧的屏蔽不受我们的开关约束。
+func (h *OpenAIGatewayHandler) rememberCyberSessionBlockedAccount(c *gin.Context, apiKey *service.APIKey, body []byte, accountID int64) {
+	if h == nil || h.gatewayService == nil || apiKey == nil || accountID <= 0 {
+		return
+	}
+	key := cyberSessionRelayBlockKey(apiKey.ID, c, body)
+	if key == "" {
+		return
+	}
+	_, ttl := h.gatewayService.CyberSessionBlockRuntime(c.Request.Context())
+	if ttl <= 0 {
+		ttl = time.Hour
+	}
+	h.gatewayService.AddCyberSessionBlockedAccounts(c.Request.Context(), []string{key}, accountID, ttl)
 }
 
 func findBlockedCyberSessionKey(ctx context.Context, gatewayService *service.OpenAIGatewayService, apiKeyID int64, c *gin.Context, body []byte) string {

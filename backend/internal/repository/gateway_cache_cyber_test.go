@@ -128,3 +128,44 @@ func TestGatewayCacheCyberBlockCommandsAreBoundedAndLookupShortCircuits(t *testi
 	require.Equal(t, keys[cyberSessionRedisCommandMaxKeys+3], matched)
 	require.Equal(t, []int{cyberSessionRedisCommandMaxKeys, cyberSessionRedisCommandMaxKeys}, hook.mgetKeyCounts)
 }
+
+// 中转会话屏蔽 400 的"会话 × 账号"记忆：SADD/SMEMBERS 往返、跨 key 并集去重、
+// TTL 过期、空 key 跳过。
+func TestGatewayCacheCyberRelaySessionBlockAccounts(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	store, ok := NewGatewayCache(client).(service.CyberSessionBlockStore)
+	require.True(t, ok)
+
+	ctx := context.Background()
+	require.NoError(t, store.AddCyberSessionBlockedAccounts(ctx, []string{"session-a", "session-b"}, 58, time.Minute))
+	require.NoError(t, store.AddCyberSessionBlockedAccounts(ctx, []string{"session-a"}, 55, time.Minute))
+	// 同账号重复命中幂等
+	require.NoError(t, store.AddCyberSessionBlockedAccounts(ctx, []string{"session-a"}, 58, time.Minute))
+
+	ids, err := store.FindCyberSessionBlockedAccounts(ctx, []string{"session-a", "session-b"})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []int64{58, 55}, ids)
+
+	ids, err = store.FindCyberSessionBlockedAccounts(ctx, []string{"session-b"})
+	require.NoError(t, err)
+	require.Equal(t, []int64{58}, ids)
+
+	ids, err = store.FindCyberSessionBlockedAccounts(ctx, []string{"missing"})
+	require.NoError(t, err)
+	require.Empty(t, ids)
+
+	// TTL 到期后自动恢复
+	server.FastForward(2 * time.Minute)
+	ids, err = store.FindCyberSessionBlockedAccounts(ctx, []string{"session-a"})
+	require.NoError(t, err)
+	require.Empty(t, ids)
+
+	// 空 key / 非法 accountID 不落任何数据
+	require.NoError(t, store.AddCyberSessionBlockedAccounts(ctx, []string{""}, 58, time.Minute))
+	require.NoError(t, store.AddCyberSessionBlockedAccounts(ctx, []string{"session-c"}, 0, time.Minute))
+	ids, err = store.FindCyberSessionBlockedAccounts(ctx, []string{"session-c"})
+	require.NoError(t, err)
+	require.Empty(t, ids)
+}

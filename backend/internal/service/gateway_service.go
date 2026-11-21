@@ -789,6 +789,7 @@ type UpstreamFailoverError struct {
 	ClientStatusCode         int
 	ClientMessage            string
 	StreamFailedFrame        *OpenAIStreamFailedFrame // 触发本次 failover 的流内 failed/error 帧；耗尽时用于错误透传规则匹配
+	UpstreamSessionBlock     bool                     // 上游中转自身的 cyber 会话屏蔽 400：按会话×账号记忆，供调度排除
 }
 
 func (e *UpstreamFailoverError) Error() string {

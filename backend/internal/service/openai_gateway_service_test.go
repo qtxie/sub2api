@@ -4157,8 +4157,43 @@ func TestHandleErrorResponseUpstreamSessionBlockFailsOver(t *testing.T) {
 	require.Zero(t, rec.Body.Len(), "no client response before fallback is exhausted")
 	var failoverErr *UpstreamFailoverError
 	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.UpstreamSessionBlock, "handler uses the marker to remember session×account exclusion")
 	require.Contains(t, failoverErr.ClientMessage, "please start a new session")
 	require.Contains(t, string(failoverErr.ResponseBody), "upstream_error", "original relay body preserved for final response")
+
+	// 真实 cyber 命中不得带上该标记
+	cyberRec := httptest.NewRecorder()
+	cyberCtx, _ := gin.CreateTestContext(cyberRec)
+	cyberCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	cyberResp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"cyber_policy","message":"flagged"}}`)),
+	}
+	_, cyberErr := svc.handleErrorResponse(context.Background(), cyberResp, cyberCtx, &Account{ID: 1, Platform: PlatformOpenAI, Name: "a"}, nil)
+	require.Error(t, cyberErr)
+	var cyberFailoverErr *UpstreamFailoverError
+	require.ErrorAs(t, cyberErr, &cyberFailoverErr)
+	require.False(t, cyberFailoverErr.UpstreamSessionBlock, "real cyber hits must not be recorded as relay session blocks")
+}
+
+// 会话 × 被中转拒绝账号的记忆：Add 后 Find 可见；
+// 服务包装层在 key 为空 / 无存储能力时静默跳过。
+func TestCyberRelaySessionBlockedAccountsRoundtrip(t *testing.T) {
+	svc := &OpenAIGatewayService{cache: &comboCacheAndStore{}}
+	ctx := context.Background()
+
+	svc.AddCyberSessionBlockedAccounts(ctx, []string{"relay-key"}, 58, time.Minute)
+	svc.AddCyberSessionBlockedAccounts(ctx, []string{"relay-key"}, 55, time.Minute)
+	require.Equal(t, []int64{58, 55}, svc.FindCyberSessionBlockedAccounts(ctx, []string{"relay-key"}))
+
+	// 空 key / 无 accountID / 无 cache：静默 no-op
+	svc.AddCyberSessionBlockedAccounts(ctx, []string{}, 58, time.Minute)
+	svc.AddCyberSessionBlockedAccounts(ctx, []string{"relay-key"}, 0, time.Minute)
+	var noCacheSvc *OpenAIGatewayService
+	noCacheSvc.AddCyberSessionBlockedAccounts(ctx, []string{"relay-key"}, 58, time.Minute)
+	require.Nil(t, noCacheSvc.FindCyberSessionBlockedAccounts(ctx, []string{"relay-key"}))
+	require.Empty(t, svc.FindCyberSessionBlockedAccounts(ctx, []string{}))
 }
 
 func TestDetectOpenAIUpstreamSessionBlock(t *testing.T) {

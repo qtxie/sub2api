@@ -107,10 +107,11 @@ func TestCyberTranscriptKeysAtRecomputesRecordedLengthsInOrder(t *testing.T) {
 // --- fakes ---
 
 type fakeCyberBlockStore struct {
-	blocked  map[string]bool
-	scopes   map[string]bool
-	lengths  map[int64][]int
-	findKeys [][]string
+	blocked      map[string]bool
+	scopes       map[string]bool
+	lengths      map[int64][]int
+	findKeys     [][]string
+	relayBlocked map[string][]int64
 }
 
 var _ CyberSessionBlockStore = (*fakeCyberBlockStore)(nil)
@@ -148,6 +149,31 @@ func (f *fakeCyberBlockStore) FindCyberSessionBlocked(_ context.Context, keys []
 		}
 	}
 	return "", nil
+}
+
+func (f *fakeCyberBlockStore) AddCyberSessionBlockedAccounts(_ context.Context, keys []string, accountID int64, _ time.Duration) error {
+	if f.relayBlocked == nil {
+		f.relayBlocked = map[string][]int64{}
+	}
+	for _, key := range keys {
+		f.relayBlocked[key] = append(f.relayBlocked[key], accountID)
+	}
+	return nil
+}
+
+func (f *fakeCyberBlockStore) FindCyberSessionBlockedAccounts(_ context.Context, keys []string) ([]int64, error) {
+	seen := make(map[int64]struct{})
+	ids := make([]int64, 0)
+	for _, key := range keys {
+		for _, id := range f.relayBlocked[key] {
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // fakeSettingRepo is a minimal SettingRepository stub for unit tests.
@@ -237,6 +263,12 @@ func (c *comboCacheAndStore) CyberSessionTranscriptLengths(ctx context.Context, 
 }
 func (c *comboCacheAndStore) FindCyberSessionBlocked(ctx context.Context, keys []string) (string, error) {
 	return c.store.FindCyberSessionBlocked(ctx, keys)
+}
+func (c *comboCacheAndStore) AddCyberSessionBlockedAccounts(ctx context.Context, keys []string, accountID int64, ttl time.Duration) error {
+	return c.store.AddCyberSessionBlockedAccounts(ctx, keys, accountID, ttl)
+}
+func (c *comboCacheAndStore) FindCyberSessionBlockedAccounts(ctx context.Context, keys []string) ([]int64, error) {
+	return c.store.FindCyberSessionBlockedAccounts(ctx, keys)
 }
 
 // --- tests ---

@@ -418,6 +418,7 @@ const (
 	cyberSessionBlockPrefix             = "cyber_session_block:"
 	cyberSessionScopePrefix             = "cyber_session_scope:"
 	cyberSessionTranscriptLengthsPrefix = "cyber_session_transcript_lengths:"
+	cyberSessionRelayBlockPrefix        = "cyber_session_relay_block:"
 	cyberSessionRedisCommandMaxKeys     = 128
 )
 
@@ -533,6 +534,83 @@ func (c *gatewayCache) FindCyberSessionBlocked(ctx context.Context, keys []strin
 		}
 	}
 	return "", nil
+}
+
+// AddCyberSessionBlockedAccounts 把被中转会话屏蔽 400 拒绝过的账号写入各会话
+// key 的集合（SADD + EXPIRE），同一账号重复命中幂等。空 key 静默跳过。
+func (c *gatewayCache) AddCyberSessionBlockedAccounts(ctx context.Context, keys []string, accountID int64, ttl time.Duration) error {
+	if accountID <= 0 {
+		return nil
+	}
+	member := strconv.FormatInt(accountID, 10)
+	pipe := c.rdb.TxPipeline()
+	queued := 0
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		redisKey := cyberSessionRelayBlockPrefix + key
+		pipe.SAdd(ctx, redisKey, member)
+		pipe.Expire(ctx, redisKey, ttl)
+		queued++
+		if queued == cyberSessionRedisCommandMaxKeys {
+			if _, err := pipe.Exec(ctx); err != nil {
+				return err
+			}
+			pipe = c.rdb.TxPipeline()
+			queued = 0
+		}
+	}
+	if queued == 0 {
+		return nil
+	}
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// FindCyberSessionBlockedAccounts 返回各会话 key 上记录过的账号 ID 并集（去重、
+// 保序不保证）。读取失败由 service 层 fail-open。
+func (c *gatewayCache) FindCyberSessionBlockedAccounts(ctx context.Context, keys []string) ([]int64, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int64]struct{})
+	ids := make([]int64, 0)
+	for start := 0; start < len(keys); start += cyberSessionRedisCommandMaxKeys {
+		end := start + cyberSessionRedisCommandMaxKeys
+		if end > len(keys) {
+			end = len(keys)
+		}
+		pipe := c.rdb.Pipeline()
+		cmds := make([]*redis.StringSliceCmd, 0, end-start)
+		for _, key := range keys[start:end] {
+			if key == "" {
+				continue
+			}
+			cmds = append(cmds, pipe.SMembers(ctx, cyberSessionRelayBlockPrefix+key))
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, err
+		}
+		for _, cmd := range cmds {
+			members, err := cmd.Result()
+			if err != nil {
+				return nil, err
+			}
+			for _, member := range members {
+				id, convErr := strconv.ParseInt(member, 10, 64)
+				if convErr != nil {
+					continue
+				}
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, nil
 }
 
 var claimLiveControllerScript = redis.NewScript(`

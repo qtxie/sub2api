@@ -613,7 +613,9 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	// 命中，不进风控审计/计费，监控经由通用 ops 上游错误行可见。
 	if hit, blockMsg := detectOpenAIUpstreamSessionBlock(body); hit {
 		setOpsUpstreamError(c, resp.StatusCode, blockMsg, truncateString(string(body), 2048))
-		return nil, newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, blockMsg)
+		failoverErr := newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, blockMsg)
+		failoverErr.UpstreamSessionBlock = true
+		return nil, failoverErr
 	}
 	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)
@@ -861,7 +863,9 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	// 不打 cyber 标记（非真实 cyber 命中，不进风控审计/计费）。
 	if hit, blockMsg := detectOpenAIUpstreamSessionBlock(body); hit {
 		setOpsUpstreamError(c, resp.StatusCode, blockMsg, truncateString(string(body), 2048))
-		return nil, newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, blockMsg)
+		failoverErr := newOpenAICyberPolicyFailoverError(resp.StatusCode, resp.Header, body, blockMsg)
+		failoverErr.UpstreamSessionBlock = true
+		return nil, failoverErr
 	}
 	if account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(resp.StatusCode, body) {
 		clientMsg := grokContentPolicyClientMessage(body)
